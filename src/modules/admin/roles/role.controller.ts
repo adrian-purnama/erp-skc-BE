@@ -1,7 +1,8 @@
 import type { Request, Response } from "express";
 import { ApiResponseDto } from "../../../dto/apiResponse.dto";
-import { fail, ok } from "../../../dto/httpResponse";
+import { fail, handle, ok } from "../../../dto/httpResponse";
 import { getUserPermissions } from "../../../core/permissions/resolve.service";
+import { pathString, queryBool } from "../../../validation/query";
 import {
   parseCreateRoleDto,
   parseUpdateRoleDto,
@@ -9,11 +10,6 @@ import {
   RoleValidationError,
 } from "../../../validation/role";
 import { RoleConflictError, roleService } from "./role.service";
-
-function readParam(value: string | string[] | undefined): string {
-  if (Array.isArray(value)) return value[0] ?? "";
-  return value ?? "";
-}
 
 function sendRoleError(res: Response, error: unknown, fallback: string) {
   if (error instanceof RoleConflictError) {
@@ -35,22 +31,15 @@ function sendRoleError(res: Response, error: unknown, fallback: string) {
 
 export class RoleController {
   list = async (_req: Request, res: Response) => {
-    try {
-      const data = await roleService.list();
-      return ok(res, "Roles retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to list roles");
-    }
+    return handle(res, "Failed to list roles", "Roles retrieved", () =>
+      roleService.list(),
+    );
   };
 
   get = async (req: Request, res: Response) => {
-    try {
-      const key = readParam(req.params.key);
-      const data = await roleService.get(key);
-      return ok(res, "Role retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to get role");
-    }
+    return handle(res, "Failed to get role", "Role retrieved", () =>
+      roleService.get(pathString(req.params.key)),
+    );
   };
 
   create = async (req: Request, res: Response) => {
@@ -66,7 +55,7 @@ export class RoleController {
 
   update = async (req: Request, res: Response) => {
     try {
-      const key = readParam(req.params.key);
+      const key = pathString(req.params.key);
       const patch = parseUpdateRoleDto(req.body);
       const actorPermissions = await getUserPermissions(req.user!);
       const data = await roleService.update(key, patch, actorPermissions);
@@ -78,11 +67,10 @@ export class RoleController {
 
   remove = async (req: Request, res: Response) => {
     try {
-      const key = readParam(req.params.key);
-      const force =
-        req.query.force === "true" ||
-        (Array.isArray(req.query.force) && req.query.force[0] === "true");
-      await roleService.delete(key, force);
+      await roleService.delete(
+        pathString(req.params.key),
+        queryBool(req.query.force),
+      );
       return ok(res, "Role deleted", null);
     } catch (error) {
       return sendRoleError(res, error, "Failed to delete role");
@@ -91,11 +79,10 @@ export class RoleController {
 
   updateUserRoles = async (req: Request, res: Response) => {
     try {
-      const id = readParam(req.params.id);
       const roles = parseUserRolesDto(req.body);
       const actorPermissions = await getUserPermissions(req.user!);
       const data = await roleService.assignUserRoles(
-        id,
+        pathString(req.params.id),
         roles,
         req.user!.id,
         actorPermissions,

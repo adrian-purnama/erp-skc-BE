@@ -70,12 +70,20 @@ function parsePhones(raw: unknown): VendorPhoneInDto[] | undefined {
   return raw.map(parsePhoneRow);
 }
 
+/** Exactly 16 digits after stripping non-digit separators. */
+function parseNpwp(raw: unknown): string {
+  if (typeof raw !== "string") throw new Error("npwp must be 16 digits");
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length !== 16) throw new Error("npwp must be 16 digits");
+  return digits;
+}
+
 export function parseCreateVendorDto(body: unknown): CreateVendorDto {
   const row = asRecord(body);
   const name = typeof row.name === "string" ? row.name.trim() : "";
   if (!name) throw new Error("name is required");
   const address = typeof row.address === "string" ? row.address.trim() : "";
-  const npwp = typeof row.npwp === "string" ? row.npwp.trim() : "";
+  const npwp = parseNpwp(row.npwp);
   return {
     name,
     address,
@@ -101,10 +109,7 @@ export function parseUpdateVendorDto(body: unknown): UpdateVendorDto {
     patch.address = row.address.trim();
   }
   if (row.npwp !== undefined) {
-    if (typeof row.npwp !== "string") {
-      throw new Error("npwp must be a string");
-    }
-    patch.npwp = row.npwp.trim();
+    patch.npwp = parseNpwp(row.npwp);
   }
   if (row.emails !== undefined) {
     patch.emails = parseEmails(row.emails);

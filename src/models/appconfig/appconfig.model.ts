@@ -5,7 +5,20 @@ export interface AppConfigInterface {
     openLogin?: boolean;
     openRegister?: boolean;
     appLogo?: Types.ObjectId;
+    companyName?: string;
+    npwp?: string;
+    address?: string;
+    phone?: string;
+    email?: string;
+    website?: string;
+    companyProfile?: Types.ObjectId;
 }
+
+const optionalString = {
+    type: String,
+    required: false,
+    trim: true,
+} as const;
 
 const appConfigSchema = new Schema<AppConfigInterface>({
     appName: {
@@ -27,6 +40,18 @@ const appConfigSchema = new Schema<AppConfigInterface>({
         type: Types.ObjectId,
         required: false,
     },
+
+    companyName: optionalString,
+    npwp: optionalString,
+    address: optionalString,
+    phone: optionalString,
+    email: optionalString,
+    website: optionalString,
+
+    companyProfile: {
+        type: Types.ObjectId,
+        required: false,
+    },
 });
 
-export const AppConfigModel = model<AppConfigInterface>("AppConfig", appConfigSchema)
+export const AppConfigModel = model<AppConfigInterface>("AppConfig", appConfigSchema);

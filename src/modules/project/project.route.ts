@@ -155,6 +155,13 @@ router.get(
 );
 
 router.get(
+  "/:id/shop-drawing/boq/overview",
+  requireUser,
+  requirePermission({ key: "project.view" }),
+  projectController.shopDrawingBoqOverview,
+);
+
+router.get(
   "/:id/shop-drawing/boq",
   requireUser,
   requirePermission({ key: "project.view" }),
@@ -183,6 +190,13 @@ router.get(
 );
 
 router.get(
+  "/:id/rab/export",
+  requireUser,
+  requirePermission({ key: "project.view" }),
+  projectController.exportRab,
+);
+
+router.get(
   "/:id/rab/elaboration",
   requireUser,
   requirePermission({ key: "project.view" }),
@@ -208,6 +222,69 @@ router.patch(
   requireUser,
   requirePermission({ key: "project.manage" }),
   projectController.patchRabLine,
+);
+
+router.get(
+  "/:id/rab/labour-items",
+  requireUser,
+  requirePermission({ key: "project.view" }),
+  projectController.listRabLabourItems,
+);
+
+router.post(
+  "/:id/rab/labour-lines",
+  requireUser,
+  requirePermission({ key: "project.manage" }),
+  projectController.addRabLabourLine,
+);
+
+router.delete(
+  "/:id/rab/labour-lines/:lineKey",
+  requireUser,
+  requirePermission({ key: "project.manage" }),
+  projectController.removeRabLabourLine,
+);
+
+router.get(
+  "/:id/rab/changes",
+  requireUser,
+  requirePermission({ key: "project.view" }),
+  projectController.listRabChanges,
+);
+
+router.get(
+  "/:id/rab/changes/current",
+  requireUser,
+  requirePermission({ key: "project.view" }),
+  projectController.getCurrentRabChange,
+);
+
+router.get(
+  "/:id/rab/changes/:changeId",
+  requireUser,
+  requirePermission({ key: "project.view" }),
+  projectController.getRabChangeById,
+);
+
+router.post(
+  "/:id/rab/changes",
+  requireUser,
+  requirePermission({ key: "project.manage" }),
+  projectController.openRabChange,
+);
+
+router.post(
+  "/:id/rab/changes/current/commit",
+  requireUser,
+  requirePermission({ key: "project.manage" }),
+  projectController.commitRabChange,
+);
+
+router.post(
+  "/:id/rab/changes/current/discard",
+  requireUser,
+  requirePermission({ key: "project.manage" }),
+  projectController.discardRabChange,
 );
 
 router.get(

@@ -29,13 +29,13 @@ describe("folder validation", () => {
     assert.throws(() => parseFolderCode(""), /required/);
   });
 
-  it("parses create folder dto without code", () => {
+  it("parses create folder dto without code and title-cases the name", () => {
     const dto = parseCreateFolderDto({
-      name: "Raw materials",
+      name: "raw materials",
       parentId: null,
     });
     assert.deepEqual(dto, {
-      name: "Raw materials",
+      name: "Raw Materials",
       parentId: null,
     });
   });

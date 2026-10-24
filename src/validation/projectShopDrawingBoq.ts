@@ -156,8 +156,8 @@ function parseFinishings(
       `${path}[${index}].placement`,
     );
     const lines = parseLineList(row.lines, `${path}[${index}].lines`);
-    if (lines.length === 0) {
-      throw new Error(`${path}[${index}].lines must have at least one line`);
+    if (lines.length !== 1) {
+      throw new Error(`${path}[${index}].lines must have exactly one line`);
     }
     return {
       finishingOrder: row.finishingOrder,

@@ -52,20 +52,7 @@ type LiveState = {
 
 let isRunning = false;
 
-let live: LiveState = {
-  jobId: null,
-  status: "idle",
-  section: null,
-  step: "idle",
-  processed: 0,
-  total: 0,
-  percent: 0,
-  excludedProjectIds: [],
-  result: null,
-  errorMessage: null,
-  startedAt: null,
-  lastHeartbeatAt: null,
-};
+let live: LiveState = idleStatus();
 
 function emptyResult(): ShrinkRunResult {
   return {
@@ -74,6 +61,23 @@ function emptyResult(): ShrinkRunResult {
     shopDrawingVersionsSoftDeleted: 0,
     blobsPurged: 0,
     errors: [],
+  };
+}
+
+function idleStatus(): LiveState {
+  return {
+    jobId: null,
+    status: "idle",
+    section: null,
+    step: "idle",
+    processed: 0,
+    total: 0,
+    percent: 0,
+    excludedProjectIds: [],
+    result: null,
+    errorMessage: null,
+    startedAt: null,
+    lastHeartbeatAt: null,
   };
 }
 
@@ -316,8 +320,6 @@ async function runJob(opts: {
       result.blobsPurged += orphanFinish;
     }
 
-    result.orphans = undefined;
-
     await ShrinkRunModel.updateOne(
       { _id: opts.runId },
       {
@@ -559,20 +561,7 @@ export class ShrinkDbService {
       .lean()
       .exec();
     if (!latest) {
-      return {
-        jobId: null,
-        status: "idle",
-        section: null,
-        step: "idle",
-        processed: 0,
-        total: 0,
-        percent: 0,
-        excludedProjectIds: [],
-        result: null,
-        errorMessage: null,
-        startedAt: null,
-        lastHeartbeatAt: null,
-      };
+      return idleStatus();
     }
 
     const mappedStatus: ShrinkLiveStatus =

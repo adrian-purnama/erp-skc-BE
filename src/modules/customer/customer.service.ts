@@ -74,8 +74,8 @@ export class CustomerService {
 
   async create(input: CreateCustomerDto): Promise<CustomerDetailOutDto> {
     const created = await CustomerRepo.create({
-      name: input.name,
-      address: input.address,
+      name: input.name.toUpperCase(),
+      address: input.address ?? "",
       npwp: input.npwp ?? "",
       isActive: true,
     });
@@ -106,7 +106,9 @@ export class CustomerService {
         id,
         {
           $set: {
-            ...(patch.name !== undefined ? { name: patch.name } : {}),
+            ...(patch.name !== undefined
+              ? { name: patch.name.toUpperCase() }
+              : {}),
             ...(patch.address !== undefined ? { address: patch.address } : {}),
             ...(patch.npwp !== undefined ? { npwp: patch.npwp } : {}),
             ...(patch.isActive !== undefined

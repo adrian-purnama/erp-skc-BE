@@ -49,6 +49,14 @@ router.post(
   adminController.updateAppLogo,
 );
 
+router.post(
+  "/app-company-profile",
+  requireUser,
+  requirePermission({ key: "admin.config.manage" }),
+  upload.single("file"),
+  adminController.updateCompanyProfile,
+);
+
 router.get(
   "/users",
   requireUser,

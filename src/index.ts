@@ -16,6 +16,9 @@ import customerRoutes from "./modules/customer/customer.route";
 import mediaRoutes from "./modules/media/media.route";
 import itemMasterRoutes from "./modules/itemMaster/itemMaster.route";
 import projectRoutes from "./modules/project/project.route";
+import quotationRoutes from "./modules/quotation/quotation.route";
+import publicQuotationRoutes from "./modules/quotation/publicQuotation.route";
+import termOfPaymentRoutes from "./modules/termOfPayment/termOfPayment.route";
 import uomRoutes from "./modules/uom/uom.route";
 import vendorRoutes from "./modules/vendor/vendor.route";
 import { seedUoms } from "./modules/uom/uom.seed";
@@ -92,9 +95,27 @@ function createApp(): Express {
   );
   mountRouter(
     app,
+    "/quotation",
+    quotationRoutes,
+    require.resolve("./modules/quotation/quotation.route"),
+  );
+  mountRouter(
+    app,
+    "/public/quotation",
+    publicQuotationRoutes,
+    require.resolve("./modules/quotation/publicQuotation.route"),
+  );
+  mountRouter(
+    app,
     "/uom",
     uomRoutes,
     require.resolve("./modules/uom/uom.route"),
+  );
+  mountRouter(
+    app,
+    "/term-of-payment",
+    termOfPaymentRoutes,
+    require.resolve("./modules/termOfPayment/termOfPayment.route"),
   );
   mountRouter(
     app,

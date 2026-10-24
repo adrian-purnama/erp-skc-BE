@@ -17,8 +17,8 @@ export type CustomerPhoneInDto = {
 
 export type CreateCustomerDto = {
   name: string;
-  address: string;
-  npwp?: string;
+  address?: string;
+  npwp: string;
   emails?: CustomerEmailInDto[];
   phones?: CustomerPhoneInDto[];
 };

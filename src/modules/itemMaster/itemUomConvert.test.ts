@@ -132,11 +132,17 @@ describe("parseUoms / create item dto", () => {
 
   it("requires uoms on create", () => {
     assert.throws(
-      () => parseCreateItemDto({ name: "Pipe", folderId: null }),
+      () =>
+        parseCreateItemDto({
+          name: "Pipe",
+          itemType: "material",
+          folderId: null,
+        }),
       /uoms is required/,
     );
     const dto = parseCreateItemDto({
       name: "Pipe",
+      itemType: "material",
       folderId: null,
       uoms: [{ uomId: uomA, isBase: true, conversionFactor: "1" }],
     });

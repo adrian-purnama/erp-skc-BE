@@ -1,3 +1,7 @@
+import type { ItemType } from "../models/item/item.model";
+
+export type { ItemType };
+
 export type CreateFolderDto = {
   name: string;
   parentId: string | null;
@@ -29,6 +33,7 @@ export type ItemTarifInDto = {
 export type CreateItemDto = {
   name: string;
   description?: string;
+  itemType: ItemType;
   folderId: string | null;
   vendorIds?: string[];
   uoms: ItemUomInDto[];
@@ -38,6 +43,7 @@ export type CreateItemDto = {
 export type UpdateItemDto = {
   name?: string;
   description?: string;
+  itemType?: ItemType;
   isActive?: boolean;
   vendorIds?: string[];
   uoms?: ItemUomInDto[];
@@ -86,6 +92,7 @@ export type ItemOutDto = {
   itemId: string;
   name: string;
   description: string;
+  itemType: ItemType;
   folderId: string | null;
   baseUomId: string | null;
   vendorIds: string[];
@@ -113,6 +120,7 @@ export type TreeItemNode = {
   itemId: string;
   name: string;
   description: string;
+  itemType: ItemType;
   isActive: boolean;
 };
 
@@ -131,6 +139,7 @@ export type ChildrenItemNode = {
   itemId: string;
   name: string;
   description: string;
+  itemType: ItemType;
   isActive: boolean;
 };
 

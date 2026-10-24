@@ -10,17 +10,37 @@ const DEFAULT_APP_NAME = "Adrian Template";
 const DEFAULT_OPEN_LOGIN = true;
 const DEFAULT_OPEN_REGISTER = true;
 
-export type ChangeAppLogoInput = {
+export type ChangePublicImageInput = {
   buffer: Buffer;
   filename: string;
   contentType: string;
 };
+
+type PublicImageField = "appLogo" | "companyProfile";
+
+type ScalarField =
+  | "appName"
+  | "openLogin"
+  | "openRegister"
+  | "companyName"
+  | "npwp"
+  | "address"
+  | "phone"
+  | "email"
+  | "website";
 
 export class AppConfigService {
   appName: string = DEFAULT_APP_NAME;
   openLogin: boolean = DEFAULT_OPEN_LOGIN;
   openRegister: boolean = DEFAULT_OPEN_REGISTER;
   appLogo: Types.ObjectId | null = null;
+  companyName: string = "";
+  npwp: string = "";
+  address: string = "";
+  phone: string = "";
+  email: string = "";
+  website: string = "";
+  companyProfile: Types.ObjectId | null = null;
   firstRegister: boolean = true;
 
   async init(): Promise<void> {
@@ -34,6 +54,13 @@ export class AppConfigService {
       this.openLogin = existAppConfig.openLogin ?? DEFAULT_OPEN_LOGIN;
       this.openRegister = existAppConfig.openRegister ?? DEFAULT_OPEN_REGISTER;
       this.appLogo = existAppConfig.appLogo ?? null;
+      this.companyName = existAppConfig.companyName ?? "";
+      this.npwp = existAppConfig.npwp ?? "";
+      this.address = existAppConfig.address ?? "";
+      this.phone = existAppConfig.phone ?? "";
+      this.email = existAppConfig.email ?? "";
+      this.website = existAppConfig.website ?? "";
+      this.companyProfile = existAppConfig.companyProfile ?? null;
 
       logger.info("Existing app config found, not seeding", logSource, "init");
       return;
@@ -52,6 +79,13 @@ export class AppConfigService {
       this.openLogin = DEFAULT_OPEN_LOGIN;
       this.openRegister = DEFAULT_OPEN_REGISTER;
       this.appLogo = null;
+      this.companyName = "";
+      this.npwp = "";
+      this.address = "";
+      this.phone = "";
+      this.email = "";
+      this.website = "";
+      this.companyProfile = null;
 
       logger.info("Seeding successful", logSource, "init");
     } catch (error) {
@@ -73,46 +107,91 @@ export class AppConfigService {
     openLogin: boolean;
     openRegister: boolean;
     appLogo: string | null;
+    companyName: string;
+    npwp: string;
+    address: string;
+    phone: string;
+    email: string;
+    website: string;
+    companyProfile: string | null;
   } {
     return {
       appName: this.appName,
       openLogin: this.openLogin,
       openRegister: this.openRegister,
       appLogo: this.appLogo ? `/media/${this.appLogo.toString()}` : null,
+      companyName: this.companyName,
+      npwp: this.npwp,
+      address: this.address,
+      phone: this.phone,
+      email: this.email,
+      website: this.website,
+      companyProfile: this.companyProfile
+        ? `/media/${this.companyProfile.toString()}`
+        : null,
     };
   }
 
-  async changeAppName(appName: string): Promise<void> {
-    await this.updateField("appName", appName);
+  async update(patch: {
+    appName?: string;
+    openLogin?: boolean;
+    openRegister?: boolean;
+    companyName?: string;
+    npwp?: string;
+    address?: string;
+    phone?: string;
+    email?: string;
+    website?: string;
+  }): Promise<void> {
+    const keys = [
+      "appName",
+      "openLogin",
+      "openRegister",
+      "companyName",
+      "npwp",
+      "address",
+      "phone",
+      "email",
+      "website",
+    ] as const;
+    for (const key of keys) {
+      if (patch[key] !== undefined) {
+        await this.updateField(key, patch[key] as this[typeof key]);
+      }
+    }
   }
 
-  async changeOpenLogin(openLogin: boolean): Promise<void> {
-    await this.updateField("openLogin", openLogin);
-  }
-
-  async changeOpenRegister(openRegister: boolean): Promise<void> {
-    await this.updateField("openRegister", openRegister);
-  }
-
-  
   async changeAppLogo(
-    input: ChangeAppLogoInput,
+    input: ChangePublicImageInput,
+  ): Promise<{ id: Types.ObjectId; url: string }> {
+    return this.changePublicImage("appLogo", input);
+  }
+
+  async changeCompanyProfile(
+    input: ChangePublicImageInput,
+  ): Promise<{ id: Types.ObjectId; url: string }> {
+    return this.changePublicImage("companyProfile", input);
+  }
+
+  private async changePublicImage(
+    field: PublicImageField,
+    input: ChangePublicImageInput,
   ): Promise<{ id: Types.ObjectId; url: string }> {
     try {
-      const oldId = this.appLogo;
+      const oldId = this[field];
 
       const uploaded = await uploadFile("public", {
         buffer: input.buffer,
         filename: input.filename,
         contentType: input.contentType,
-        metadata: { kind: "appLogo" },
+        metadata: { kind: field },
       });
 
       try {
         await mongoose.connection.transaction(async (session) => {
           const updated = await AppConfigModel.findOneAndUpdate(
             {},
-            { $set: { appLogo: uploaded.id } },
+            { $set: { [field]: uploaded.id } },
             { new: true, session },
           );
 
@@ -123,7 +202,17 @@ export class AppConfigService {
                   appName: this.appName,
                   openLogin: this.openLogin,
                   openRegister: this.openRegister,
-                  appLogo: uploaded.id,
+                  appLogo: field === "appLogo" ? uploaded.id : this.appLogo ?? undefined,
+                  companyProfile:
+                    field === "companyProfile"
+                      ? uploaded.id
+                      : this.companyProfile ?? undefined,
+                  companyName: this.companyName || undefined,
+                  npwp: this.npwp || undefined,
+                  address: this.address || undefined,
+                  phone: this.phone || undefined,
+                  email: this.email || undefined,
+                  website: this.website || undefined,
                 },
               ],
               { session },
@@ -139,7 +228,7 @@ export class AppConfigService {
         await deleteFileIfExists("public", oldId);
       }
 
-      this.appLogo = uploaded.id;
+      this[field] = uploaded.id;
 
       return {
         id: uploaded.id,
@@ -149,13 +238,13 @@ export class AppConfigService {
       logger.error(
         error instanceof Error ? error.message : String(error),
         logSource,
-        "changeAppLogo",
+        `changePublicImage:${field}`,
       );
       throw error;
     }
   }
 
-  private async updateField<K extends "appName" | "openLogin" | "openRegister">(
+  private async updateField<K extends ScalarField>(
     field: K,
     value: this[K],
   ): Promise<void> {
@@ -172,6 +261,13 @@ export class AppConfigService {
           openLogin: this.openLogin,
           openRegister: this.openRegister,
           appLogo: this.appLogo ?? undefined,
+          companyProfile: this.companyProfile ?? undefined,
+          companyName: this.companyName || undefined,
+          npwp: this.npwp || undefined,
+          address: this.address || undefined,
+          phone: this.phone || undefined,
+          email: this.email || undefined,
+          website: this.website || undefined,
           [field]: value,
         });
       }

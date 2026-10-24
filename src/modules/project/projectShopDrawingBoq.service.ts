@@ -27,6 +27,8 @@ import {
 import { itemMasterService } from "../itemMaster/itemMaster.service";
 import { itemUomService } from "../itemMaster/itemUom.service";
 import { uomService } from "../uom/uom.service";
+import { projectRabChangeService } from "./projectRabChange.service";
+import { rabLocked } from "./projectRabLock";
 import { assertProjectExists } from "./projectShared";
 
 type LeanFile = {
@@ -59,6 +61,7 @@ type LeanBoq = {
   lighting?: ProjectShopDrawingBoqInterface["lighting"];
   mounting?: ProjectShopDrawingBoqInterface["mounting"];
   other?: ProjectShopDrawingBoqInterface["other"];
+  contentFrozenAt?: Date;
   lines?: unknown;
 };
 
@@ -114,7 +117,7 @@ export class ProjectShopDrawingBoqService {
     projectId: string,
   ): Promise<ProjectShopDrawingBoqMaterialOutDto[]> {
     await assertProjectExists(projectId);
-    const items = await itemMasterService.listActiveItems();
+    const items = await itemMasterService.listActiveItems("material");
     const result: ProjectShopDrawingBoqMaterialOutDto[] = [];
     for (const item of items) {
       const uoms = await itemUomService.listByItem(item.id);
@@ -147,11 +150,14 @@ export class ProjectShopDrawingBoqService {
       .lean()
       .exec()) as LeanFile[];
 
-    const boqs = await ProjectShopDrawingBoqRepo.model
-      .find({ projectId })
-      .select({ shopDrawingFileId: 1 })
-      .lean()
-      .exec();
+    const change = await projectRabChangeService.findOpenDraft(projectId);
+    const boqs = change
+      ? change.boqs
+      : await ProjectShopDrawingBoqRepo.model
+          .find({ projectId })
+          .select({ shopDrawingFileId: 1 })
+          .lean()
+          .exec();
     const boqFileIds = new Set(boqs.map((b) => String(b.shopDrawingFileId)));
 
     return items.map((item) => {
@@ -169,6 +175,76 @@ export class ProjectShopDrawingBoqService {
     });
   }
 
+  /** BOQs on each item's current file version (items without a current BOQ omitted). */
+  async listCurrentOverview(
+    projectId: string,
+  ): Promise<ProjectShopDrawingBoqOutDto[]> {
+    await assertProjectExists(projectId);
+
+    const items = (await ProjectShopDrawingItemRepo.model
+      .find({ projectId, isDeleted: false })
+      .sort({ name: 1 })
+      .lean()
+      .exec()) as LeanItem[];
+    if (items.length === 0) return [];
+
+    const currentFiles = (await ProjectShopDrawingDocumentRepo.model
+      .find({
+        projectId,
+        isCurrent: true,
+        isDeleted: { $ne: true },
+        itemId: { $in: items.map((i) => i._id) },
+      })
+      .lean()
+      .exec()) as LeanFile[];
+
+    const fileByItemId = new Map<string, LeanFile>();
+    for (const file of currentFiles) {
+      fileByItemId.set(String(file.itemId), file);
+    }
+
+    const fileIds = [...fileByItemId.values()].map((f) => f._id);
+    if (fileIds.length === 0) return [];
+
+    const change = await projectRabChangeService.findOpenDraft(projectId);
+    const changeDraftOpen = Boolean(change);
+    const boqs = (await ProjectShopDrawingBoqRepo.model
+      .find({ projectId, shopDrawingFileId: { $in: fileIds } })
+      .lean()
+      .exec()) as LeanBoq[];
+
+    const boqByFileId = new Map<string, LeanBoq>();
+    if (!change) {
+      for (const boq of boqs) {
+        boqByFileId.set(String(boq.shopDrawingFileId), boq);
+      }
+    } else {
+      for (const snap of change.boqs) {
+        boqByFileId.set(String(snap.shopDrawingFileId), {
+          _id: snap.shopDrawingFileId,
+          projectId: new Types.ObjectId(projectId),
+          shopDrawingItemId: snap.shopDrawingItemId,
+          shopDrawingFileId: snap.shopDrawingFileId,
+          makeQty: snap.makeQty,
+          main: snap.main,
+          lighting: snap.lighting,
+          mounting: snap.mounting,
+          other: snap.other,
+        });
+      }
+    }
+
+    const result: ProjectShopDrawingBoqOutDto[] = [];
+    for (const item of items) {
+      const file = fileByItemId.get(String(item._id));
+      if (!file) continue;
+      const boq = boqByFileId.get(String(file._id));
+      if (!boq) continue;
+      result.push(await this.toOut(boq, changeDraftOpen));
+    }
+    return result;
+  }
+
   async get(
     projectId: string,
     shopDrawingItemId: string,
@@ -182,19 +258,56 @@ export class ProjectShopDrawingBoqService {
       throw new Error("Invalid shopDrawingFileId");
     }
 
+    const change = await projectRabChangeService.findOpenDraft(projectId);
+    if (change) {
+      const snap = change.boqs.find(
+        (b) => String(b.shopDrawingFileId) === shopDrawingFileId,
+      );
+      if (!snap) return null;
+      const synthetic: LeanBoq = {
+        // Use file id as stable id while editing inside a change draft
+        _id: snap.shopDrawingFileId,
+        projectId: new Types.ObjectId(projectId),
+        shopDrawingItemId: snap.shopDrawingItemId,
+        shopDrawingFileId: snap.shopDrawingFileId,
+        makeQty: snap.makeQty,
+        main: snap.main,
+        lighting: snap.lighting,
+        mounting: snap.mounting,
+        other: snap.other,
+      };
+      return this.toOut(synthetic, true);
+    }
+
     const boq = (await ProjectShopDrawingBoqRepo.model
       .findOne({ projectId, shopDrawingItemId, shopDrawingFileId })
       .lean()
       .exec()) as LeanBoq | null;
     if (!boq) return null;
-    return this.toOut(boq);
+    return this.toOut(boq, false);
+  }
+
+  /** Called when RAB is locked — freeze all existing BOQs for the project. */
+  async freezeAllForProject(projectId: string): Promise<void> {
+    const projectOid = new Types.ObjectId(projectId);
+    const now = new Date();
+    await ProjectShopDrawingBoqRepo.model
+      .updateMany(
+        { projectId: projectOid, contentFrozenAt: { $exists: false } },
+        { $set: { contentFrozenAt: now } },
+      )
+      .exec();
   }
 
   async upsert(
     projectId: string,
     input: UpsertShopDrawingBoqIn,
+    userId: string,
   ): Promise<ProjectShopDrawingBoqOutDto> {
     await assertProjectExists(projectId);
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new Error("Invalid user id");
+    }
 
     const item = (await ProjectShopDrawingItemRepo.model
       .findOne({
@@ -217,7 +330,7 @@ export class ProjectShopDrawingBoqService {
       .exec()) as LeanFile | null;
     if (!file) throw new Error("ShopDrawing file version not found");
 
-    const main = {
+    const resolvedMain = {
       parts: await Promise.all(
         input.main.parts.map(async (part) => ({
           key: part.key,
@@ -230,58 +343,113 @@ export class ProjectShopDrawingBoqService {
       },
     };
 
-    const lighting = {
+    const resolvedLighting = {
       lines: await this.resolveLines(input.lighting.lines),
     };
-    const mounting = {
+    const resolvedMounting = {
       type: input.mounting.type,
       lines: await this.resolveLines(input.mounting.lines),
     };
-    const other = {
+    const resolvedOther = {
       lines: await this.resolveLines(input.other.lines),
     };
 
-    const existing = await ProjectShopDrawingBoqRepo.model
+    const isLocked = await rabLocked(projectId);
+    const change = isLocked
+      ? await projectRabChangeService.findOpenDraft(projectId)
+      : null;
+    if (isLocked && !change) {
+      throw new Error("RAB is locked: open a change before editing BOQ");
+    }
+
+    if (change) {
+      const fileOid = new Types.ObjectId(input.shopDrawingFileId);
+      await projectRabChangeService.upsertBoqInDraft(projectId, {
+        shopDrawingItemId: new Types.ObjectId(input.shopDrawingItemId),
+        shopDrawingFileId: fileOid,
+        makeQty: input.makeQty,
+        main: resolvedMain,
+        lighting: resolvedLighting,
+        mounting: resolvedMounting,
+        other: resolvedOther,
+      });
+      const synthetic: LeanBoq = {
+        _id: fileOid,
+        projectId: new Types.ObjectId(projectId),
+        shopDrawingItemId: new Types.ObjectId(input.shopDrawingItemId),
+        shopDrawingFileId: fileOid,
+        makeQty: input.makeQty,
+        main: resolvedMain,
+        lighting: resolvedLighting,
+        mounting: resolvedMounting,
+        other: resolvedOther,
+      };
+      return this.toOut(synthetic, true);
+    }
+
+    const existing = (await ProjectShopDrawingBoqRepo.model
       .findOne({ shopDrawingFileId: input.shopDrawingFileId })
       .lean()
-      .exec();
+      .exec()) as LeanBoq | null;
 
-    const setDoc = {
+    const setDoc: Record<string, unknown> = {
       projectId: new Types.ObjectId(projectId),
       shopDrawingItemId: new Types.ObjectId(input.shopDrawingItemId),
       shopDrawingFileId: new Types.ObjectId(input.shopDrawingFileId),
       makeQty: input.makeQty,
-      main,
-      lighting,
-      mounting,
-      other,
+      main: resolvedMain,
+      lighting: resolvedLighting,
+      mounting: resolvedMounting,
+      other: resolvedOther,
     };
 
+    let boqId: string;
     if (existing) {
       await ProjectShopDrawingBoqRepo.findByIdAndUpdate(String(existing._id), {
         $set: setDoc,
         $unset: { lines: 1 },
       });
-      const fresh = (await ProjectShopDrawingBoqRepo.model
-        .findById(String(existing._id))
-        .lean()
-        .exec()) as LeanBoq | null;
-      if (!fresh) throw new Error("BOQ not found");
-      return this.toOut(fresh);
+      boqId = String(existing._id);
+    } else {
+      const created = await ProjectShopDrawingBoqRepo.create(setDoc);
+      boqId = String(created._id);
     }
 
-    const created = await ProjectShopDrawingBoqRepo.create(setDoc);
     const fresh = (await ProjectShopDrawingBoqRepo.model
-      .findById(String(created._id))
+      .findById(boqId)
       .lean()
       .exec()) as LeanBoq | null;
-    if (!fresh) throw new Error("BOQ created but not found");
-    return this.toOut(fresh);
+    if (!fresh) throw new Error("BOQ not found");
+    return this.toOut(fresh, false);
   }
 
   async hardDelete(projectId: string, boqId: string): Promise<void> {
     await assertProjectExists(projectId);
     if (!Types.ObjectId.isValid(boqId)) throw new Error("Invalid BOQ id");
+
+    const isLocked = await rabLocked(projectId);
+    const change = isLocked
+      ? await projectRabChangeService.findOpenDraft(projectId)
+      : null;
+    if (isLocked && !change) {
+      throw new Error("RAB is locked: open a change before deleting BOQ");
+    }
+
+    if (change) {
+      const live = (await ProjectShopDrawingBoqRepo.model
+        .findOne({ _id: boqId, projectId })
+        .lean()
+        .exec()) as LeanBoq | null;
+      const fileId = live
+        ? String(live.shopDrawingFileId)
+        : change.boqs.some((b) => String(b.shopDrawingFileId) === boqId)
+          ? boqId
+          : null;
+      if (!fileId) throw new Error("BOQ not found");
+      await projectRabChangeService.removeBoqFromDraft(projectId, fileId);
+      return;
+    }
+
     const removed = await ProjectShopDrawingBoqRepo.deleteOne({
       _id: boqId,
       projectId,
@@ -327,6 +495,9 @@ export class ProjectShopDrawingBoqService {
     if (!material) {
       throw new Error("Material must be an active item master item");
     }
+    if (material.itemType !== "material") {
+      throw new Error("Shop Drawing BOQ lines must use material item type");
+    }
     const itemUom = await ItemUomRepo.model
       .findOne({
         _id: line.itemUomId,
@@ -370,6 +541,9 @@ export class ProjectShopDrawingBoqService {
       inputs: snap.inputs,
       qtyPerUnit: snap.qtyPerUnit,
       totalQty: formatDecimal(qty.mul(make)),
+      addedAt: line.addedAt ? line.addedAt.toISOString() : null,
+      addedBy: line.addedBy ? String(line.addedBy) : null,
+      addReason: line.addReason?.trim() ? line.addReason.trim() : null,
     };
   }
 
@@ -394,7 +568,10 @@ export class ProjectShopDrawingBoqService {
     };
   }
 
-  private async toOut(boq: LeanBoq): Promise<ProjectShopDrawingBoqOutDto> {
+  private async toOut(
+    boq: LeanBoq,
+    changeDraftOpen: boolean,
+  ): Promise<ProjectShopDrawingBoqOutDto> {
     const item = (await ProjectShopDrawingItemRepo.model
       .findById(boq.shopDrawingItemId)
       .lean()
@@ -436,6 +613,11 @@ export class ProjectShopDrawingBoqService {
       },
     };
 
+    const isLocked = await rabLocked(String(boq.projectId));
+    const contentFrozenAt = boq.contentFrozenAt ?? null;
+    const contentFrozen =
+      (Boolean(contentFrozenAt) || isLocked) && !changeDraftOpen;
+
     return {
       id: String(boq._id),
       projectId: String(boq.projectId),
@@ -462,7 +644,12 @@ export class ProjectShopDrawingBoqService {
           other.lines.map((line) => this.toLineOut(line, boq.makeQty)),
         ),
       },
-      warnings: [],
+      contentFrozen,
+      contentFrozenAt: contentFrozenAt
+        ? contentFrozenAt.toISOString()
+        : null,
+      rabLocked: isLocked,
+      changeDraftOpen,
     };
   }
 }

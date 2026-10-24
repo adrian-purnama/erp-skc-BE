@@ -1,7 +1,13 @@
+import multer from "multer";
 import { requireUser } from "../../middleware/requireUser";
 import { createRouter } from "../../core/permissions/routing";
 import { requirePermission } from "../../core/permissions/requirePermission";
 import { ItemMasterController } from "./itemMaster.controller";
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
 
 const router = createRouter();
 const controller = new ItemMasterController();
@@ -46,6 +52,21 @@ router.delete(
   requireUser,
   requirePermission({ key: "itemMaster.manage" }),
   controller.deleteFolder,
+);
+
+router.get(
+  "/items/bulk/template",
+  requireUser,
+  requirePermission({ key: "itemMaster.manage" }),
+  controller.downloadBulkTemplate,
+);
+
+router.post(
+  "/items/bulk",
+  requireUser,
+  requirePermission({ key: "itemMaster.manage" }),
+  upload.single("file"),
+  controller.uploadBulk,
 );
 
 router.post(

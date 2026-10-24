@@ -26,3 +26,25 @@ export function fail(
     data: null,
   } satisfies ApiResponseDto);
 }
+
+/** Run a controller action and map its result/error to the API envelope. */
+export function handle<T>(
+  res: Response,
+  fallback: string,
+  message: string | ((data: T) => string),
+  fn: () => Promise<T>,
+  status = 200,
+): Promise<Response> {
+  return Promise.resolve()
+    .then(fn)
+    .then(
+      (data) =>
+        ok(
+          res,
+          typeof message === "function" ? message(data) : message,
+          data,
+          status,
+        ),
+      (error) => fail(res, error, fallback),
+    );
+}

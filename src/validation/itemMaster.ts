@@ -5,12 +5,14 @@ import type {
   CreateItemDto,
   ItemTarifInDto,
   ItemTarifOutDto,
+  ItemType,
   ItemUomInDto,
   MoveFolderDto,
   MoveItemDto,
   UpdateFolderDto,
   UpdateItemDto,
 } from "../dto/itemMaster.dto";
+import { ITEM_TYPES } from "../models/item/item.model";
 import {
   formatDecimal,
   parsePositiveDecimal,
@@ -83,9 +85,31 @@ export function parseFolderCode(raw: unknown): string {
   return code;
 }
 
+/** Title Case each word (trim + collapse spaces). */
+export function toTitleCaseWords(raw: string): string {
+  const trimmed = raw.trim().replace(/\s+/g, " ");
+  if (!trimmed) return trimmed;
+  return trimmed
+    .split(" ")
+    .map((word) => {
+      if (!word) return word;
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(" ");
+}
+
+/** Title Case each word; leave the system "Orphan" name alone. */
+export function toTitleCaseFolderName(raw: string): string {
+  const trimmed = raw.trim().replace(/\s+/g, " ");
+  if (!trimmed) return trimmed;
+  if (trimmed.toLowerCase() === "orphan") return "Orphan";
+  return toTitleCaseWords(trimmed);
+}
+
 export function parseCreateFolderDto(body: unknown): CreateFolderDto {
   const row = asRecord(body);
-  const name = typeof row.name === "string" ? row.name.trim() : "";
+  const name =
+    typeof row.name === "string" ? toTitleCaseFolderName(row.name) : "";
   if (!name) throw new Error("name is required");
   return {
     name,
@@ -140,7 +164,7 @@ export function parseUpdateFolderDto(body: unknown): UpdateFolderDto {
   if (typeof row.name !== "string" || !row.name.trim()) {
     throw new Error("name is required");
   }
-  return { name: row.name.trim() };
+  return { name: toTitleCaseFolderName(row.name) };
 }
 
 export function parseMoveFolderDto(body: unknown): MoveFolderDto {
@@ -276,6 +300,17 @@ function parseVendorIds(raw: unknown): string[] {
   return ids;
 }
 
+export function parseItemType(raw: unknown): ItemType {
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw new Error("itemType is required");
+  }
+  const value = raw.trim();
+  if (!(ITEM_TYPES as readonly string[]).includes(value)) {
+    throw new Error(`itemType must be one of: ${ITEM_TYPES.join(", ")}`);
+  }
+  return value as ItemType;
+}
+
 export function parseCreateItemDto(body: unknown): CreateItemDto {
   const row = asRecord(body);
   const name = typeof row.name === "string" ? row.name.trim() : "";
@@ -294,6 +329,7 @@ export function parseCreateItemDto(body: unknown): CreateItemDto {
   return {
     name,
     description,
+    itemType: parseItemType(row.itemType),
     folderId: parseNullableObjectId(row.folderId, "folderId"),
     vendorIds:
       row.vendorIds === undefined ? [] : parseVendorIds(row.vendorIds),
@@ -317,6 +353,9 @@ export function parseUpdateItemDto(body: unknown): UpdateItemDto {
     }
     patch.description = row.description.trim();
   }
+  if (row.itemType !== undefined) {
+    patch.itemType = parseItemType(row.itemType);
+  }
   if (row.isActive !== undefined) {
     if (typeof row.isActive !== "boolean") {
       throw new Error("isActive must be a boolean");
@@ -335,6 +374,7 @@ export function parseUpdateItemDto(body: unknown): UpdateItemDto {
   if (
     patch.name === undefined &&
     patch.description === undefined &&
+    patch.itemType === undefined &&
     patch.isActive === undefined &&
     patch.vendorIds === undefined &&
     patch.uoms === undefined &&

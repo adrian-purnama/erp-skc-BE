@@ -17,8 +17,8 @@ export type VendorPhoneInDto = {
 
 export type CreateVendorDto = {
   name: string;
-  address: string;
-  npwp?: string;
+  address?: string;
+  npwp: string;
   emails?: VendorEmailInDto[];
   phones?: VendorPhoneInDto[];
 };

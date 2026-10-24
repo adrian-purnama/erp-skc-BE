@@ -1,6 +1,8 @@
 import type { Request, Response } from "express";
-import { fail, ok } from "../../dto/httpResponse";
+import { fail, handle, ok } from "../../dto/httpResponse";
+import type { ApiResponseDto } from "../../dto/apiResponse.dto";
 import { parseRouteId } from "../../validation/parseParam";
+import { queryBool, queryString } from "../../validation/query";
 import {
   parseConvertItemQtyDto,
   parseCreateFolderDto,
@@ -12,84 +14,71 @@ import {
   parseYmdDate,
   todayYmdUtc,
 } from "../../validation/itemMaster";
+import {
+  ItemBulkValidationError,
+  itemBulkService,
+} from "./itemBulk.service";
 import { itemMasterService } from "./itemMaster.service";
 
 export class ItemMasterController {
   getTree = async (_req: Request, res: Response) => {
-    try {
-      const data = await itemMasterService.getTree();
-      return ok(res, "Tree retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to get tree");
-    }
+    return handle(res, "Failed to get tree", "Tree retrieved", () =>
+      itemMasterService.getTree(),
+    );
   };
 
   getChildren = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const data = await itemMasterService.getChildren(id);
-      return ok(res, "Children retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to get children");
-    }
+    return handle(res, "Failed to get children", "Children retrieved", () =>
+      itemMasterService.getChildren(parseRouteId(req.params.id)),
+    );
   };
 
   createFolder = async (req: Request, res: Response) => {
-    try {
-      const input = parseCreateFolderDto(req.body);
-      const data = await itemMasterService.createFolder(input);
-      return ok(res, "Folder created", data, 201);
-    } catch (error) {
-      return fail(res, error, "Failed to create folder");
-    }
+    return handle(
+      res,
+      "Failed to create folder",
+      "Folder created",
+      () => itemMasterService.createFolder(parseCreateFolderDto(req.body)),
+      201,
+    );
   };
 
   updateFolder = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const patch = parseUpdateFolderDto(req.body);
-      const data = await itemMasterService.updateFolder(id, patch);
-      return ok(res, "Folder updated", data);
-    } catch (error) {
-      return fail(res, error, "Failed to update folder");
-    }
+    return handle(res, "Failed to update folder", "Folder updated", () =>
+      itemMasterService.updateFolder(
+        parseRouteId(req.params.id),
+        parseUpdateFolderDto(req.body),
+      ),
+    );
   };
 
   moveFolder = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const input = parseMoveFolderDto(req.body);
-      const data = await itemMasterService.moveFolder(id, input);
-      return ok(res, "Folder moved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to move folder");
-    }
+    return handle(res, "Failed to move folder", "Folder moved", () =>
+      itemMasterService.moveFolder(
+        parseRouteId(req.params.id),
+        parseMoveFolderDto(req.body),
+      ),
+    );
   };
 
   deleteFolder = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const forceRaw = req.query.force;
-      const force =
-        forceRaw === "true" ||
-        forceRaw === "1" ||
-        forceRaw === "yes";
-      await itemMasterService.deleteFolder(id, force);
-      return ok(res, "Folder deleted", null);
-    } catch (error) {
-      return fail(res, error, "Failed to delete folder");
-    }
+    return handle(res, "Failed to delete folder", "Folder deleted", async () => {
+      await itemMasterService.deleteFolder(
+        parseRouteId(req.params.id),
+        queryBool(req.query.force),
+      );
+      return null;
+    });
   };
 
   getItem = async (req: Request, res: Response) => {
     try {
       const id = parseRouteId(req.params.id);
-      const asOfRaw = req.query.asOf;
-      const asOfYmd =
-        asOfRaw === undefined
-          ? todayYmdUtc()
-          : parseYmdDate(asOfRaw, "asOf");
-      const data = await itemMasterService.getById(id, asOfYmd);
+      const asOf = queryString(req.query.asOf);
+      const data = await itemMasterService.getById(
+        id,
+        asOf === undefined ? todayYmdUtc() : parseYmdDate(asOf, "asOf"),
+      );
       if (!data) {
         return fail(res, null, "Item not found", 404);
       }
@@ -100,55 +89,83 @@ export class ItemMasterController {
   };
 
   createItem = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to create item",
+      "Item created",
+      () => itemMasterService.createItem(parseCreateItemDto(req.body)),
+      201,
+    );
+  };
+
+  downloadBulkTemplate = async (_req: Request, res: Response) => {
     try {
-      const input = parseCreateItemDto(req.body);
-      const data = await itemMasterService.createItem(input);
-      return ok(res, "Item created", data, 201);
+      const buffer = await itemBulkService.buildTemplate();
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      );
+      res.setHeader(
+        "Content-Disposition",
+        'attachment; filename="item-master-template.xlsx"',
+      );
+      return res.send(buffer);
     } catch (error) {
-      return fail(res, error, "Failed to create item");
+      return fail(res, error, "Failed to build template");
+    }
+  };
+
+  uploadBulk = async (req: Request, res: Response) => {
+    try {
+      const file = req.file;
+      if (!file?.buffer?.length) {
+        return fail(res, null, "file required");
+      }
+      const data = await itemBulkService.importBuffer(file.buffer);
+      return ok(res, `Created ${data.created} item(s)`, data, 201);
+    } catch (error) {
+      if (error instanceof ItemBulkValidationError) {
+        return res.status(400).json({
+          success: false,
+          message: error.message,
+          data: { errors: error.errors },
+        } satisfies ApiResponseDto<{ errors: typeof error.errors }>);
+      }
+      return fail(res, error, "Failed to import items");
     }
   };
 
   convertItemQty = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const input = parseConvertItemQtyDto(req.body);
-      const data = await itemMasterService.convertItemQty(id, input);
-      return ok(res, "Converted", data);
-    } catch (error) {
-      return fail(res, error, "Failed to convert");
-    }
+    return handle(res, "Failed to convert", "Converted", () =>
+      itemMasterService.convertItemQty(
+        parseRouteId(req.params.id),
+        parseConvertItemQtyDto(req.body),
+      ),
+    );
   };
 
   updateItem = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const patch = parseUpdateItemDto(req.body);
-      const data = await itemMasterService.updateItem(id, patch);
-      return ok(res, "Item updated", data);
-    } catch (error) {
-      return fail(res, error, "Failed to update item");
-    }
+    return handle(res, "Failed to update item", "Item updated", () =>
+      itemMasterService.updateItem(
+        parseRouteId(req.params.id),
+        parseUpdateItemDto(req.body),
+      ),
+    );
   };
 
   moveItem = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const input = parseMoveItemDto(req.body);
-      const data = await itemMasterService.moveItem(id, input);
-      return ok(res, "Item moved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to move item");
-    }
+    return handle(res, "Failed to move item", "Item moved", () =>
+      itemMasterService.moveItem(
+        parseRouteId(req.params.id),
+        parseMoveItemDto(req.body),
+      ),
+    );
   };
 
   deleteItem = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      await itemMasterService.deleteItem(id);
-      return ok(res, "Item deleted", null);
-    } catch (error) {
-      return fail(res, error, "Failed to delete item");
-    }
+    return handle(res, "Failed to delete item", "Item deleted", async () => {
+      await itemMasterService.deleteItem(parseRouteId(req.params.id));
+      return null;
+    });
   };
 }

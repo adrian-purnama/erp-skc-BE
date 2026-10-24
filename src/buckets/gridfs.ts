@@ -91,3 +91,15 @@ export async function listFileIds(name: string): Promise<Types.ObjectId[]> {
   const files = await getBucket(name).find({}).project({ _id: 1 }).toArray();
   return files.map((f) => f._id as Types.ObjectId);
 }
+
+/** Read a whole GridFS file into memory (small files only, e.g. logos). */
+export async function readFileBuffer(
+  name: string,
+  id: string | Types.ObjectId,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of openDownload(name, id)) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+  }
+  return Buffer.concat(chunks);
+}

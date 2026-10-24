@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
-import { fail, ok } from "../../dto/httpResponse";
+import { fail, handle, ok } from "../../dto/httpResponse";
 import { parseRouteId } from "../../validation/parseParam";
+import { queryBool, queryString } from "../../validation/query";
 import {
   parseCreateProjectDto,
   parseUpdateProjectDto,
@@ -20,12 +21,19 @@ import {
 } from "../../validation/projectShopDrawing";
 import { parseUpsertShopDrawingBoqDto } from "../../validation/projectShopDrawingBoq";
 import {
+  parseAddProjectRabLabourLineDto,
   parsePatchProjectRabLineDto,
   parseRabLineKey,
 } from "../../validation/projectRab";
+import { parseOpenProjectRabChangeDto } from "../../validation/projectRabChange";
 import { parseProjectLooseFileKind } from "../../validation/projectLooseFile";
 import { projectCalendarService } from "./projectCalendar.service";
 import { projectDocumentService } from "./projectDocument.service";
+import { projectRabChangeService } from "./projectRabChange.service";
+import {
+  projectRabExportService,
+  type RabExportKind,
+} from "./projectRabExport.service";
 import { projectRabService } from "./projectRab.service";
 import { projectShopDrawingBoqService } from "./projectShopDrawingBoq.service";
 import { projectShopDrawingService } from "./projectShopDrawing.service";
@@ -61,22 +69,22 @@ async function streamDownload(
   }
 }
 
+function userId(req: Request): string {
+  if (!req.user?._id) throw new Error("Unauthorized");
+  return String(req.user._id);
+}
+
 export class ProjectController {
   list = async (req: Request, res: Response) => {
-    try {
-      const q =
-        typeof req.query.q === "string" ? req.query.q : undefined;
-      const data = await projectService.list(q);
-      return ok(res, "Projects retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to list projects");
-    }
+    const q = queryString(req.query.q);
+    return handle(res, "Failed to list projects", "Projects retrieved", () =>
+      projectService.list(q),
+    );
   };
 
   get = async (req: Request, res: Response) => {
     try {
-      const id = parseRouteId(req.params.id);
-      const data = await projectService.getById(id);
+      const data = await projectService.getById(parseRouteId(req.params.id));
       if (!data) {
         return fail(res, null, "Project not found");
       }
@@ -87,488 +95,601 @@ export class ProjectController {
   };
 
   create = async (req: Request, res: Response) => {
-    try {
-      const input = parseCreateProjectDto(req.body);
-      const data = await projectService.create(input);
-      return ok(res, "Project created", data, 201);
-    } catch (error) {
-      return fail(res, error, "Failed to create project");
-    }
+    return handle(
+      res,
+      "Failed to create project",
+      "Project created",
+      () => projectService.create(parseCreateProjectDto(req.body)),
+      201,
+    );
   };
 
   update = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const patch = parseUpdateProjectDto(req.body);
-      const data = await projectService.update(id, patch);
-      return ok(res, "Project updated", data);
-    } catch (error) {
-      return fail(res, error, "Failed to update project");
-    }
+    return handle(res, "Failed to update project", "Project updated", () =>
+      projectService.update(
+        parseRouteId(req.params.id),
+        parseUpdateProjectDto(req.body),
+      ),
+    );
   };
 
   remove = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      await projectService.remove(id);
-      return ok(res, "Project deleted", null);
-    } catch (error) {
-      return fail(res, error, "Failed to delete project");
-    }
+    return handle(res, "Failed to delete project", "Project deleted", async () => {
+      await projectService.remove(parseRouteId(req.params.id));
+      return null;
+    });
   };
 
   listDocuments = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const data = await projectDocumentService.listByProject(id);
-      return ok(res, "Documents retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to list documents");
-    }
+    return handle(res, "Failed to list documents", "Documents retrieved", () =>
+      projectDocumentService.listByProject(parseRouteId(req.params.id)),
+    );
   };
 
   uploadDocument = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const kind = parseProjectDocumentKind(req.params.kind);
-      const file = req.file;
-      if (!file) throw new Error("file is required");
-      const force =
-        req.query.force === "true" || req.query.force === "1";
-      const uploadedByUserId = req.user ? String(req.user._id) : undefined;
-      const data = await projectDocumentService.upload(id, kind, file, {
-        force,
-        uploadedByUserId,
-      });
-      return ok(
-        res,
+    return handle(
+      res,
+      "Failed to upload document",
+      (data: { linked?: boolean }) =>
         data.linked ? "Linked existing file" : "Document uploaded",
-        data,
-        201,
-      );
-    } catch (error) {
-      return fail(res, error, "Failed to upload document");
-    }
+      () =>
+        projectDocumentService.upload(
+          parseRouteId(req.params.id),
+          parseProjectDocumentKind(req.params.kind),
+          req.file!,
+          {
+            force: queryBool(req.query.force),
+            uploadedByUserId: req.user ? String(req.user._id) : undefined,
+          },
+        ),
+      201,
+    );
   };
 
   downloadDocument = async (req: Request, res: Response) => {
     return streamDownload(
       res,
-      () => {
-        const id = parseRouteId(req.params.id);
-        const docId = parseRouteId(req.params.docId);
-        return projectDocumentService.openDownload(id, docId);
-      },
+      () =>
+        projectDocumentService.openDownload(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.docId),
+        ),
       "Failed to download document",
     );
   };
 
   setCurrentDocument = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const docId = parseRouteId(req.params.docId);
-      const data = await projectDocumentService.setCurrent(id, docId);
-      return ok(res, "Document version set as current", data);
-    } catch (error) {
-      return fail(res, error, "Failed to set current document");
-    }
+    return handle(
+      res,
+      "Failed to set current document",
+      "Document version set as current",
+      () =>
+        projectDocumentService.setCurrent(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.docId),
+        ),
+    );
   };
 
   renameDocument = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const docId = parseRouteId(req.params.docId);
+    return handle(res, "Failed to rename document", "Document renamed", () => {
       const { originalFilename } = parseRenameProjectFileDto(req.body);
-      const data = await projectDocumentService.rename(
-        id,
-        docId,
+      return projectDocumentService.rename(
+        parseRouteId(req.params.id),
+        parseRouteId(req.params.docId),
         originalFilename,
       );
-      return ok(res, "Document renamed", data);
-    } catch (error) {
-      return fail(res, error, "Failed to rename document");
-    }
+    });
   };
 
   deleteDocument = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const docId = parseRouteId(req.params.docId);
-      const deletedByUserId = req.user ? String(req.user._id) : undefined;
-      const data = await projectDocumentService.softDelete(
-        id,
-        docId,
-        deletedByUserId,
-      );
-      return ok(res, "Document deleted", data);
-    } catch (error) {
-      return fail(res, error, "Failed to delete document");
-    }
+    return handle(res, "Failed to delete document", "Document deleted", () =>
+      projectDocumentService.softDelete(
+        parseRouteId(req.params.id),
+        parseRouteId(req.params.docId),
+        req.user ? String(req.user._id) : undefined,
+      ),
+    );
   };
 
   listLooseFiles = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const data = await projectLooseFileService.listByProject(id);
-      return ok(res, "Loose files retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to list loose files");
-    }
+    return handle(res, "Failed to list loose files", "Loose files retrieved", () =>
+      projectLooseFileService.listByProject(parseRouteId(req.params.id)),
+    );
   };
 
   uploadLooseFile = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const kind = parseProjectLooseFileKind(req.params.kind);
-      const file = req.file;
-      if (!file) throw new Error("file is required");
-      const force =
-        req.query.force === "true" || req.query.force === "1";
-      const uploadedByUserId = req.user ? String(req.user._id) : undefined;
-      const data = await projectLooseFileService.upload(id, kind, file, {
-        force,
-        uploadedByUserId,
-      });
-      return ok(
-        res,
+    return handle(
+      res,
+      "Failed to upload file",
+      (data: { linked?: boolean }) =>
         data.linked ? "Linked existing file" : "File uploaded",
-        data,
-        201,
-      );
-    } catch (error) {
-      return fail(res, error, "Failed to upload file");
-    }
+      () =>
+        projectLooseFileService.upload(
+          parseRouteId(req.params.id),
+          parseProjectLooseFileKind(req.params.kind),
+          req.file!,
+          {
+            force: queryBool(req.query.force),
+            uploadedByUserId: req.user ? String(req.user._id) : undefined,
+          },
+        ),
+      201,
+    );
   };
 
   downloadLooseFile = async (req: Request, res: Response) => {
     return streamDownload(
       res,
-      () => {
-        const id = parseRouteId(req.params.id);
-        const fileId = parseRouteId(req.params.fileId);
-        return projectLooseFileService.openDownload(id, fileId);
-      },
+      () =>
+        projectLooseFileService.openDownload(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.fileId),
+        ),
       "Failed to download file",
     );
   };
 
   renameLooseFile = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const fileId = parseRouteId(req.params.fileId);
+    return handle(res, "Failed to rename file", "File renamed", () => {
       const { originalFilename } = parseRenameProjectFileDto(req.body);
-      const data = await projectLooseFileService.rename(
-        id,
-        fileId,
+      return projectLooseFileService.rename(
+        parseRouteId(req.params.id),
+        parseRouteId(req.params.fileId),
         originalFilename,
       );
-      return ok(res, "File renamed", data);
-    } catch (error) {
-      return fail(res, error, "Failed to rename file");
-    }
+    });
   };
 
   deleteLooseFile = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const fileId = parseRouteId(req.params.fileId);
-      const deletedByUserId = req.user ? String(req.user._id) : undefined;
-      const data = await projectLooseFileService.softDelete(
-        id,
-        fileId,
-        deletedByUserId,
-      );
-      return ok(res, "File deleted", data);
-    } catch (error) {
-      return fail(res, error, "Failed to delete file");
-    }
+    return handle(res, "Failed to delete file", "File deleted", () =>
+      projectLooseFileService.softDelete(
+        parseRouteId(req.params.id),
+        parseRouteId(req.params.fileId),
+        req.user ? String(req.user._id) : undefined,
+      ),
+    );
   };
 
   listShopDrawing = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const data = await projectShopDrawingService.listByProject(id);
-      return ok(res, "Shop Drawing items retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to list Shop Drawing items");
-    }
+    return handle(
+      res,
+      "Failed to list Shop Drawing items",
+      "Shop Drawing items retrieved",
+      () => projectShopDrawingService.listByProject(parseRouteId(req.params.id)),
+    );
   };
 
   createShopDrawingItem = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const { name } = parseCreateShopDrawingItemDto(req.body);
-      const createdByUserId = req.user ? String(req.user._id) : undefined;
-      const data = await projectShopDrawingService.createItem(
-        id,
-        name,
-        createdByUserId,
-      );
-      return ok(res, "Shop Drawing item created", data, 201);
-    } catch (error) {
-      return fail(res, error, "Failed to create Shop Drawing item");
-    }
+    return handle(
+      res,
+      "Failed to create Shop Drawing item",
+      "Shop Drawing item created",
+      () => {
+        const { name } = parseCreateShopDrawingItemDto(req.body);
+        return projectShopDrawingService.createItem(
+          parseRouteId(req.params.id),
+          name,
+          req.user ? String(req.user._id) : undefined,
+        );
+      },
+      201,
+    );
   };
 
   renameShopDrawingItem = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const itemId = parseRouteId(req.params.itemId);
-      const { name } = parseRenameShopDrawingItemDto(req.body);
-      const data = await projectShopDrawingService.renameItem(id, itemId, name);
-      return ok(res, "Shop Drawing item renamed", data);
-    } catch (error) {
-      return fail(res, error, "Failed to rename Shop Drawing item");
-    }
+    return handle(
+      res,
+      "Failed to rename Shop Drawing item",
+      "Shop Drawing item renamed",
+      () => {
+        const { name } = parseRenameShopDrawingItemDto(req.body);
+        return projectShopDrawingService.renameItem(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.itemId),
+          name,
+        );
+      },
+    );
   };
 
   deleteShopDrawingItem = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const itemId = parseRouteId(req.params.itemId);
-      await projectShopDrawingService.hardDeleteItem(id, itemId);
-      return ok(res, "Shop Drawing item deleted", null);
-    } catch (error) {
-      return fail(res, error, "Failed to delete Shop Drawing item");
-    }
+    return handle(
+      res,
+      "Failed to delete Shop Drawing item",
+      "Shop Drawing item deleted",
+      async () => {
+        await projectShopDrawingService.hardDeleteItem(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.itemId),
+        );
+        return null;
+      },
+    );
   };
 
   uploadShopDrawingFile = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const itemId = parseRouteId(req.params.itemId);
-      const file = req.file;
-      if (!file) throw new Error("file is required");
-      const force =
-        req.query.force === "true" || req.query.force === "1";
-      const uploadedByUserId = req.user ? String(req.user._id) : undefined;
-      const data = await projectShopDrawingService.upload(id, itemId, file, {
-        force,
-        uploadedByUserId,
-      });
-      return ok(
-        res,
+    return handle(
+      res,
+      "Failed to upload Shop Drawing file",
+      (data: { linked?: boolean }) =>
         data.linked ? "Linked existing file" : "File uploaded",
-        data,
-        201,
-      );
-    } catch (error) {
-      return fail(res, error, "Failed to upload Shop Drawing file");
-    }
+      () =>
+        projectShopDrawingService.upload(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.itemId),
+          req.file!,
+          {
+            force: queryBool(req.query.force),
+            uploadedByUserId: req.user ? String(req.user._id) : undefined,
+          },
+        ),
+      201,
+    );
   };
 
   downloadShopDrawingFile = async (req: Request, res: Response) => {
     return streamDownload(
       res,
-      () => {
-        const id = parseRouteId(req.params.id);
-        const fileId = parseRouteId(req.params.fileId);
-        return projectShopDrawingService.openDownload(id, fileId);
-      },
+      () =>
+        projectShopDrawingService.openDownload(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.fileId),
+        ),
       "Failed to download Shop Drawing file",
     );
   };
 
   setCurrentShopDrawingFile = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const fileId = parseRouteId(req.params.fileId);
-      const data = await projectShopDrawingService.setCurrent(id, fileId);
-      return ok(res, "Shop Drawing version set as current", data);
-    } catch (error) {
-      return fail(res, error, "Failed to set current Shop Drawing file");
-    }
+    return handle(
+      res,
+      "Failed to set current Shop Drawing file",
+      "Shop Drawing version set as current",
+      () =>
+        projectShopDrawingService.setCurrent(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.fileId),
+        ),
+    );
   };
 
   deleteShopDrawingFile = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const fileId = parseRouteId(req.params.fileId);
-      await projectShopDrawingService.hardDeleteFile(id, fileId);
-      return ok(res, "Shop Drawing file deleted", null);
-    } catch (error) {
-      return fail(res, error, "Failed to delete Shop Drawing file");
-    }
+    return handle(
+      res,
+      "Failed to delete Shop Drawing file",
+      "Shop Drawing file deleted",
+      async () => {
+        await projectShopDrawingService.hardDeleteFile(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.fileId),
+        );
+        return null;
+      },
+    );
   };
 
   listShopDrawingBoqMaterials = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const data = await projectShopDrawingBoqService.listMaterials(id);
-      return ok(res, "Shop Drawing BOQ materials retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to list Shop Drawing BOQ materials");
-    }
+    return handle(
+      res,
+      "Failed to list Shop Drawing BOQ materials",
+      "Shop Drawing BOQ materials retrieved",
+      () =>
+        projectShopDrawingBoqService.listMaterials(parseRouteId(req.params.id)),
+    );
   };
 
   shopDrawingBoqSummary = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const data = await projectShopDrawingBoqService.summary(id);
-      return ok(res, "Shop Drawing BOQ summary retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to load Shop Drawing BOQ summary");
-    }
+    return handle(
+      res,
+      "Failed to load Shop Drawing BOQ summary",
+      "Shop Drawing BOQ summary retrieved",
+      () => projectShopDrawingBoqService.summary(parseRouteId(req.params.id)),
+    );
+  };
+
+  shopDrawingBoqOverview = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to load Shop Drawing BOQ overview",
+      "Shop Drawing BOQ overview retrieved",
+      () =>
+        projectShopDrawingBoqService.listCurrentOverview(
+          parseRouteId(req.params.id),
+        ),
+    );
   };
 
   getShopDrawingBoq = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      if (typeof req.query.itemId !== "string") {
-        throw new Error("itemId is required");
-      }
-      if (typeof req.query.fileId !== "string") {
-        throw new Error("fileId is required");
-      }
-      const itemId = parseRouteId(req.query.itemId);
-      const fileId = parseRouteId(req.query.fileId);
-      const data = await projectShopDrawingBoqService.get(id, itemId, fileId);
-      return ok(
-        res,
+    return handle(
+      res,
+      "Failed to load Shop Drawing BOQ",
+      (data: unknown) =>
         data ? "Shop Drawing BOQ retrieved" : "No Shop Drawing BOQ",
-        data,
-      );
-    } catch (error) {
-      return fail(res, error, "Failed to load Shop Drawing BOQ");
-    }
+      () => {
+        const itemId = queryString(req.query.itemId);
+        const fileId = queryString(req.query.fileId);
+        if (!itemId) throw new Error("itemId is required");
+        if (!fileId) throw new Error("fileId is required");
+        return projectShopDrawingBoqService.get(
+          parseRouteId(req.params.id),
+          parseRouteId(itemId),
+          parseRouteId(fileId),
+        );
+      },
+    );
   };
 
   upsertShopDrawingBoq = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const dto = parseUpsertShopDrawingBoqDto(req.body);
-      const data = await projectShopDrawingBoqService.upsert(id, dto);
-      return ok(res, "Shop Drawing BOQ saved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to save Shop Drawing BOQ");
-    }
+    return handle(
+      res,
+      "Failed to save Shop Drawing BOQ",
+      "Shop Drawing BOQ saved",
+      () =>
+        projectShopDrawingBoqService.upsert(
+          parseRouteId(req.params.id),
+          parseUpsertShopDrawingBoqDto(req.body),
+          userId(req),
+        ),
+    );
   };
 
   deleteShopDrawingBoq = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const boqId = parseRouteId(req.params.boqId);
-      await projectShopDrawingBoqService.hardDelete(id, boqId);
-      return ok(res, "Shop Drawing BOQ deleted", null);
-    } catch (error) {
-      return fail(res, error, "Failed to delete Shop Drawing BOQ");
-    }
+    return handle(
+      res,
+      "Failed to delete Shop Drawing BOQ",
+      "Shop Drawing BOQ deleted",
+      async () => {
+        await projectShopDrawingBoqService.hardDelete(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.boqId),
+        );
+        return null;
+      },
+    );
   };
 
   getRab = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to load RAB",
+      (data: unknown) => (data ? "RAB retrieved" : "No RAB"),
+      () => projectRabService.get(parseRouteId(req.params.id), userId(req)),
+    );
+  };
+
+  exportRab = async (req: Request, res: Response) => {
     try {
       const id = parseRouteId(req.params.id);
-      if (!req.user?._id) throw new Error("Unauthorized");
-      const data = await projectRabService.get(id, String(req.user._id));
-      return ok(res, data ? "RAB retrieved" : "No RAB", data);
+      const kindRaw = queryString(req.query.kind) ?? "formal";
+      if (kindRaw !== "formal" && kindRaw !== "data") {
+        throw new Error("kind must be formal or data");
+      }
+      const revision = queryString(req.query.revision) ?? "current";
+      const { buffer, filename } = await projectRabExportService.export(
+        id,
+        userId(req),
+        kindRaw as RabExportKind,
+        revision,
+      );
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`,
+      );
+      return res.send(buffer);
     } catch (error) {
-      return fail(res, error, "Failed to load RAB");
+      return fail(res, error, "Failed to export RAB");
     }
   };
 
   lockRab = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      if (!req.user?._id) throw new Error("Unauthorized");
-      const data = await projectRabService.lock(id, String(req.user._id));
-      return ok(res, "RAB locked", data);
-    } catch (error) {
-      return fail(res, error, "Failed to lock RAB");
-    }
+    return handle(res, "Failed to lock RAB", "RAB locked", () =>
+      projectRabService.lock(parseRouteId(req.params.id), userId(req)),
+    );
   };
 
   rabElaboration = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const data = await projectRabService.elaboration(id);
-      return ok(res, "RAB elaboration retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to load RAB elaboration");
-    }
+    return handle(
+      res,
+      "Failed to load RAB elaboration",
+      "RAB elaboration retrieved",
+      () => projectRabService.elaboration(parseRouteId(req.params.id)),
+    );
   };
 
   fillRabLineTarif = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const lineKey = parseRabLineKey(req.params.lineKey);
-      const data = await projectRabService.fillTarif(id, lineKey);
-      return ok(res, "Tarif applied to RAB line", data);
-    } catch (error) {
-      return fail(res, error, "Failed to fill tarif on RAB line");
-    }
+    return handle(
+      res,
+      "Failed to fill tarif on RAB line",
+      "Tarif applied to RAB line",
+      () =>
+        projectRabService.fillTarif(
+          parseRouteId(req.params.id),
+          parseRabLineKey(req.params.lineKey),
+        ),
+    );
   };
 
   patchRabLine = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const lineKey = parseRabLineKey(req.params.lineKey);
+    return handle(res, "Failed to update RAB line", "RAB line updated", () => {
       const dto = parsePatchProjectRabLineDto(req.body);
-      const data = await projectRabService.patchLinePrice(
-        id,
-        lineKey,
+      return projectRabService.patchLinePrice(
+        parseRouteId(req.params.id),
+        parseRabLineKey(req.params.lineKey),
         dto.unitPrice,
       );
-      return ok(res, "RAB line updated", data);
-    } catch (error) {
-      return fail(res, error, "Failed to update RAB line");
-    }
+    });
+  };
+
+  listRabLabourItems = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to list RAB labour items",
+      "RAB labour items retrieved",
+      () => projectRabService.listLabourItems(parseRouteId(req.params.id)),
+    );
+  };
+
+  addRabLabourLine = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to add labour line",
+      "Labour line added",
+      () =>
+        projectRabService.addLabourLine(
+          parseRouteId(req.params.id),
+          userId(req),
+          parseAddProjectRabLabourLineDto(req.body),
+        ),
+    );
+  };
+
+  removeRabLabourLine = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to remove labour line",
+      "Labour line removed",
+      () =>
+        projectRabService.removeLabourLine(
+          parseRouteId(req.params.id),
+          parseRabLineKey(req.params.lineKey),
+        ),
+    );
+  };
+
+  listRabChanges = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to list RAB changes",
+      "RAB changes retrieved",
+      () => projectRabChangeService.list(parseRouteId(req.params.id)),
+    );
+  };
+
+  getCurrentRabChange = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to load RAB change",
+      (data: unknown) =>
+        data ? "RAB change draft retrieved" : "No open change",
+      () => projectRabChangeService.getCurrent(parseRouteId(req.params.id)),
+    );
+  };
+
+  getRabChangeById = async (req: Request, res: Response) => {
+    return handle(res, "Failed to load RAB change", "RAB change retrieved", () =>
+      projectRabChangeService.getById(
+        parseRouteId(req.params.id),
+        parseRouteId(req.params.changeId),
+      ),
+    );
+  };
+
+  openRabChange = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to open RAB change",
+      "RAB change opened",
+      () =>
+        projectRabChangeService.open(
+          parseRouteId(req.params.id),
+          userId(req),
+          parseOpenProjectRabChangeDto(req.body),
+        ),
+      201,
+    );
+  };
+
+  commitRabChange = async (req: Request, res: Response) => {
+    return handle(res, "Failed to commit RAB change", "RAB change committed", () =>
+      projectRabChangeService.commit(
+        parseRouteId(req.params.id),
+        userId(req),
+      ),
+    );
+  };
+
+  discardRabChange = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to discard RAB change",
+      "RAB change discarded",
+      () =>
+        projectRabChangeService.discard(
+          parseRouteId(req.params.id),
+          userId(req),
+        ),
+    );
   };
 
   calendarAgenda = async (req: Request, res: Response) => {
-    try {
-      const projectId =
-        typeof req.query.projectId === "string" && req.query.projectId.trim()
-          ? parseRouteId(req.query.projectId)
-          : undefined;
-      const nearDays = parseNearDays(req.query.nearDays);
-      const data = await projectCalendarService.agenda({ projectId, nearDays });
-      return ok(res, "Calendar agenda retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to load calendar agenda");
-    }
+    return handle(
+      res,
+      "Failed to load calendar agenda",
+      "Calendar agenda retrieved",
+      () => {
+        const projectId = queryString(req.query.projectId);
+        return projectCalendarService.agenda({
+          projectId: projectId ? parseRouteId(projectId) : undefined,
+          nearDays: parseNearDays(req.query.nearDays),
+        });
+      },
+    );
   };
 
   listCalendar = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const data = await projectCalendarService.listByProject(id);
-      return ok(res, "Calendar events retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to list calendar events");
-    }
+    return handle(
+      res,
+      "Failed to list calendar events",
+      "Calendar events retrieved",
+      () =>
+        projectCalendarService.listByProject(parseRouteId(req.params.id)),
+    );
   };
 
   createCalendarEvent = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const dto = parseCreateProjectCalendarEventDto(req.body);
-      const data = await projectCalendarService.create(id, dto);
-      return ok(res, "Calendar event created", data, 201);
-    } catch (error) {
-      return fail(res, error, "Failed to create calendar event");
-    }
+    return handle(
+      res,
+      "Failed to create calendar event",
+      "Calendar event created",
+      () =>
+        projectCalendarService.create(
+          parseRouteId(req.params.id),
+          parseCreateProjectCalendarEventDto(req.body),
+        ),
+      201,
+    );
   };
 
   updateCalendarEvent = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const eventId = parseRouteId(req.params.eventId);
-      const dto = parseUpdateProjectCalendarEventDto(req.body);
-      const data = await projectCalendarService.update(id, eventId, dto);
-      return ok(res, "Calendar event updated", data);
-    } catch (error) {
-      return fail(res, error, "Failed to update calendar event");
-    }
+    return handle(
+      res,
+      "Failed to update calendar event",
+      "Calendar event updated",
+      () =>
+        projectCalendarService.update(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.eventId),
+          parseUpdateProjectCalendarEventDto(req.body),
+        ),
+    );
   };
 
   deleteCalendarEvent = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const eventId = parseRouteId(req.params.eventId);
-      await projectCalendarService.remove(id, eventId);
-      return ok(res, "Calendar event deleted", null);
-    } catch (error) {
-      return fail(res, error, "Failed to delete calendar event");
-    }
+    return handle(
+      res,
+      "Failed to delete calendar event",
+      "Calendar event deleted",
+      async () => {
+        await projectCalendarService.remove(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.eventId),
+        );
+        return null;
+      },
+    );
   };
 }

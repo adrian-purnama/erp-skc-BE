@@ -1,11 +1,16 @@
 import { Schema, type Types } from "mongoose";
 import { auditedModel } from "../../core/audit/auditedModel";
 
+export const ITEM_TYPES = ["material", "labour"] as const;
+
+export type ItemType = (typeof ITEM_TYPES)[number];
+
 export interface ItemInterface {
   itemId: string;
   sequence: number;
   name: string;
   description: string;
+  itemType: ItemType;
   folderId: Types.ObjectId | null;
   /** Synced with the ItemUom row where isBase = true. */
   baseUomId: Types.ObjectId | null;
@@ -38,6 +43,12 @@ const itemSchema = new Schema<ItemInterface>(
       required: true,
       trim: true,
       default: "",
+    },
+    itemType: {
+      type: String,
+      enum: ITEM_TYPES,
+      required: true,
+      default: "material",
     },
     folderId: {
       type: Schema.Types.ObjectId,

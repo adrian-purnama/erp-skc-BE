@@ -1,10 +1,8 @@
 import type { Request, Response } from "express";
-import { fail, ok } from "../../dto/httpResponse";
-import {
-  parseEmailSearchQuery,
-  parseUpdateAdminUserDto,
-} from "../../validation/adminUser";
+import { fail, handle, ok } from "../../dto/httpResponse";
+import { parseUpdateAdminUserDto } from "../../validation/adminUser";
 import { parseRouteId } from "../../validation/parseParam";
+import { queryString } from "../../validation/query";
 import { appConfigService } from "../appConfig/AppConfig.service";
 import { AdminService } from "./admin.service";
 
@@ -12,13 +10,9 @@ export class AdminController {
   constructor(private readonly adminService = new AdminService()) {}
 
   getAppConfig = async (_req: Request, res: Response) => {
-    try {
-      const data = appConfigService.getAppConfig();
-
-      return ok(res, "App config retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to get app config");
-    }
+    return handle(res, "Failed to get app config", "App config retrieved", () =>
+      Promise.resolve(appConfigService.getAppConfig()),
+    );
   };
 
   updateAppConfig = async (req: Request, res: Response) => {
@@ -28,6 +22,12 @@ export class AdminController {
         appName?: string;
         openLogin?: boolean;
         openRegister?: boolean;
+        companyName?: string;
+        npwp?: string;
+        address?: string;
+        phone?: string;
+        email?: string;
+        website?: string;
       } = {};
 
       if ("appName" in body) {
@@ -51,26 +51,38 @@ export class AdminController {
         patch.openRegister = body.openRegister;
       }
 
+      const optionalStrings = [
+        "companyName",
+        "npwp",
+        "address",
+        "phone",
+        "email",
+        "website",
+      ] as const;
+      for (const key of optionalStrings) {
+        if (!(key in body)) continue;
+        if (typeof body[key] !== "string") {
+          return fail(res, null, `${key} must be a string`);
+        }
+        patch[key] = body[key].trim();
+      }
+
       if (
         patch.appName === undefined &&
         patch.openLogin === undefined &&
-        patch.openRegister === undefined
+        patch.openRegister === undefined &&
+        patch.companyName === undefined &&
+        patch.npwp === undefined &&
+        patch.address === undefined &&
+        patch.phone === undefined &&
+        patch.email === undefined &&
+        patch.website === undefined
       ) {
         return fail(res, null, "No valid fields to update");
       }
 
-      if (patch.appName !== undefined) {
-        await appConfigService.changeAppName(patch.appName);
-      }
-      if (patch.openLogin !== undefined) {
-        await appConfigService.changeOpenLogin(patch.openLogin);
-      }
-      if (patch.openRegister !== undefined) {
-        await appConfigService.changeOpenRegister(patch.openRegister);
-      }
-      const data = appConfigService.getAppConfig();
-
-      return ok(res, "App config updated", data);
+      await appConfigService.update(patch);
+      return ok(res, "App config updated", appConfigService.getAppConfig());
     } catch (error) {
       return fail(res, error, "Failed to update app config");
     }
@@ -97,34 +109,46 @@ export class AdminController {
     }
   };
 
-  getUser = async (req: Request, res: Response) => {
+  updateCompanyProfile = async (req: Request, res: Response) => {
     try {
-      const id = parseRouteId(req.params.id);
-      const data = await this.adminService.getUserDetail(id);
-      return ok(res, "User retrieved", data);
+      if (!req.file) {
+        return fail(res, null, "file required");
+      }
+
+      const result = await appConfigService.changeCompanyProfile({
+        buffer: req.file.buffer,
+        filename: req.file.originalname,
+        contentType: req.file.mimetype,
+      });
+
+      return ok(res, "Company profile updated", {
+        id: result.id.toString(),
+        url: result.url,
+      });
     } catch (error) {
-      return fail(res, error, "Failed to get user");
+      return fail(res, error, "Failed to update company profile");
     }
+  };
+
+  getUser = async (req: Request, res: Response) => {
+    return handle(res, "Failed to get user", "User retrieved", () =>
+      this.adminService.getUserDetail(parseRouteId(req.params.id)),
+    );
   };
 
   searchUsers = async (req: Request, res: Response) => {
-    try {
-      const query = parseEmailSearchQuery(req.query.email);
-      const data = await this.adminService.searchUsersByEmail(query);
-      return ok(res, "Users retrieved", data);
-    } catch (error) {
-      return fail(res, error, "Failed to search users");
-    }
+    const query = queryString(req.query.email) ?? "";
+    return handle(res, "Failed to search users", "Users retrieved", () =>
+      this.adminService.searchUsersByEmail(query),
+    );
   };
 
   updateUser = async (req: Request, res: Response) => {
-    try {
-      const id = parseRouteId(req.params.id);
-      const patch = parseUpdateAdminUserDto(req.body);
-      const data = await this.adminService.updateUser(id, patch);
-      return ok(res, "User updated", data);
-    } catch (error) {
-      return fail(res, error, "Failed to update user");
-    }
+    return handle(res, "Failed to update user", "User updated", () =>
+      this.adminService.updateUser(
+        parseRouteId(req.params.id),
+        parseUpdateAdminUserDto(req.body),
+      ),
+    );
   };
 }

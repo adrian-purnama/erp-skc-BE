@@ -32,6 +32,7 @@ import {
 import { itemTarifService } from "./itemTarif.service";
 import { convertItemQty } from "./itemUomConvert";
 import { itemUomService } from "./itemUom.service";
+import { folderPathUp } from "./folderPath";
 
 type FolderLean = FolderInterface & { _id: Types.ObjectId };
 type ItemLean = ItemInterface & { _id: Types.ObjectId };
@@ -53,6 +54,10 @@ function toFolderOut(doc: FolderLean): FolderOutDto {
   };
 }
 
+function resolveItemType(doc: ItemLean): ItemInterface["itemType"] {
+  return doc.itemType ?? "material";
+}
+
 function toItemOut(
   doc: ItemLean,
   uoms: ItemUomOutDto[] = [],
@@ -64,6 +69,7 @@ function toItemOut(
     itemId: doc.itemId,
     name: doc.name,
     description: doc.description,
+    itemType: resolveItemType(doc),
     folderId: doc.folderId ? String(doc.folderId) : null,
     baseUomId: doc.baseUomId ? String(doc.baseUomId) : null,
     vendorIds: (doc.vendorIds ?? []).map((id) => String(id)),
@@ -141,9 +147,22 @@ export class ItemMasterService {
     return doc as ItemLean;
   }
 
-  async listActiveItems(): Promise<ItemOutDto[]> {
+  async listActiveItems(
+    itemType?: ItemInterface["itemType"],
+  ): Promise<ItemOutDto[]> {
+    const filter: Record<string, unknown> = { isActive: { $ne: false } };
+    if (itemType === "material") {
+      // Legacy rows without itemType count as material.
+      filter.$or = [
+        { itemType: "material" },
+        { itemType: { $exists: false } },
+        { itemType: null },
+      ];
+    } else if (itemType !== undefined) {
+      filter.itemType = itemType;
+    }
     const docs = await ItemRepo.model
-      .find({ isActive: { $ne: false } })
+      .find(filter)
       .sort({ itemId: 1 })
       .lean()
       .exec();
@@ -178,18 +197,14 @@ export class ItemMasterService {
     codeOverrides?: ReadonlyMap<string, string>,
   ): Promise<string[]> {
     if (!folderId) return [];
-    const codes: string[] = [];
-    let currentId: string | null = folderId;
-    const seen = new Set<string>();
-    while (currentId) {
-      if (seen.has(currentId)) throw new Error("Folder cycle detected");
-      seen.add(currentId);
-      const folder = await this.getFolder(currentId, session);
-      codes.push(codeOverrides?.get(currentId) ?? folder.code);
-      currentId = folder.parentId ? String(folder.parentId) : null;
-    }
-    codes.reverse();
-    return codes;
+    const nodes = await folderPathUp(folderId, async (id) => {
+      const folder = await this.getFolder(id, session);
+      return {
+        parentId: folder.parentId ? String(folder.parentId) : null,
+        value: codeOverrides?.get(id) ?? folder.code,
+      };
+    });
+    return nodes.map((node) => node.value);
   }
 
   private async folderDepth(
@@ -223,30 +238,12 @@ export class ItemMasterService {
     }
   }
 
-  private async collectDescendantFolderIds(
+  /** BFS below (excluding) root; depth of a direct child is 1. */
+  private async walkDescendants(
     rootId: string,
     session?: ClientSession,
-  ): Promise<string[]> {
-    const result: string[] = [];
-    let frontier = [rootId];
-    while (frontier.length > 0) {
-      let q = FolderRepo.model.find({
-        parentId: { $in: frontier.map((id) => new Types.ObjectId(id)) },
-      });
-      if (session) q = q.session(session);
-      const children = (await q.lean().exec()) as FolderLean[];
-      frontier = children.map((c) => String(c._id));
-      result.push(...frontier);
-    }
-    return result;
-  }
-
-  private async maxRelativeDepth(
-    rootId: string,
-    session?: ClientSession,
-  ): Promise<number> {
-    // depth of root itself = 0 relative; children +1
-    let max = 0;
+  ): Promise<Array<{ id: string; depth: number }>> {
+    const result: Array<{ id: string; depth: number }> = [];
     let frontier = [rootId];
     let depth = 0;
     while (frontier.length > 0) {
@@ -255,12 +252,26 @@ export class ItemMasterService {
       });
       if (session) q = q.session(session);
       const children = (await q.lean().exec()) as FolderLean[];
-      if (children.length === 0) break;
       depth += 1;
-      max = depth;
       frontier = children.map((c) => String(c._id));
+      result.push(...frontier.map((id) => ({ id, depth })));
     }
-    return max;
+    return result;
+  }
+
+  private async collectDescendantFolderIds(
+    rootId: string,
+    session?: ClientSession,
+  ): Promise<string[]> {
+    return (await this.walkDescendants(rootId, session)).map((node) => node.id);
+  }
+
+  private async maxRelativeDepth(
+    rootId: string,
+    session?: ClientSession,
+  ): Promise<number> {
+    const nodes = await this.walkDescendants(rootId, session);
+    return nodes.reduce((max, node) => Math.max(max, node.depth), 0);
   }
 
   private async isDescendantOf(
@@ -269,16 +280,14 @@ export class ItemMasterService {
     session?: ClientSession,
   ): Promise<boolean> {
     if (candidateId === ancestorId) return true;
-    let currentId: string | null = candidateId;
-    const seen = new Set<string>();
-    while (currentId) {
-      if (seen.has(currentId)) throw new Error("Folder cycle detected");
-      seen.add(currentId);
-      if (currentId === ancestorId) return true;
-      const folder = await this.getFolder(currentId, session);
-      currentId = folder.parentId ? String(folder.parentId) : null;
-    }
-    return false;
+    const path = await folderPathUp(candidateId, async (id) => {
+      const folder = await this.getFolder(id, session);
+      return {
+        parentId: folder.parentId ? String(folder.parentId) : null,
+        value: id,
+      };
+    });
+    return path.some((node) => node.id === ancestorId);
   }
 
   /**
@@ -384,6 +393,7 @@ export class ItemMasterService {
         itemId: item.itemId,
         name: item.name,
         description: item.description,
+        itemType: resolveItemType(item),
         isActive: item.isActive !== false,
       };
       if (item.folderId) {
@@ -444,6 +454,7 @@ export class ItemMasterService {
           itemId: i.itemId,
           name: i.name,
           description: i.description,
+          itemType: resolveItemType(i),
           isActive: i.isActive !== false,
         }),
       ),
@@ -705,6 +716,7 @@ export class ItemMasterService {
         sequence,
         name: input.name,
         description: input.description ?? "",
+        itemType: input.itemType,
         folderId: input.folderId
           ? new Types.ObjectId(input.folderId)
           : null,
@@ -737,6 +749,9 @@ export class ItemMasterService {
           ...(patch.description !== undefined
             ? { description: patch.description }
             : {}),
+          ...(patch.itemType !== undefined
+            ? { itemType: patch.itemType }
+            : {}),
           ...(patch.isActive !== undefined ? { isActive: patch.isActive } : {}),
           ...(patch.vendorIds !== undefined
             ? {
@@ -755,6 +770,7 @@ export class ItemMasterService {
           ...existing,
           name: patch.name ?? existing.name,
           description: patch.description ?? existing.description,
+          itemType: patch.itemType ?? resolveItemType(existing),
           isActive:
             patch.isActive !== undefined ? patch.isActive : existing.isActive,
           vendorIds:

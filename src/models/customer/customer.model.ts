@@ -19,7 +19,7 @@ const customerSchema = new Schema<CustomerInterface>(
     },
     address: {
       type: String,
-      required: true,
+      required: false,
       trim: true,
       default: "",
     },

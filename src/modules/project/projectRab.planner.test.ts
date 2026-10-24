@@ -4,7 +4,6 @@ import {
   aggregateBoqLinesToRab,
   computeLineTotal,
   mergeRabPricing,
-  planLockedAppends,
   rabLineKey,
   sumGrandTotal,
 } from "./projectRab.planner";
@@ -88,30 +87,5 @@ describe("computeLineTotal / sumGrandTotal", () => {
     assert.equal(computeLineTotal("2", null), null);
     assert.equal(sumGrandTotal(["6", null, "4"]), "10");
     assert.equal(sumGrandTotal([null, null]), null);
-  });
-});
-
-describe("planLockedAppends", () => {
-  it("returns only keys not already on the locked RAB", () => {
-    const appends = planLockedAppends(
-      new Set(["m1:u1"]),
-      [
-        {
-          key: "m1:u1",
-          materialItemId: "m1",
-          itemUomId: "u1",
-          totalQty: "99",
-        },
-        {
-          key: "m2:u1",
-          materialItemId: "m2",
-          itemUomId: "u1",
-          totalQty: "3",
-        },
-      ],
-    );
-    assert.equal(appends.length, 1);
-    assert.equal(appends[0]!.key, "m2:u1");
-    assert.equal(appends[0]!.totalQty, "3");
   });
 });

@@ -84,6 +84,9 @@ export type ProjectShopDrawingBoqLineOutDto = {
   inputs: ProjectShopDrawingBoqLineInputsOutDto;
   qtyPerUnit: string;
   totalQty: string;
+  addedAt: string | null;
+  addedBy: string | null;
+  addReason: string | null;
 };
 
 export type ProjectShopDrawingBoqFinishingOutDto = {
@@ -140,7 +143,11 @@ export type ProjectShopDrawingBoqOutDto = {
   lighting: ProjectShopDrawingBoqLightingOutDto;
   mounting: ProjectShopDrawingBoqMountingOutDto;
   other: ProjectShopDrawingBoqOtherOutDto;
-  warnings: string[];
+  contentFrozen: boolean;
+  contentFrozenAt: string | null;
+  rabLocked: boolean;
+  /** True when a RAB change draft is open — BOQ may be edited via the draft. */
+  changeDraftOpen: boolean;
 };
 
 export type ProjectShopDrawingBoqMaterialOutDto = {

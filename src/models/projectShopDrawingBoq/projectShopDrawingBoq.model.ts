@@ -10,6 +10,8 @@ export type ShopDrawingBoqFinishPlacement =
 export const SHOP_DRAWING_BOQ_MOUNTING_TYPES = [
   "mounted",
   "hanging",
+  "pylon",
+  "blade",
   "freestanding",
   "other",
 ] as const;
@@ -30,6 +32,10 @@ export type ProjectShopDrawingBoqLine = {
   formula: string;
   inputs: ProjectShopDrawingBoqLineInputs;
   qtyPerUnit: string;
+  /** Set when the line was added after RAB lock froze this BOQ. */
+  addedAt?: Date;
+  addedBy?: Types.ObjectId;
+  addReason?: string;
 };
 
 export type ProjectShopDrawingBoqFinishing = {
@@ -84,6 +90,8 @@ export interface ProjectShopDrawingBoqInterface {
   lighting: ProjectShopDrawingBoqLighting;
   mounting: ProjectShopDrawingBoqMounting;
   other: ProjectShopDrawingBoqOther;
+  /** Set when the project's RAB is locked — existing content becomes append-only. */
+  contentFrozenAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -124,6 +132,13 @@ const projectShopDrawingBoqLineSchema = new Schema(
       required: true,
       trim: true,
     },
+    addedAt: { type: Date, required: false },
+    addedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      required: false,
+    },
+    addReason: { type: String, required: false, trim: true },
   },
   { _id: false },
 );
@@ -179,6 +194,13 @@ const projectShopDrawingBoqBaseSchema = new Schema(
       required: true,
       default: [],
     },
+    addedAt: { type: Date, required: false },
+    addedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      required: false,
+    },
+    addReason: { type: String, required: false, trim: true },
   },
   { _id: false },
 );
@@ -306,6 +328,7 @@ const projectShopDrawingBoqSchema = new Schema<ProjectShopDrawingBoqInterface>(
       required: true,
       default: () => ({ lines: [] }),
     },
+    contentFrozenAt: { type: Date, required: false },
   },
   { timestamps: true },
 );

@@ -74,8 +74,8 @@ export class VendorService {
 
   async create(input: CreateVendorDto): Promise<VendorDetailOutDto> {
     const created = await VendorRepo.create({
-      name: input.name,
-      address: input.address,
+      name: input.name.toUpperCase(),
+      address: input.address ?? "",
       npwp: input.npwp ?? "",
       isActive: true,
     });
@@ -106,7 +106,9 @@ export class VendorService {
         id,
         {
           $set: {
-            ...(patch.name !== undefined ? { name: patch.name } : {}),
+            ...(patch.name !== undefined
+              ? { name: patch.name.toUpperCase() }
+              : {}),
             ...(patch.address !== undefined ? { address: patch.address } : {}),
             ...(patch.npwp !== undefined ? { npwp: patch.npwp } : {}),
             ...(patch.isActive !== undefined

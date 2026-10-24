@@ -19,7 +19,7 @@ const vendorSchema = new Schema<VendorInterface>(
     },
     address: {
       type: String,
-      required: true,
+      required: false,
       trim: true,
       default: "",
     },

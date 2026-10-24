@@ -1,10 +1,12 @@
+import { assertUploadFile } from "./uploadFile";
+
 const NAME_MAX = 120;
 
 export function parseShopDrawingItemName(raw: unknown): string {
   if (typeof raw !== "string") {
     throw new Error("name is required");
   }
-  const name = raw.trim();
+  const name = raw.trim().toUpperCase();
   if (!name) throw new Error("name is required");
   if (name.length > NAME_MAX) {
     throw new Error(`name must be at most ${NAME_MAX} characters`);
@@ -28,10 +30,5 @@ export function assertShopDrawingFile(file: {
   mimetype: string;
   size: number;
 }): void {
-  if (!file || !file.originalname) {
-    throw new Error("file is required");
-  }
-  if (!file.size || file.size < 1) {
-    throw new Error("file is empty");
-  }
+  assertUploadFile(file);
 }

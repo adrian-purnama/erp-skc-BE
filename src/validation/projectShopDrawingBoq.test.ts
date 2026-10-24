@@ -154,6 +154,43 @@ describe("parseUpsertShopDrawingBoqDto sections", () => {
     );
   });
 
+  it("rejects finishing with more than one material line", () => {
+    assert.throws(
+      () =>
+        parseUpsertShopDrawingBoqDto({
+          shopDrawingItemId,
+          shopDrawingFileId,
+          makeQty: "1",
+          ...emptySections(),
+          main: {
+            parts: [
+              {
+                key: "p1",
+                bases: [
+                  {
+                    key: "b1",
+                    ...line(),
+                    finishings: [
+                      {
+                        finishingOrder: 1,
+                        placement: "top",
+                        lines: [
+                          line({ materialItemId: itemId2, itemUomId: uomId }),
+                          line({ materialItemId: itemId2, itemUomId: uomId2 }),
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+            assembly: { lines: [] },
+          },
+        }),
+      /exactly one line/,
+    );
+  });
+
   it("rejects part without bases", () => {
     assert.throws(
       () =>

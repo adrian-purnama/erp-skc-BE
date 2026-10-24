@@ -28,7 +28,7 @@ function toOut(doc: ItemUomLean, uomMeta?: UomMeta): ItemUomOutDto {
     sortOrder: doc.sortOrder,
     symbol: uomMeta?.symbol ?? "",
     name: uomMeta?.name ?? "",
-    formulas: uomMeta?.formulas ?? ["v1"],
+    formulas: defaultFormulasOr(uomMeta?.formulas),
   };
 }
 

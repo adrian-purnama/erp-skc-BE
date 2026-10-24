@@ -4,7 +4,7 @@ import { auditedModel } from "../../core/audit/auditedModel";
 export const PROJECT_RAB_STATUSES = ["draft", "locked"] as const;
 export type ProjectRabStatus = (typeof PROJECT_RAB_STATUSES)[number];
 
-export const PROJECT_RAB_LINE_ORIGINS = ["lock", "append"] as const;
+export const PROJECT_RAB_LINE_ORIGINS = ["lock", "append", "labour"] as const;
 export type ProjectRabLineOrigin = (typeof PROJECT_RAB_LINE_ORIGINS)[number];
 
 export type ProjectRabLine = {
@@ -19,6 +19,8 @@ export type ProjectRabLine = {
   origin?: ProjectRabLineOrigin;
   addedAt?: Date;
   addedBy?: Types.ObjectId;
+  /** Why this line was added after RAB lock (append / labour). */
+  addReason?: string;
 };
 
 export interface ProjectRabInterface {
@@ -62,6 +64,7 @@ const projectRabLineSchema = new Schema(
       ref: "User",
       required: false,
     },
+    addReason: { type: String, required: false, trim: true },
   },
   { _id: false },
 );

@@ -1,7 +1,5 @@
-import { createHash } from "crypto";
 import { Types } from "mongoose";
 import { deleteFileIfExists, openDownload } from "../../buckets/gridfs";
-import { als } from "../../core/audit/context";
 import type {
   ProjectLooseFileOutDto,
   ProjectLooseFilesByKindOutDto,
@@ -12,13 +10,15 @@ import {
   type ProjectLooseFileInterface,
   type ProjectLooseFileKind,
 } from "../../models/projectLooseFile/projectLooseFile.model";
+import { userEmailsById } from "../../utils/shared";
 import { assertProjectLooseFile } from "../../validation/projectLooseFile";
 import {
-  assertProjectExists,
-  openBlob,
-  uploadDedupedBlob,
-} from "./projectShared";
-import { userNamesById } from "./versionedProjectFile.service";
+  discardIngestedFile,
+  fileActorId,
+  ingestProjectFile,
+  projectFileMetadata,
+} from "./fileIngest";
+import { assertProjectExists, openBlob } from "./projectShared";
 
 type LooseLean = ProjectLooseFileInterface & { _id: Types.ObjectId };
 
@@ -56,7 +56,7 @@ export class ProjectLooseFileService {
       .lean()
       .exec()) as LooseLean[];
 
-    const names = await userNamesById(
+    const names = await userEmailsById(
       docs.flatMap((d) =>
         [d.uploadedBy, d.deletedBy].filter(Boolean).map(String),
       ),
@@ -77,24 +77,13 @@ export class ProjectLooseFileService {
     await assertProjectExists(projectId);
     assertProjectLooseFile(file);
 
-    const contentHash = createHash("sha256").update(file.buffer).digest("hex");
-    const actorId =
-      opts.uploadedByUserId || als.getStore()?.userId || undefined;
+    const actorId = fileActorId(opts.uploadedByUserId);
     const contentType = file.mimetype || "application/octet-stream";
 
-    const { gridFsId, linked, createdNewBlob } = await uploadDedupedBlob({
-      buffer: file.buffer,
-      filename: file.originalname,
-      contentType,
-      contentHash,
+    const ingested = await ingestProjectFile(file, {
       force: opts.force,
-      metadata: {
-        projectId,
-        kind,
-        originalFilename: file.originalname,
-        contentHash,
-      },
-      findExistingIds: async () => {
+      metadata: projectFileMetadata(projectId, "kind", kind),
+      findExistingIds: async (contentHash) => {
         const candidates = (await ProjectLooseFileRepo.model
           .find({ contentHash })
           .sort({ createdAt: -1 })
@@ -103,6 +92,7 @@ export class ProjectLooseFileService {
         return candidates.map((c) => c.gridFsId);
       },
     });
+    const { gridFsId, contentHash, linked } = ingested;
 
     try {
       const created = await ProjectLooseFileRepo.create({
@@ -125,14 +115,12 @@ export class ProjectLooseFileService {
         .exec()) as LooseLean | null;
       if (!fresh) throw new Error("File uploaded but not found");
 
-      const names = await userNamesById(
+      const names = await userEmailsById(
         [fresh.uploadedBy].filter(Boolean).map(String),
       );
       return toOut(fresh, names, { linked: linked || undefined });
     } catch (error) {
-      if (createdNewBlob) {
-        await deleteFileIfExists("project", gridFsId);
-      }
+      await discardIngestedFile(ingested);
       throw error;
     }
   }
@@ -165,7 +153,7 @@ export class ProjectLooseFileService {
       .exec()) as LooseLean | null;
     if (!fresh) throw new Error("File not found");
 
-    const names = await userNamesById(
+    const names = await userEmailsById(
       [fresh.uploadedBy, fresh.deletedBy].filter(Boolean).map(String),
     );
     return toOut(fresh, names);
@@ -188,8 +176,7 @@ export class ProjectLooseFileService {
     if (!existing) throw new Error("File not found");
     if (existing.isDeleted) throw new Error("File already deleted");
 
-    const actorId =
-      deletedByUserId || als.getStore()?.userId || undefined;
+    const actorId = fileActorId(deletedByUserId);
 
     const updated = await ProjectLooseFileRepo.findByIdAndUpdate(fileId, {
       $set: {
@@ -216,7 +203,7 @@ export class ProjectLooseFileService {
       .exec()) as LooseLean | null;
     if (!fresh) throw new Error("File not found");
 
-    const names = await userNamesById(
+    const names = await userEmailsById(
       [fresh.uploadedBy, fresh.deletedBy].filter(Boolean).map(String),
     );
     return toOut(fresh, names);

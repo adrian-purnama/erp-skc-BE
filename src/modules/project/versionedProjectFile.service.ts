@@ -1,15 +1,16 @@
-import { createHash } from "crypto";
 import { Types, type UpdateQuery } from "mongoose";
 import { deleteFileIfExists, openDownload } from "../../buckets/gridfs";
 import type { AuditedRepo } from "../../core/audit/auditedModel";
-import { als, withTx } from "../../core/audit/context";
+import { withTx } from "../../core/audit/context";
 import type { ProjectDocumentKind } from "../../models/projectDocument/projectDocument.model";
 import { userEmailsById } from "../../utils/shared";
 import {
-  assertProjectExists,
-  openBlob,
-  uploadDedupedBlob,
-} from "./projectShared";
+  discardIngestedFile,
+  fileActorId,
+  ingestProjectFile,
+  projectFileMetadata,
+} from "./fileIngest";
+import { assertProjectExists, openBlob } from "./projectShared";
 
 type Filter = Record<string, unknown>;
 
@@ -63,12 +64,6 @@ export type VersionedFileConfig<T, TOut> = {
     beforeDelete(projectId: string, id: string): Promise<void>;
   };
 };
-
-export function userNamesById(
-  ids: string[],
-): Promise<Map<string, string>> {
-  return userEmailsById(ids);
-}
 
 export function sameAsVersionFor(
   doc: VersionedFileDoc,
@@ -136,7 +131,7 @@ export class VersionedProjectFileService<T, TOut> {
     sort?: Record<string, 1 | -1>,
   ): Promise<{ docs: VersionedFileDoc[]; names: Map<string, string> }> {
     const docs = await this.findMany(filter, sort);
-    const names = await userNamesById(
+    const names = await userEmailsById(
       docs.flatMap((d) =>
         [d.uploadedBy, d.deletedBy].filter(Boolean).map(String),
       ),
@@ -149,7 +144,7 @@ export class VersionedProjectFileService<T, TOut> {
     doc: VersionedFileDoc,
     extras: VersionedFileExtras = {},
   ): Promise<TOut> {
-    const names = await userNamesById(
+    const names = await userEmailsById(
       [doc.uploadedBy, doc.deletedBy].filter(Boolean).map(String),
     );
     const siblings = await this.findMany(
@@ -165,30 +160,23 @@ export class VersionedProjectFileService<T, TOut> {
     projectId: string,
     scope: string,
     file: Express.Multer.File,
-    opts: { force?: boolean; uploadedByUserId?: string } = {},
+    opts: {
+      force?: boolean;
+      uploadedByUserId?: string;
+      /** When false, keep the existing current version (default true). */
+      makeCurrent?: boolean;
+    } = {},
   ): Promise<TOut> {
     const { repo, scopeField } = this.cfg;
     await assertProjectExists(projectId);
     await this.cfg.assertUpload(projectId, scope, file);
 
-    const contentHash = createHash("sha256").update(file.buffer).digest("hex");
-    const actorId =
-      opts.uploadedByUserId || als.getStore()?.userId || undefined;
+    const actorId = fileActorId(opts.uploadedByUserId);
     const contentType = file.mimetype || "application/octet-stream";
-
-    const { gridFsId, linked, createdNewBlob } = await uploadDedupedBlob({
-      buffer: file.buffer,
-      filename: file.originalname,
-      contentType,
-      contentHash,
+    const ingested = await ingestProjectFile(file, {
       force: opts.force,
-      metadata: {
-        projectId,
-        [scopeField]: scope,
-        originalFilename: file.originalname,
-        contentHash,
-      },
-      findExistingIds: async () => {
+      metadata: projectFileMetadata(projectId, scopeField, scope),
+      findExistingIds: async (contentHash) => {
         const candidates = await this.findMany(
           { contentHash },
           { createdAt: -1 },
@@ -196,6 +184,7 @@ export class VersionedProjectFileService<T, TOut> {
         return candidates.map((c) => c.gridFsId);
       },
     });
+    const { gridFsId, contentHash, linked } = ingested;
 
     try {
       const scopeFilter = this.scopeFilter(projectId, scope);
@@ -205,7 +194,9 @@ export class VersionedProjectFileService<T, TOut> {
           isCurrent: true,
           isDeleted: false,
         });
-        if (previous) {
+        // Prefer makeCurrent; if nothing is current yet, always promote.
+        const makeCurrent = opts.makeCurrent !== false || !previous;
+        if (makeCurrent && previous) {
           await this.update(String(previous._id), { isCurrent: false });
         }
 
@@ -221,7 +212,7 @@ export class VersionedProjectFileService<T, TOut> {
           [scopeField]:
             scopeField === "itemId" ? new Types.ObjectId(scope) : scope,
           version: (latest?.version ?? 0) + 1,
-          isCurrent: true,
+          isCurrent: makeCurrent,
           gridFsId,
           contentHash,
           forceDifferent: opts.force === true,
@@ -239,9 +230,7 @@ export class VersionedProjectFileService<T, TOut> {
       if (!fresh) throw new Error(`${this.cap} created but not found`);
       return await this.present(fresh, { linked: linked || undefined });
     } catch (error) {
-      if (createdNewBlob) {
-        await deleteFileIfExists("project", gridFsId);
-      }
+      await discardIngestedFile(ingested);
       throw error;
     }
   }
@@ -344,8 +333,7 @@ export class VersionedProjectFileService<T, TOut> {
       throw new Error(`${this.cap} already deleted`);
     }
 
-    const actorId =
-      deletedByUserId || als.getStore()?.userId || undefined;
+    const actorId = fileActorId(deletedByUserId);
     const gridFsId = existing.gridFsId;
 
     await withTx(async () => {
