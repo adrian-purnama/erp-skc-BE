@@ -20,6 +20,7 @@ type PublicImageField = "appLogo" | "companyProfile";
 
 type ScalarField =
   | "appName"
+  | "description"
   | "openLogin"
   | "openRegister"
   | "companyName"
@@ -31,6 +32,7 @@ type ScalarField =
 
 export class AppConfigService {
   appName: string = DEFAULT_APP_NAME;
+  description: string = "";
   openLogin: boolean = DEFAULT_OPEN_LOGIN;
   openRegister: boolean = DEFAULT_OPEN_REGISTER;
   appLogo: Types.ObjectId | null = null;
@@ -51,6 +53,7 @@ export class AppConfigService {
 
     if (existAppConfig) {
       this.appName = existAppConfig.appName ?? DEFAULT_APP_NAME;
+      this.description = existAppConfig.description ?? "";
       this.openLogin = existAppConfig.openLogin ?? DEFAULT_OPEN_LOGIN;
       this.openRegister = existAppConfig.openRegister ?? DEFAULT_OPEN_REGISTER;
       this.appLogo = existAppConfig.appLogo ?? null;
@@ -76,6 +79,7 @@ export class AppConfigService {
       });
 
       this.appName = DEFAULT_APP_NAME;
+      this.description = "";
       this.openLogin = DEFAULT_OPEN_LOGIN;
       this.openRegister = DEFAULT_OPEN_REGISTER;
       this.appLogo = null;
@@ -104,6 +108,7 @@ export class AppConfigService {
 
   getAppConfig(): {
     appName: string;
+    description: string;
     openLogin: boolean;
     openRegister: boolean;
     appLogo: string | null;
@@ -117,6 +122,7 @@ export class AppConfigService {
   } {
     return {
       appName: this.appName,
+      description: this.description,
       openLogin: this.openLogin,
       openRegister: this.openRegister,
       appLogo: this.appLogo ? `/media/${this.appLogo.toString()}` : null,
@@ -134,6 +140,7 @@ export class AppConfigService {
 
   async update(patch: {
     appName?: string;
+    description?: string;
     openLogin?: boolean;
     openRegister?: boolean;
     companyName?: string;
@@ -145,6 +152,7 @@ export class AppConfigService {
   }): Promise<void> {
     const keys = [
       "appName",
+      "description",
       "openLogin",
       "openRegister",
       "companyName",
@@ -207,6 +215,7 @@ export class AppConfigService {
                     field === "companyProfile"
                       ? uploaded.id
                       : this.companyProfile ?? undefined,
+                  description: this.description || undefined,
                   companyName: this.companyName || undefined,
                   npwp: this.npwp || undefined,
                   address: this.address || undefined,
@@ -262,6 +271,7 @@ export class AppConfigService {
           openRegister: this.openRegister,
           appLogo: this.appLogo ?? undefined,
           companyProfile: this.companyProfile ?? undefined,
+          description: this.description || undefined,
           companyName: this.companyName || undefined,
           npwp: this.npwp || undefined,
           address: this.address || undefined,

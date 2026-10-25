@@ -4,7 +4,7 @@ import { appConfigService } from "./AppConfig.service";
 
 export class AppConfigController {
   getBranding = (_req: Request, res: Response) => {
-    const { appName, appLogo, openLogin, openRegister } =
+    const { appName, description, appLogo, openLogin, openRegister } =
       appConfigService.getAppConfig();
 
     return res.status(200).json({
@@ -12,6 +12,7 @@ export class AppConfigController {
       message: "Branding retrieved",
       data: {
         appName,
+        description,
         appLogo,
         openLogin,
         openRegister,
@@ -19,6 +20,7 @@ export class AppConfigController {
       },
     } satisfies ApiResponseDto<{
       appName: string;
+      description: string;
       appLogo: string | null;
       openLogin: boolean;
       openRegister: boolean;

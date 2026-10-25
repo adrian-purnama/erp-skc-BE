@@ -20,6 +20,7 @@ export class AdminController {
       const body = req.body as Record<string, unknown>;
       const patch: {
         appName?: string;
+        description?: string;
         openLogin?: boolean;
         openRegister?: boolean;
         companyName?: string;
@@ -52,6 +53,7 @@ export class AdminController {
       }
 
       const optionalStrings = [
+        "description",
         "companyName",
         "npwp",
         "address",
@@ -69,6 +71,7 @@ export class AdminController {
 
       if (
         patch.appName === undefined &&
+        patch.description === undefined &&
         patch.openLogin === undefined &&
         patch.openRegister === undefined &&
         patch.companyName === undefined &&

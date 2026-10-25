@@ -2,6 +2,7 @@ import { model, Schema, Types } from "mongoose";
 
 export interface AppConfigInterface {
     appName?: string;
+    description?: string;
     openLogin?: boolean;
     openRegister?: boolean;
     appLogo?: Types.ObjectId;
@@ -25,6 +26,8 @@ const appConfigSchema = new Schema<AppConfigInterface>({
         type: String,
         required: true,
     },
+
+    description: optionalString,
 
     openLogin: {
         type: Boolean,
