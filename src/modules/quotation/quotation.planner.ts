@@ -237,3 +237,72 @@ export function computeTotals(input: {
     margin: rupiah(taxBase.sub(cost)),
   };
 }
+
+export const UNCATEGORIZED_SECTION = "LAIN-LAIN";
+export const LABOUR_SECTION = "JASA";
+
+export type QuotationSection = {
+  title: string;
+  /** Indexes into the quotation's `lines`, in printed order. */
+  lineIndexes: number[];
+  subtotal: string;
+};
+
+const ROMAN: Array<[number, string]> = [
+  [1000, "M"], [900, "CM"], [500, "D"], [400, "CD"], [100, "C"], [90, "XC"],
+  [50, "L"], [40, "XL"], [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"],
+];
+
+export function toRoman(n: number): string {
+  let rest = n;
+  let out = "";
+  for (const [value, numeral] of ROMAN) {
+    while (rest >= value) {
+      out += numeral;
+      rest -= value;
+    }
+  }
+  return out;
+}
+
+/**
+ * Category sections for printing. Empty when no item line has a category
+ * (the quotation prints flat as before). Otherwise: categories A→Z, then
+ * uncategorized items as LAIN-LAIN, then labour lines as JASA.
+ */
+export function buildQuotationSections(
+  lines: Array<{
+    kind: "item" | "labour";
+    category: string | null;
+    qty: string;
+    unitPrice: string;
+  }>,
+): QuotationSection[] {
+  if (!lines.some((l) => l.kind === "item" && l.category)) return [];
+
+  const byTitle = new Map<string, number[]>();
+  lines.forEach((line, idx) => {
+    const title =
+      line.kind === "labour"
+        ? LABOUR_SECTION
+        : (line.category ?? UNCATEGORIZED_SECTION);
+    const list = byTitle.get(title) ?? [];
+    list.push(idx);
+    byTitle.set(title, list);
+  });
+
+  const rank = (title: string) =>
+    title === LABOUR_SECTION ? 2 : title === UNCATEGORIZED_SECTION ? 1 : 0;
+  return [...byTitle.entries()]
+    .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
+    .map(([title, lineIndexes]) => ({
+      title,
+      lineIndexes,
+      subtotal: rupiah(
+        lineIndexes.reduce(
+          (sum, i) => sum.plus(lineTotal(lines[i]!)),
+          new Decimal(0),
+        ),
+      ),
+    }));
+}

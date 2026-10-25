@@ -126,6 +126,7 @@ export class ProjectShopDrawingBoqService {
         itemId: item.itemId,
         name: item.name,
         description: item.description,
+        categoryIds: item.categoryIds ?? [],
         baseUomId: item.baseUomId,
         uoms,
       });

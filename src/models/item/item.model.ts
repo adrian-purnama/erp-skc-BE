@@ -12,6 +12,7 @@ export interface ItemInterface {
   description: string;
   itemType: ItemType;
   folderId: Types.ObjectId | null;
+  categoryIds: Types.ObjectId[];
   /** Synced with the ItemUom row where isBase = true. */
   baseUomId: Types.ObjectId | null;
   vendorIds: Types.ObjectId[];
@@ -55,6 +56,10 @@ const itemSchema = new Schema<ItemInterface>(
       ref: "Folder",
       default: null,
     },
+    categoryIds: {
+      type: [{ type: Schema.Types.ObjectId, ref: "ItemCategory" }],
+      default: [],
+    },
     baseUomId: {
       type: Schema.Types.ObjectId,
       ref: "Uom",
@@ -73,5 +78,6 @@ const itemSchema = new Schema<ItemInterface>(
 );
 
 itemSchema.index({ folderId: 1 });
+itemSchema.index({ categoryIds: 1 });
 
 export const ItemRepo = auditedModel<ItemInterface>("Item", itemSchema);

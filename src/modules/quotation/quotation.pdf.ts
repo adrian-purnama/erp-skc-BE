@@ -16,6 +16,7 @@ const LOGO_MAX_H = 64;
 const CELL_PAD = 4;
 const HEADER_FILL = "#D9D9D9";
 const LINE_COLOR = "#000000";
+const SECTION_FILL = "#F2F2F2";
 
 /** No · Uraian · Qty · Satuan · Harga Satuan · Jumlah — sums to A4 content width. */
 const COLS = [28, 212, 45, 50, 90, 90] as const;
@@ -131,8 +132,46 @@ export function buildQuotationPdf(
       aligns: ALIGN.map(() => "center"),
     });
 
+  const fullRow = (
+    label: string,
+    amount: string | null,
+    opts: { fill?: string; align: "center" | "right" },
+  ) => {
+    pdf.font(FONT_BOLD).fontSize(9);
+    const amountW = amount === null ? 0 : COLS[5];
+    const labelW = width - amountW;
+    const h = pdf.heightOfString(label, { width: labelW - CELL_PAD * 2 }) + CELL_PAD * 2;
+    if (pdf.y + h > bottom()) {
+      pdf.addPage();
+      header();
+    }
+    const y = pdf.y;
+    if (opts.fill) pdf.rect(left, y, width, h).fill(opts.fill).fillColor("#000000");
+    pdf.rect(left, y, labelW, h).lineWidth(0.5).strokeColor(LINE_COLOR).stroke();
+    pdf.text(label, left + CELL_PAD, y + CELL_PAD, {
+      width: labelW - CELL_PAD * 2,
+      align: opts.align,
+    });
+    if (amount !== null) {
+      pdf.rect(left + labelW, y, amountW, h).lineWidth(0.5).stroke();
+      pdf.text(amount, left + labelW + CELL_PAD, y + CELL_PAD, {
+        width: amountW - CELL_PAD * 2,
+        align: "right",
+      });
+    }
+    pdf.y = y + h;
+  };
+
   header();
   for (const row of doc.rows) {
+    if (row.type === "section") {
+      fullRow(row.title, null, { fill: SECTION_FILL, align: "center" });
+      continue;
+    }
+    if (row.type === "subtotal") {
+      fullRow(row.label, formatRp(row.amount), { fill: SECTION_FILL, align: "right" });
+      continue;
+    }
     const cells = [
       String(row.no),
       row.description,
@@ -215,11 +254,18 @@ export function buildQuotationPdf(
     width: 180,
     align: "center",
   });
-  pdf.y = blockTop + 70;
-  pdf.font(FONT_BOLD).text(doc.companyName, signX, pdf.y, {
+  pdf.font(FONT_BOLD).text(doc.companyName, signX, pdf.y + 1, {
     width: 180,
     align: "center",
   });
+  pdf.y = blockTop + 78;
+  pdf
+    .font(doc.signerName ? FONT_BOLD : FONT)
+    .text(doc.signerName ?? "(....................................)", signX, pdf.y, {
+      width: 180,
+      align: "center",
+      underline: Boolean(doc.signerName),
+    });
 
   pdf.end();
   return done;

@@ -266,10 +266,11 @@ export class ProjectController {
       "Failed to create Shop Drawing item",
       "Shop Drawing item created",
       () => {
-        const { name } = parseCreateShopDrawingItemDto(req.body);
+        const { name, category } = parseCreateShopDrawingItemDto(req.body);
         return projectShopDrawingService.createItem(
           parseRouteId(req.params.id),
           name,
+          category,
           req.user ? String(req.user._id) : undefined,
         );
       },
@@ -283,11 +284,12 @@ export class ProjectController {
       "Failed to rename Shop Drawing item",
       "Shop Drawing item renamed",
       () => {
-        const { name } = parseRenameShopDrawingItemDto(req.body);
+        const { name, category } = parseRenameShopDrawingItemDto(req.body);
         return projectShopDrawingService.renameItem(
           parseRouteId(req.params.id),
           parseRouteId(req.params.itemId),
           name,
+          category,
         );
       },
     );

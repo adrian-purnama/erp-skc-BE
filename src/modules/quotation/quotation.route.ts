@@ -62,6 +62,13 @@ router.post(
   quotationController.issue,
 );
 
+router.post(
+  "/:id/reissue",
+  requireUser,
+  requirePermission({ key: "quotation.manage" }),
+  quotationController.reissue,
+);
+
 router.delete(
   "/:id",
   requireUser,

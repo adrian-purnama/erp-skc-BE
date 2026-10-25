@@ -16,6 +16,11 @@ const HEADER_FILL: ExcelJS.Fill = {
   pattern: "solid",
   fgColor: { argb: "FFD9D9D9" },
 };
+const SECTION_FILL: ExcelJS.Fill = {
+  type: "pattern",
+  pattern: "solid",
+  fgColor: { argb: "FFF2F2F2" },
+};
 const THIN_BORDER: Partial<ExcelJS.Borders> = {
   top: { style: "thin" },
   left: { style: "thin" },
@@ -145,6 +150,27 @@ export function buildQuotationWorkbook(
   r += 1;
 
   for (const row of doc.rows) {
+    if (row.type !== "line") {
+      const isSection = row.type === "section";
+      const label = put(r, 1, text(isSection ? row.title : row.label), {
+        bold: true,
+        align: isSection ? "center" : "right",
+      });
+      ws.mergeCells(r, 1, r, isSection ? 6 : 5);
+      label.fill = SECTION_FILL;
+      label.border = THIN_BORDER;
+      if (!isSection) {
+        const amount = put(r, 6, row.amount, {
+          bold: true,
+          numFmt: RP_FORMAT,
+          align: "right",
+        });
+        amount.fill = SECTION_FILL;
+        amount.border = THIN_BORDER;
+      }
+      r += 1;
+      continue;
+    }
     const values: ExcelJS.CellValue[] = [
       row.no,
       text(row.description),
@@ -204,8 +230,16 @@ export function buildQuotationWorkbook(
   }
   put(r, 5, doc.signOff, { align: "center" });
   ws.mergeCells(r, 5, r, 6);
-  r += 4;
-  put(r, 5, text(doc.companyName), { bold: true, align: "center" });
+  put(r + 1, 5, text(doc.companyName), { bold: true, align: "center" });
+  ws.mergeCells(r + 1, 5, r + 1, 6);
+  r += 5;
+  const signer = put(
+    r,
+    5,
+    text(doc.signerName ?? "(....................................)"),
+    { bold: Boolean(doc.signerName), align: "center" },
+  );
+  if (doc.signerName) signer.font = { ...signer.font, underline: true };
   ws.mergeCells(r, 5, r, 6);
 
   return wb;

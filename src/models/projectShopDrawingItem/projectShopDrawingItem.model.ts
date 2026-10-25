@@ -4,6 +4,8 @@ import { auditedModel } from "../../core/audit/auditedModel";
 export interface ProjectShopDrawingItemInterface {
   projectId: Types.ObjectId;
   name: string;
+  /** Free-text grouping label; distinct values per project form the category list. */
+  category?: string | null;
   createdBy?: Types.ObjectId;
   isDeleted: boolean;
   deletedAt?: Date | null;
@@ -25,6 +27,12 @@ const projectShopDrawingItemSchema = new Schema<ProjectShopDrawingItemInterface>
       required: true,
       trim: true,
       maxlength: 120,
+    },
+    category: {
+      type: String,
+      trim: true,
+      maxlength: 80,
+      default: null,
     },
     createdBy: {
       type: Schema.Types.ObjectId,

@@ -20,6 +20,34 @@ router.get(
 );
 
 router.get(
+  "/item-categories",
+  requireUser,
+  requirePermission({ key: "itemMaster.view" }),
+  controller.listItemCategories,
+);
+
+router.post(
+  "/item-categories",
+  requireUser,
+  requirePermission({ key: "itemMaster.manage" }),
+  controller.createItemCategory,
+);
+
+router.patch(
+  "/item-categories/:id",
+  requireUser,
+  requirePermission({ key: "itemMaster.manage" }),
+  controller.updateItemCategory,
+);
+
+router.delete(
+  "/item-categories/:id",
+  requireUser,
+  requirePermission({ key: "itemMaster.manage" }),
+  controller.deleteItemCategory,
+);
+
+router.get(
   "/folders/:id/children",
   requireUser,
   requirePermission({ key: "itemMaster.view" }),

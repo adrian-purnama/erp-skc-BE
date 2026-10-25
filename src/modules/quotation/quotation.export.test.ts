@@ -98,6 +98,7 @@ function sample(overrides: Partial<ProjectQuotationOutDto> = {}): ProjectQuotati
         unitPrice: "1000",
         priceOverridden: false,
         lineTotal: "2000",
+        category: null,
       },
       {
         key: "labour",
@@ -111,6 +112,7 @@ function sample(overrides: Partial<ProjectQuotationOutDto> = {}): ProjectQuotati
         unitPrice: "500",
         priceOverridden: false,
         lineTotal: "500",
+        category: null,
       },
     ],
     totals: {
@@ -122,6 +124,8 @@ function sample(overrides: Partial<ProjectQuotationOutDto> = {}): ProjectQuotati
       grandTotal: "2498",
       margin: "450",
     },
+    sections: [],
+    issuedByName: "Adrian Purnama",
     rabOutdated: false,
     verifyUrl: null,
     verifyState: "unavailable",
@@ -176,6 +180,32 @@ describe("buildQuotationDocument", () => {
       "https://example.com",
       "NPWP: 01.234",
     ]);
+  });
+
+  it("prints flat rows and the issuer name when there are no sections", () => {
+    const doc = buildQuotationDocument(sample());
+    assert.deepEqual(
+      doc.rows.map((r) => r.type),
+      ["line", "line"],
+    );
+    assert.equal(doc.signerName, "Adrian Purnama");
+  });
+
+  it("prints category headers, per-category numbering and SUB TOTAL rows", () => {
+    const doc = buildQuotationDocument(
+      sample({
+        sections: [
+          { title: "OUTDOOR", numeral: "I", lineIndexes: [0], subtotal: "2000" },
+          { title: "JASA", numeral: "II", lineIndexes: [1], subtotal: "500" },
+        ],
+      }),
+    );
+    assert.deepEqual(
+      doc.rows.map((r) =>
+        r.type === "line" ? r.no : r.type === "section" ? r.title : r.label,
+      ),
+      ["OUTDOOR", 1, "SUB TOTAL I", "JASA", 1, "SUB TOTAL II"],
+    );
   });
 
   it("marks drafts in the title", () => {

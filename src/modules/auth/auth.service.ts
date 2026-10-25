@@ -1,4 +1,5 @@
 import * as bcrypt from "bcrypt";
+import type { ProfileOutDto, UpdateProfileInDto } from "../../dto/profile.dto";
 import { registerInDto, RegisterOutDto } from "../../dto/register.dto";
 import { LoginInDto, LoginOutDto } from "../../dto/login.dto";
 import {
@@ -181,5 +182,36 @@ export class AuthService {
     logger.debug(`Password reset for ${email}`, this.source, method);
 
     return { email };
+  }
+
+  async getProfile(userId: string): Promise<ProfileOutDto> {
+    const user = await UserModel.findById(userId);
+    if (!user) {
+      throw new Error("User not found");
+    }
+    return {
+      email: user.email ?? "",
+      fullName: user.fullName?.trim() ?? "",
+    };
+  }
+
+  async updateProfile(
+    userId: string,
+    input: UpdateProfileInDto,
+  ): Promise<ProfileOutDto> {
+    const method = "updateProfile";
+    const user = await UserModel.findById(userId);
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    user.fullName = input.fullName;
+    await user.save();
+    logger.debug(`Profile updated for ${user.email}`, this.source, method);
+
+    return {
+      email: user.email ?? "",
+      fullName: user.fullName?.trim() ?? "",
+    };
   }
 }

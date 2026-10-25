@@ -11,5 +11,7 @@ router.post("/register", publicRoute(), authController.register);
 router.post("/login", publicRoute(), authController.login);
 router.post("/reset-password", publicRoute(), authController.resetPassword);
 router.get("/validate", requireUser, authController.validateUser);
+router.get("/profile", requireUser, authController.getProfile);
+router.patch("/profile", requireUser, authController.updateProfile);
 
 export default router;

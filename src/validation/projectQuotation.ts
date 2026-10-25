@@ -132,3 +132,12 @@ export function parsePatchProjectQuotationLineDto(
   if (Object.keys(out).length === 0) throw new Error("No fields to update");
   return out;
 }
+
+/** Re-issue needs a fresh Valid until: the client link expires on that date. */
+export function parseReissueQuotationDto(body: unknown): { validUntil: string } {
+  const row = asRecord(body);
+  if (typeof row.validUntil !== "string" || !YMD.test(row.validUntil)) {
+    throw new Error("validUntil must be YYYY-MM-DD");
+  }
+  return { validUntil: row.validUntil };
+}

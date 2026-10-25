@@ -1,6 +1,21 @@
 import type { ProjectQuotationOutDto } from "../../dto/projectQuotation.dto";
 import { terbilangRupiah } from "../project/projectRabExport.planner";
 
+export type QuotationDocumentRow =
+  | {
+      type: "line";
+      no: number;
+      description: string;
+      qty: number;
+      uom: string;
+      unitPrice: number;
+      amount: number;
+    }
+  /** Category header spanning the whole table. */
+  | { type: "section"; title: string }
+  /** "SUB TOTAL I" etc. after each category. */
+  | { type: "subtotal"; label: string; amount: number };
+
 /** Printed content shared by the Excel and PDF quotation layouts. */
 export type QuotationDocument = {
   companyName: string;
@@ -8,20 +23,41 @@ export type QuotationDocument = {
   title: string;
   meta: Array<[string, string]>;
   tableHeader: [string, string, string, string, string, string];
-  rows: Array<{
-    no: number;
-    description: string;
-    qty: number;
-    uom: string;
-    unitPrice: number;
-    amount: number;
-  }>;
+  rows: QuotationDocumentRow[];
   totals: Array<{ label: string; amount: number; emphasis: boolean }>;
   terbilang: string;
   terms: string[];
   notes: string[];
   signOff: string;
+  /** Issuer full name under the signature; null on drafts (blank line). */
+  signerName: string | null;
 };
+
+function documentRows(q: ProjectQuotationOutDto): QuotationDocumentRow[] {
+  const lineRow = (idx: number, no: number): QuotationDocumentRow => {
+    const line = q.lines[idx]!;
+    return {
+      type: "line",
+      no,
+      description: line.description,
+      qty: Number(line.qty),
+      uom: line.uom,
+      unitPrice: Number(line.unitPrice),
+      amount: Number(line.lineTotal),
+    };
+  };
+  if (q.sections.length === 0) return q.lines.map((_, idx) => lineRow(idx, idx + 1));
+  // Numbering restarts per category, like the RAB layout clients expect.
+  return q.sections.flatMap((section): QuotationDocumentRow[] => [
+    { type: "section", title: section.title },
+    ...section.lineIndexes.map((idx, i) => lineRow(idx, i + 1)),
+    {
+      type: "subtotal",
+      label: `SUB TOTAL ${section.numeral}`,
+      amount: Number(section.subtotal),
+    },
+  ]);
+}
 
 export function formatLongDate(d: Date): string {
   return new Intl.DateTimeFormat("id-ID", {
@@ -108,18 +144,12 @@ export function buildQuotationDocument(
     title: q.status === "draft" ? "PENAWARAN HARGA (DRAFT)" : "PENAWARAN HARGA",
     meta,
     tableHeader: ["No", "Uraian", "Qty", "Satuan", "Harga Satuan", "Jumlah"],
-    rows: q.lines.map((line, idx) => ({
-      no: idx + 1,
-      description: line.description,
-      qty: Number(line.qty),
-      uom: line.uom,
-      unitPrice: Number(line.unitPrice),
-      amount: Number(line.lineTotal),
-    })),
+    rows: documentRows(q),
     totals,
     terbilang: `Terbilang: ${terbilangRupiah(Number(q.totals.grandTotal))}`,
     terms,
     notes: q.notes ? q.notes.split(/\r?\n/) : [],
     signOff: "Hormat kami,",
+    signerName: q.issuedByName,
   };
 }

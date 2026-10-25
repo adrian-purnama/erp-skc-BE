@@ -3,12 +3,14 @@ import { describe, it } from "node:test";
 import { rabLineKey } from "../project/projectRab.planner";
 import {
   boqLineKey,
+  buildQuotationSections,
   buildSeedLines,
   computeTotals,
   LABOUR_LINE_KEY,
   quotationNumber,
   repriceLines,
   sellPriceFromCost,
+  toRoman,
   type SeedBoq,
 } from "./quotation.planner";
 
@@ -167,5 +169,43 @@ describe("computeTotals", () => {
     });
     assert.equal(t.discountAmount, "2500");
     assert.equal(t.grandTotal, "0");
+  });
+});
+
+describe("buildQuotationSections", () => {
+  const line = (
+    kind: "item" | "labour",
+    category: string | null,
+    unitPrice: string,
+  ) => ({ kind, category, qty: "2", unitPrice });
+
+  it("is empty when no item has a category", () => {
+    assert.deepEqual(
+      buildQuotationSections([line("item", null, "10"), line("labour", null, "5")]),
+      [],
+    );
+  });
+
+  it("orders categories A-Z, then LAIN-LAIN, then JASA, with subtotals", () => {
+    const sections = buildQuotationSections([
+      line("item", "SAFETY", "10"),
+      line("item", null, "1"),
+      line("labour", null, "5"),
+      line("item", "OUTDOOR", "3"),
+      line("item", "SAFETY", "4"),
+    ]);
+    assert.deepEqual(
+      sections.map((s) => [s.title, s.lineIndexes, s.subtotal]),
+      [
+        ["OUTDOOR", [3], "6"],
+        ["SAFETY", [0, 4], "28"],
+        ["LAIN-LAIN", [1], "2"],
+        ["JASA", [2], "10"],
+      ],
+    );
+  });
+
+  it("writes roman numerals", () => {
+    assert.deepEqual([1, 4, 9, 14, 40].map(toRoman), ["I", "IV", "IX", "XIV", "XL"]);
   });
 });

@@ -36,6 +36,8 @@ export type ProjectQuotationLine = {
   unitPrice: string;
   /** True when unitPrice was typed by a user instead of cost × markup. */
   priceOverridden: boolean;
+  /** Shop drawing item category, copied on issue (drafts read it live). */
+  category?: string | null;
 };
 
 /** Letterhead copied from AppConfig. */
@@ -90,6 +92,8 @@ export interface ProjectQuotationInterface {
   createdBy: Types.ObjectId;
   issuedAt?: Date;
   issuedBy?: Types.ObjectId;
+  /** Issuer's full name at issue time (printed under "Hormat kami"). */
+  issuedByName?: string;
   /** Unguessable id in the client link; the link itself is the credential. */
   verifyToken?: string;
   createdAt?: Date;
@@ -116,6 +120,7 @@ const lineSchema = new Schema(
     costUnitPrice: { type: String, required: true, trim: true },
     unitPrice: { type: String, required: true, trim: true },
     priceOverridden: { type: Boolean, required: true, default: false },
+    category: { type: String, required: false, default: null, trim: true },
   },
   { _id: false },
 );
@@ -209,6 +214,7 @@ const projectQuotationSchema = new Schema<ProjectQuotationInterface>(
       ref: "User",
       required: false,
     },
+    issuedByName: { type: String, required: false, trim: true },
   },
   { timestamps: true },
 );

@@ -4,6 +4,7 @@ import { fail, ok } from "../../dto/httpResponse";
 import { LoginInDto } from "../../dto/login.dto";
 import { registerInDto } from "../../dto/register.dto";
 import { normalizeEmail } from "../../utils/email";
+import { parseUpdateProfileDto } from "../../validation/profile";
 import { AuthService } from "./auth.service";
 
 export class AuthController {
@@ -83,9 +84,32 @@ export class AuthController {
     const permissions = await getUserPermissions(req.user!);
     return ok(res, "Token is valid", {
       email: req.user!.email!,
+      fullName: req.user!.fullName?.trim() ?? "",
       roles: req.user!.roles ?? [],
       permissions: [...permissions],
     });
+  };
+
+  getProfile = async (req: Request, res: Response) => {
+    try {
+      const data = await this.authService.getProfile(String(req.user!._id));
+      return ok(res, "Profile loaded", data);
+    } catch (error) {
+      return fail(res, error, "Failed to load profile");
+    }
+  };
+
+  updateProfile = async (req: Request, res: Response) => {
+    try {
+      const input = parseUpdateProfileDto(req.body);
+      const data = await this.authService.updateProfile(
+        String(req.user!._id),
+        input,
+      );
+      return ok(res, "Profile updated", data);
+    } catch (error) {
+      return fail(res, error, "Failed to update profile");
+    }
   };
 
   resetPassword = async (req: Request, res: Response) => {

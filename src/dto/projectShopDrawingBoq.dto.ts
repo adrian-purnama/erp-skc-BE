@@ -155,6 +155,7 @@ export type ProjectShopDrawingBoqMaterialOutDto = {
   itemId: string;
   name: string;
   description: string;
+  categoryIds: string[];
   baseUomId: string | null;
   uoms: ItemUomOutDto[];
 };

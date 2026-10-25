@@ -2,6 +2,7 @@ import { Types } from "mongoose";
 import type {
   ConvertItemQtyDto,
   CreateFolderDto,
+  CreateItemCategoryDto,
   CreateItemDto,
   ItemTarifInDto,
   ItemTarifOutDto,
@@ -10,6 +11,7 @@ import type {
   MoveFolderDto,
   MoveItemDto,
   UpdateFolderDto,
+  UpdateItemCategoryDto,
   UpdateItemDto,
 } from "../dto/itemMaster.dto";
 import { ITEM_TYPES } from "../models/item/item.model";
@@ -284,20 +286,28 @@ export function parseTarifs(raw: unknown): ItemTarifInDto[] {
   return rows;
 }
 
-function parseVendorIds(raw: unknown): string[] {
-  if (!Array.isArray(raw)) throw new Error("vendorIds must be an array");
+function parseIdList(raw: unknown, field: string): string[] {
+  if (!Array.isArray(raw)) throw new Error(`${field} must be an array`);
   const ids: string[] = [];
   const seen = new Set<string>();
   for (let i = 0; i < raw.length; i += 1) {
     const value = raw[i];
     if (typeof value !== "string" || !Types.ObjectId.isValid(value)) {
-      throw new Error(`vendorIds[${i}] is invalid`);
+      throw new Error(`${field}[${i}] is invalid`);
     }
     if (seen.has(value)) continue;
     seen.add(value);
     ids.push(value);
   }
   return ids;
+}
+
+function parseVendorIds(raw: unknown): string[] {
+  return parseIdList(raw, "vendorIds");
+}
+
+function parseCategoryIds(raw: unknown): string[] {
+  return parseIdList(raw, "categoryIds");
 }
 
 export function parseItemType(raw: unknown): ItemType {
@@ -309,6 +319,26 @@ export function parseItemType(raw: unknown): ItemType {
     throw new Error(`itemType must be one of: ${ITEM_TYPES.join(", ")}`);
   }
   return value as ItemType;
+}
+
+export function parseCreateItemCategoryDto(
+  body: unknown,
+): CreateItemCategoryDto {
+  const row = asRecord(body);
+  const name =
+    typeof row.name === "string" ? toTitleCaseWords(row.name) : "";
+  if (!name) throw new Error("name is required");
+  return { name };
+}
+
+export function parseUpdateItemCategoryDto(
+  body: unknown,
+): UpdateItemCategoryDto {
+  const row = asRecord(body);
+  if (typeof row.name !== "string" || !row.name.trim()) {
+    throw new Error("name is required");
+  }
+  return { name: toTitleCaseWords(row.name) };
 }
 
 export function parseCreateItemDto(body: unknown): CreateItemDto {
@@ -331,6 +361,8 @@ export function parseCreateItemDto(body: unknown): CreateItemDto {
     description,
     itemType: parseItemType(row.itemType),
     folderId: parseNullableObjectId(row.folderId, "folderId"),
+    categoryIds:
+      row.categoryIds === undefined ? [] : parseCategoryIds(row.categoryIds),
     vendorIds:
       row.vendorIds === undefined ? [] : parseVendorIds(row.vendorIds),
     uoms: parseUoms(row.uoms),
@@ -362,6 +394,9 @@ export function parseUpdateItemDto(body: unknown): UpdateItemDto {
     }
     patch.isActive = row.isActive;
   }
+  if (row.categoryIds !== undefined) {
+    patch.categoryIds = parseCategoryIds(row.categoryIds);
+  }
   if (row.vendorIds !== undefined) {
     patch.vendorIds = parseVendorIds(row.vendorIds);
   }
@@ -376,6 +411,7 @@ export function parseUpdateItemDto(body: unknown): UpdateItemDto {
     patch.description === undefined &&
     patch.itemType === undefined &&
     patch.isActive === undefined &&
+    patch.categoryIds === undefined &&
     patch.vendorIds === undefined &&
     patch.uoms === undefined &&
     patch.tarifs === undefined

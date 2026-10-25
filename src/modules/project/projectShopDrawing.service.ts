@@ -10,6 +10,7 @@ import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingD
 import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem/projectShopDrawingItem.model";
 import {
   assertShopDrawingFile,
+  parseShopDrawingItemCategory,
   parseShopDrawingItemName,
 } from "../../validation/projectShopDrawing";
 import { rabLockState } from "./projectRabLock";
@@ -116,6 +117,7 @@ type LeanItem = {
   _id: Types.ObjectId;
   projectId: Types.ObjectId;
   name: string;
+  category?: string | null;
   isDeleted?: boolean;
   deletedAt?: Date | null;
   deletedBy?: Types.ObjectId | null;
@@ -218,17 +220,25 @@ export class ProjectShopDrawingService {
       );
       const current =
         versions.find((v) => v.isCurrent && !v.isDeleted) ?? null;
-      return { id: itemId, name: item.name, current, versions };
+      return {
+        id: itemId,
+        name: item.name,
+        category: item.category ?? null,
+        current,
+        versions,
+      };
     });
   }
 
   async createItem(
     projectId: string,
     rawName: string,
+    rawCategory: string | null,
     createdByUserId?: string,
   ): Promise<ProjectShopDrawingItemOutDto> {
     await assertProjectExists(projectId);
     const name = parseShopDrawingItemName(rawName);
+    const category = parseShopDrawingItemCategory(rawCategory);
     const actorId =
       createdByUserId || als.getStore()?.userId || undefined;
 
@@ -241,23 +251,32 @@ export class ProjectShopDrawingService {
     const created = await ProjectShopDrawingItemRepo.create({
       projectId: new Types.ObjectId(projectId),
       name,
+      category,
       createdBy: actorId ? new Types.ObjectId(actorId) : undefined,
       isDeleted: false,
       deletedAt: null,
       deletedBy: null,
     });
 
-    return { id: String(created._id), name, current: null, versions: [] };
+    return {
+      id: String(created._id),
+      name,
+      category,
+      current: null,
+      versions: [],
+    };
   }
 
   async renameItem(
     projectId: string,
     itemId: string,
     rawName: string,
+    rawCategory: string | null,
   ): Promise<ProjectShopDrawingItemOutDto> {
     await assertProjectExists(projectId);
-    await assertLiveItem(projectId, itemId);
+    const existing = await assertLiveItem(projectId, itemId);
     const name = parseShopDrawingItemName(rawName);
+    const category = parseShopDrawingItemCategory(rawCategory);
 
     const dup = await ProjectShopDrawingItemRepo.model
       .findOne({
@@ -271,25 +290,27 @@ export class ProjectShopDrawingService {
     if (dup) throw new Error("An item with this name already exists");
 
     const updated = await ProjectShopDrawingItemRepo.findByIdAndUpdate(itemId, {
-      $set: { name },
+      $set: { name, category },
     });
     if (!updated) throw new Error("Item not found");
 
-    const docs = (await ProjectShopDrawingDocumentRepo.model
-      .find({ projectId, itemId })
-      .select({ _id: 1, version: 1, originalFilename: 1 })
-      .lean()
-      .exec()) as Array<{
-      _id: Types.ObjectId;
-      version: number;
-      originalFilename: string;
-    }>;
-    for (const doc of docs) {
-      await files.rename(
-        projectId,
-        String(doc._id),
-        shopDrawingOriginalFilename(doc.version, name, doc.originalFilename),
-      );
+    if (existing.name !== name) {
+      const docs = (await ProjectShopDrawingDocumentRepo.model
+        .find({ projectId, itemId })
+        .select({ _id: 1, version: 1, originalFilename: 1 })
+        .lean()
+        .exec()) as Array<{
+        _id: Types.ObjectId;
+        version: number;
+        originalFilename: string;
+      }>;
+      for (const doc of docs) {
+        await files.rename(
+          projectId,
+          String(doc._id),
+          shopDrawingOriginalFilename(doc.version, name, doc.originalFilename),
+        );
+      }
     }
 
     const list = await this.listByProject(projectId);

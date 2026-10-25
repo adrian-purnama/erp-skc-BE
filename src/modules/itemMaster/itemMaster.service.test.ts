@@ -5,7 +5,10 @@ import {
   buildItemId,
   pad4,
   parseCreateFolderDto,
+  parseCreateItemCategoryDto,
   parseFolderCode,
+  parseUpdateItemCategoryDto,
+  parseUpdateItemDto,
   suggestFolderCodeFromName,
 } from "../../validation/itemMaster";
 
@@ -48,6 +51,28 @@ describe("folder validation", () => {
     assert.equal(allocateUniqueFolderCode("RAW", []), "RAW");
     assert.equal(allocateUniqueFolderCode("RAW", ["raw"]), "RAW2");
     assert.equal(allocateUniqueFolderCode("RAW", ["RAW", "RAW2"]), "RAW3");
+  });
+});
+
+describe("item category validation", () => {
+  it("title-cases category names on create and update", () => {
+    assert.deepEqual(parseCreateItemCategoryDto({ name: "raw materials" }), {
+      name: "Raw Materials",
+    });
+    assert.deepEqual(parseUpdateItemCategoryDto({ name: "finished goods" }), {
+      name: "Finished Goods",
+    });
+    assert.throws(() => parseCreateItemCategoryDto({ name: "  " }), /required/);
+  });
+
+  it("accepts categoryIds on item update", () => {
+    assert.deepEqual(parseUpdateItemDto({ categoryIds: [] }), {
+      categoryIds: [],
+    });
+    assert.throws(
+      () => parseUpdateItemDto({ categoryIds: ["not-an-id"] }),
+      /categoryIds\[0\] is invalid/,
+    );
   });
 });
 

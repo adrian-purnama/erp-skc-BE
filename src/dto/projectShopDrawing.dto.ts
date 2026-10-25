@@ -20,6 +20,7 @@ export type ProjectShopDrawingFileOutDto = {
 export type ProjectShopDrawingItemOutDto = {
   id: string;
   name: string;
+  category: string | null;
   current: ProjectShopDrawingFileOutDto | null;
   versions: ProjectShopDrawingFileOutDto[];
 };

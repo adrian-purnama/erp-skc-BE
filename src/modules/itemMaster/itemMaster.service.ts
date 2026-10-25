@@ -29,6 +29,7 @@ import {
   suggestFolderCodeFromName,
   todayYmdUtc,
 } from "../../validation/itemMaster";
+import { itemCategoryService } from "./itemCategory.service";
 import { itemTarifService } from "./itemTarif.service";
 import { convertItemQty } from "./itemUomConvert";
 import { itemUomService } from "./itemUom.service";
@@ -71,6 +72,7 @@ function toItemOut(
     description: doc.description,
     itemType: resolveItemType(doc),
     folderId: doc.folderId ? String(doc.folderId) : null,
+    categoryIds: (doc.categoryIds ?? []).map((id) => String(id)),
     baseUomId: doc.baseUomId ? String(doc.baseUomId) : null,
     vendorIds: (doc.vendorIds ?? []).map((id) => String(id)),
     isActive: doc.isActive !== false,
@@ -78,6 +80,13 @@ function toItemOut(
     tarifs,
     currentTarif: pickTarifAsOf(tarifs, asOfYmd),
   };
+}
+
+async function assertCategoriesExist(categoryIds: string[]): Promise<void> {
+  if (categoryIds.length === 0) return;
+  await Promise.all(
+    categoryIds.map((id) => itemCategoryService.assertExists(id)),
+  );
 }
 
 async function assertActiveVendors(vendorIds: string[]): Promise<void> {
@@ -394,6 +403,7 @@ export class ItemMasterService {
         name: item.name,
         description: item.description,
         itemType: resolveItemType(item),
+        categoryIds: (item.categoryIds ?? []).map((id) => String(id)),
         isActive: item.isActive !== false,
       };
       if (item.folderId) {
@@ -455,6 +465,7 @@ export class ItemMasterService {
           name: i.name,
           description: i.description,
           itemType: resolveItemType(i),
+          categoryIds: (i.categoryIds ?? []).map((id) => String(id)),
           isActive: i.isActive !== false,
         }),
       ),
@@ -705,6 +716,8 @@ export class ItemMasterService {
       if (input.folderId) {
         await this.getFolder(input.folderId, session);
       }
+      const categoryIds = input.categoryIds ?? [];
+      await assertCategoriesExist(categoryIds);
       const vendorIds = input.vendorIds ?? [];
       await assertActiveVendors(vendorIds);
       const sequence = await this.allocateSequence(input.folderId, session);
@@ -720,6 +733,7 @@ export class ItemMasterService {
         folderId: input.folderId
           ? new Types.ObjectId(input.folderId)
           : null,
+        categoryIds: categoryIds.map((id) => new Types.ObjectId(id)),
         baseUomId: null,
         vendorIds: vendorIds.map((id) => new Types.ObjectId(id)),
         isActive: true,
@@ -743,6 +757,9 @@ export class ItemMasterService {
       if (patch.vendorIds !== undefined) {
         await assertActiveVendors(patch.vendorIds);
       }
+      if (patch.categoryIds !== undefined) {
+        await assertCategoriesExist(patch.categoryIds);
+      }
       const updated = await ItemRepo.findByIdAndUpdate(id, {
         $set: {
           ...(patch.name !== undefined ? { name: patch.name } : {}),
@@ -753,6 +770,13 @@ export class ItemMasterService {
             ? { itemType: patch.itemType }
             : {}),
           ...(patch.isActive !== undefined ? { isActive: patch.isActive } : {}),
+          ...(patch.categoryIds !== undefined
+            ? {
+                categoryIds: patch.categoryIds.map(
+                  (cid) => new Types.ObjectId(cid),
+                ),
+              }
+            : {}),
           ...(patch.vendorIds !== undefined
             ? {
                 vendorIds: patch.vendorIds.map(
@@ -773,6 +797,10 @@ export class ItemMasterService {
           itemType: patch.itemType ?? resolveItemType(existing),
           isActive:
             patch.isActive !== undefined ? patch.isActive : existing.isActive,
+          categoryIds:
+            patch.categoryIds !== undefined
+              ? patch.categoryIds.map((cid) => new Types.ObjectId(cid))
+              : existing.categoryIds,
           vendorIds:
             patch.vendorIds !== undefined
               ? patch.vendorIds.map((vid) => new Types.ObjectId(vid))

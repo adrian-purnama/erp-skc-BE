@@ -33,6 +33,7 @@ import { ProjectShopDrawingBoqRepo } from "../../models/projectShopDrawingBoq/pr
 import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument/projectShopDrawingDocument.model";
 import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem/projectShopDrawingItem.model";
 import { TermOfPaymentRepo } from "../../models/termOfPayment/termOfPayment.model";
+import { UserModel } from "../../models/user/user.model";
 import { logger } from "../../logger/logger";
 import {
   addJakartaDays,
@@ -51,12 +52,14 @@ import {
   verifyState,
 } from "./quotation.access";
 import {
+  buildQuotationSections,
   buildSeedLines,
   computeTotals,
   lineTotal,
   quotationNumber,
   repriceLines,
   sellPriceFromCost,
+  toRoman,
   type PlannerLine,
   type SeedBoq,
 } from "./quotation.planner";
@@ -72,6 +75,15 @@ export class QuotationAccessError extends Error {
     readonly status: 400 | 401 | 404 | 410 | 429,
   ) {
     super(message);
+  }
+}
+
+/** Issuing needs a full name for the "Hormat kami" signature. */
+export class QuotationFullNameRequiredError extends Error {
+  constructor() {
+    super(
+      "Full name is required to issue. You can change it in your profile (top right).",
+    );
   }
 }
 
@@ -379,6 +391,11 @@ export class QuotationService {
       throw new Error("“Valid until” is in the past");
     }
 
+    const issuedByName = await this.issuerFullName(userId);
+
+    const categories = await this.lineCategories(doc);
+    const lines = doc.lines.map((l, i) => ({ ...l, category: categories[i] }));
+
     const snapshots = await this.loadSnapshots(project);
     if (!snapshots.company.name) {
       throw new Error("Set the company name in Admin › Config before issuing");
@@ -410,6 +427,8 @@ export class QuotationService {
             status: "issued",
             issuedAt: new Date(),
             issuedBy: new Types.ObjectId(userId),
+            issuedByName,
+            lines,
             ...snapshots,
             verifyToken,
           },
@@ -425,6 +444,67 @@ export class QuotationService {
       throw new Error("Failed to issue quotation");
     }
     return this.toOut(issued);
+  }
+
+  /**
+   * Bring back a superseded revision as the issued one (e.g. the client
+   * accepted an earlier offer). Its printed content and client link stay as
+   * they were; only issue date, issuer and Valid until are refreshed.
+   */
+  async reissue(
+    id: string,
+    userId: string,
+    validUntil: string,
+  ): Promise<ProjectQuotationOutDto> {
+    const doc = await this.findById(id);
+    if (!doc) throw new Error("Quotation not found");
+    if (doc.status !== "superseded") {
+      throw new Error("Only a superseded revision can be re-issued");
+    }
+    if (!Types.ObjectId.isValid(userId)) throw new Error("Invalid user id");
+    if (validUntil < jakartaYmdString()) {
+      throw new Error("“Valid until” is in the past");
+    }
+    const issuedByName = await this.issuerFullName(userId);
+
+    const previous = await ProjectQuotationRepo.model
+      .find({ projectId: doc.projectId, status: "issued" })
+      .select({ _id: 1 })
+      .lean()
+      .exec();
+    const reissued = await withTx(async () => {
+      for (const row of previous) {
+        await ProjectQuotationRepo.findOneAndUpdate(
+          { _id: row._id, status: "issued" },
+          { $set: { status: "superseded" } },
+        );
+      }
+      return (await ProjectQuotationRepo.findOneAndUpdate(
+        { _id: doc._id, status: "superseded" },
+        {
+          $set: {
+            status: "issued",
+            issuedAt: new Date(),
+            issuedBy: new Types.ObjectId(userId),
+            issuedByName,
+            validUntil,
+            ...(doc.verifyToken ? {} : { verifyToken: newVerifyToken() }),
+          },
+        },
+      )) as LeanQuotation | null;
+    });
+    if (!reissued) throw new Error("Failed to re-issue quotation");
+    return this.toOut(reissued);
+  }
+
+  private async issuerFullName(userId: string): Promise<string> {
+    const issuer = await UserModel.findById(userId)
+      .select({ fullName: 1 })
+      .lean()
+      .exec();
+    const name = issuer?.fullName?.trim() ?? "";
+    if (!name) throw new QuotationFullNameRequiredError();
+    return name;
   }
 
   /**
@@ -508,6 +588,8 @@ export class QuotationService {
           unitPrice: l.unitPrice,
           lineTotal: l.lineTotal,
         })),
+        sections: out.sections,
+        issuedByName: out.issuedByName,
         discountType: out.discountType,
         discountValue: out.discountValue,
         taxPercent: out.taxPercent,
@@ -801,8 +883,27 @@ export class QuotationService {
     };
   }
 
+  /** Issued: the snapshot on each line. Draft: each shop drawing item's current category. */
+  private async lineCategories(doc: LeanQuotation): Promise<Array<string | null>> {
+    if (doc.status !== "draft") return doc.lines.map((l) => l.category ?? null);
+    const itemIds = doc.lines
+      .map((l) => l.shopDrawingItemId)
+      .filter((id): id is Types.ObjectId => Boolean(id));
+    if (itemIds.length === 0) return doc.lines.map(() => null);
+    const items = await ProjectShopDrawingItemRepo.model
+      .find({ _id: { $in: itemIds } })
+      .select({ category: 1 })
+      .lean()
+      .exec();
+    const byId = new Map(items.map((i) => [String(i._id), i.category ?? null]));
+    return doc.lines.map((l) =>
+      l.shopDrawingItemId ? (byId.get(String(l.shopDrawingItemId)) ?? null) : null,
+    );
+  }
+
   private async toOut(doc: LeanQuotation): Promise<ProjectQuotationOutDto> {
     const names = await this.userNames([doc]);
+    const categories = await this.lineCategories(doc);
     const rabOutdated =
       doc.status === "draft" &&
       (await projectRabChangeService.latestCommittedRevision(
@@ -843,7 +944,7 @@ export class QuotationService {
         gender: doc.contact.gender,
         contact: contactRecord(doc.contact.contact),
       },
-      lines: doc.lines.map((l) => ({
+      lines: doc.lines.map((l, i) => ({
         key: l.key,
         kind: l.kind,
         shopDrawingItemId: l.shopDrawingItemId ? String(l.shopDrawingItemId) : null,
@@ -855,7 +956,13 @@ export class QuotationService {
         unitPrice: l.unitPrice,
         priceOverridden: l.priceOverridden === true,
         lineTotal: lineTotal(l),
+        category: categories[i] ?? null,
       })),
+      sections: buildQuotationSections(
+        doc.lines.map((l, i) => ({ ...l, category: categories[i] ?? null })),
+      ).map((s, i) => ({ ...s, numeral: toRoman(i + 1) })),
+      issuedByName:
+        doc.status === "draft" ? null : doc.issuedByName?.trim() || null,
       totals: computeTotals({
         lines: doc.lines,
         discountType: doc.discountType,

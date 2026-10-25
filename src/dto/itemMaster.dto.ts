@@ -30,11 +30,25 @@ export type ItemTarifInDto = {
   amount: string;
 };
 
+export type CreateItemCategoryDto = {
+  name: string;
+};
+
+export type UpdateItemCategoryDto = {
+  name: string;
+};
+
+export type ItemCategoryOutDto = {
+  id: string;
+  name: string;
+};
+
 export type CreateItemDto = {
   name: string;
   description?: string;
   itemType: ItemType;
   folderId: string | null;
+  categoryIds?: string[];
   vendorIds?: string[];
   uoms: ItemUomInDto[];
   tarifs?: ItemTarifInDto[];
@@ -45,6 +59,7 @@ export type UpdateItemDto = {
   description?: string;
   itemType?: ItemType;
   isActive?: boolean;
+  categoryIds?: string[];
   vendorIds?: string[];
   uoms?: ItemUomInDto[];
   tarifs?: ItemTarifInDto[];
@@ -94,6 +109,7 @@ export type ItemOutDto = {
   description: string;
   itemType: ItemType;
   folderId: string | null;
+  categoryIds: string[];
   baseUomId: string | null;
   vendorIds: string[];
   isActive: boolean;
@@ -121,6 +137,7 @@ export type TreeItemNode = {
   name: string;
   description: string;
   itemType: ItemType;
+  categoryIds: string[];
   isActive: boolean;
 };
 
@@ -140,6 +157,7 @@ export type ChildrenItemNode = {
   name: string;
   description: string;
   itemType: ItemType;
+  categoryIds: string[];
   isActive: boolean;
 };
 

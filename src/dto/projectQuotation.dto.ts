@@ -35,6 +35,18 @@ export type ProjectQuotationLineOutDto = {
   unitPrice: string;
   priceOverridden: boolean;
   lineTotal: string;
+  /** Issued: snapshot. Draft: the shop drawing item's current category. */
+  category: string | null;
+};
+
+/** Category group for printing; empty list = print flat. */
+export type ProjectQuotationSectionOutDto = {
+  title: string;
+  /** "I", "II", … for the SUB TOTAL row. */
+  numeral: string;
+  /** Indexes into `lines`, in printed order. */
+  lineIndexes: number[];
+  subtotal: string;
 };
 
 export type ProjectQuotationTotalsOutDto = {
@@ -95,6 +107,9 @@ export type ProjectQuotationOutDto = ProjectQuotationSummaryOutDto & {
   customer: ProjectQuotationCustomerOutDto;
   contact: ProjectCustomerContactDto;
   lines: ProjectQuotationLineOutDto[];
+  sections: ProjectQuotationSectionOutDto[];
+  /** Issuer full name for "Hormat kami" (issued only). */
+  issuedByName: string | null;
   totals: ProjectQuotationTotalsOutDto;
   /** Draft only: RAB moved on since lines were seeded; resync before issuing. */
   rabOutdated: boolean;
@@ -138,6 +153,8 @@ export type PublicQuotationDocOutDto = {
     unitPrice: string;
     lineTotal: string;
   }>;
+  sections: ProjectQuotationSectionOutDto[];
+  issuedByName: string | null;
   discountType: ProjectQuotationDiscountTypeDto;
   discountValue: string;
   taxPercent: string;

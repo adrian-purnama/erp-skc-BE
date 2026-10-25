@@ -1,6 +1,7 @@
 import { assertUploadFile } from "./uploadFile";
 
 const NAME_MAX = 120;
+const CATEGORY_MAX = 80;
 
 export function parseShopDrawingItemName(raw: unknown): string {
   if (typeof raw !== "string") {
@@ -14,14 +15,32 @@ export function parseShopDrawingItemName(raw: unknown): string {
   return name;
 }
 
-export function parseCreateShopDrawingItemDto(body: unknown): { name: string } {
+/** Empty / missing → null (uncategorized). Uppercased like item names so groups match. */
+export function parseShopDrawingItemCategory(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "string") throw new Error("category must be a string");
+  const category = raw.trim().replace(/\s+/g, " ").toUpperCase();
+  if (!category) return null;
+  if (category.length > CATEGORY_MAX) {
+    throw new Error(`category must be at most ${CATEGORY_MAX} characters`);
+  }
+  return category;
+}
+
+export type ShopDrawingItemInDto = { name: string; category: string | null };
+
+export function parseCreateShopDrawingItemDto(body: unknown): ShopDrawingItemInDto {
   if (!body || typeof body !== "object") {
     throw new Error("Invalid body");
   }
-  return { name: parseShopDrawingItemName((body as { name?: unknown }).name) };
+  const b = body as { name?: unknown; category?: unknown };
+  return {
+    name: parseShopDrawingItemName(b.name),
+    category: parseShopDrawingItemCategory(b.category),
+  };
 }
 
-export function parseRenameShopDrawingItemDto(body: unknown): { name: string } {
+export function parseRenameShopDrawingItemDto(body: unknown): ShopDrawingItemInDto {
   return parseCreateShopDrawingItemDto(body);
 }
 

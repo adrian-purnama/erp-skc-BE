@@ -6,10 +6,12 @@ import { queryBool, queryString } from "../../validation/query";
 import {
   parseConvertItemQtyDto,
   parseCreateFolderDto,
+  parseCreateItemCategoryDto,
   parseCreateItemDto,
   parseMoveFolderDto,
   parseMoveItemDto,
   parseUpdateFolderDto,
+  parseUpdateItemCategoryDto,
   parseUpdateItemDto,
   parseYmdDate,
   todayYmdUtc,
@@ -18,12 +20,54 @@ import {
   ItemBulkValidationError,
   itemBulkService,
 } from "./itemBulk.service";
+import { itemCategoryService } from "./itemCategory.service";
 import { itemMasterService } from "./itemMaster.service";
 
 export class ItemMasterController {
   getTree = async (_req: Request, res: Response) => {
     return handle(res, "Failed to get tree", "Tree retrieved", () =>
       itemMasterService.getTree(),
+    );
+  };
+
+  listItemCategories = async (_req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to list categories",
+      "Categories retrieved",
+      () => itemCategoryService.list(),
+    );
+  };
+
+  createItemCategory = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to create category",
+      "Category created",
+      () =>
+        itemCategoryService.create(parseCreateItemCategoryDto(req.body)),
+      201,
+    );
+  };
+
+  updateItemCategory = async (req: Request, res: Response) => {
+    return handle(res, "Failed to update category", "Category updated", () =>
+      itemCategoryService.update(
+        parseRouteId(req.params.id),
+        parseUpdateItemCategoryDto(req.body),
+      ),
+    );
+  };
+
+  deleteItemCategory = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to delete category",
+      "Category deleted",
+      async () => {
+        await itemCategoryService.remove(parseRouteId(req.params.id));
+        return null;
+      },
     );
   };
 
