@@ -45,6 +45,7 @@ import { projectRabChangeService } from "../project/projectRabChange.service";
 import type { BoqLike } from "../project/projectRab.planner";
 import { liveCurrentFiles } from "../project/projectCurrentFiles";
 import { filterCountedBoqs } from "../project/projectRabChange.planner";
+import { loadRabUomPlan } from "../project/projectRabUomPlan";
 import type { QuotationLogo } from "./quotation.logo";
 import {
   isVerifyTokenShape,
@@ -90,6 +91,10 @@ export class QuotationFullNameRequiredError extends Error {
 /** New drafts start valid for this many days (editable before issuing). */
 const DEFAULT_VALID_DAYS = 30;
 
+function wonLockedMessage(won: { revision: number }): string {
+  return `Quotation R${won.revision} is won: quotations for this project are locked`;
+}
+
 function verifyUrlFor(token: string): string {
   return `${env.frontendUrl.replace(/\/$/, "")}/q/${token}`;
 }
@@ -105,6 +110,21 @@ type LeanProject = {
     gender?: string;
     contact?: Map<string, string> | Record<string, string>;
   };
+};
+
+/** Shop drawing item metadata shown on a quotation line. */
+type LineItemMeta = {
+  category: string | null;
+  code: string;
+  descriptions: string[];
+  dimension: string;
+};
+
+const NO_ITEM_META: LineItemMeta = {
+  category: null,
+  code: "",
+  descriptions: [],
+  dimension: "",
 };
 
 type Snapshots = Pick<
@@ -175,14 +195,17 @@ export class QuotationService {
 
     const names = await this.userNames(docs);
     const hasDraft = docs.some((d) => d.status === "draft");
+    const won = docs.find((d) => d.status === "won");
     return {
       projectId,
       rabStatus: gate.rab ? gate.rab.status : "none",
       rabChangeDraftOpen: gate.changeDraftOpen,
       currentRabRevision: gate.revision,
-      createBlockedReason: hasDraft
-        ? "A draft revision is already open"
-        : gate.blockedReason,
+      createBlockedReason: won
+        ? wonLockedMessage(won)
+        : hasDraft
+          ? "A draft revision is already open"
+          : gate.blockedReason,
       revisions: docs.map((d) => this.toSummary(d, names)),
     };
   }
@@ -218,6 +241,7 @@ export class QuotationService {
       throw new Error(gate.blockedReason ?? "RAB not found");
     }
 
+    await this.assertNotWon(projectId);
     const projectOid = new Types.ObjectId(projectId);
     const existingDraft = await ProjectQuotationRepo.model
       .findOne({ projectId: projectOid, status: "draft" })
@@ -236,16 +260,19 @@ export class QuotationService {
     const revision = (latest?.revision ?? 0) + 1;
 
     const markupPercent = base?.markupPercent ?? "0";
+    const seedBoqs = await this.loadSeedBoqs(projectId);
     const lines = buildSeedLines({
-      boqs: await this.loadSeedBoqs(projectId),
+      boqs: seedBoqs,
       rabLines: gate.rab.lines.map((l) => ({
         key: l.key,
         totalQty: l.totalQty,
+        exactQty: l.exactQty ?? null,
         unitPrice: l.unitPrice ?? null,
         origin: l.origin ?? null,
       })),
       markupPercent,
       previous: base?.lines.map(toPlannerLine),
+      plan: await loadRabUomPlan(seedBoqs),
     });
     if (lines.length === 0) {
       throw new Error("Locked RAB has no shop drawing items to quote");
@@ -349,16 +376,19 @@ export class QuotationService {
     if (gate.blockedReason || !gate.rab) {
       throw new Error(gate.blockedReason ?? "RAB not found");
     }
+    const seedBoqs = await this.loadSeedBoqs(projectId);
     const lines = buildSeedLines({
-      boqs: await this.loadSeedBoqs(projectId),
+      boqs: seedBoqs,
       rabLines: gate.rab.lines.map((l) => ({
         key: l.key,
         totalQty: l.totalQty,
+        exactQty: l.exactQty ?? null,
         unitPrice: l.unitPrice ?? null,
         origin: l.origin ?? null,
       })),
       markupPercent: doc.markupPercent,
       previous: doc.lines.map(toPlannerLine),
+      plan: await loadRabUomPlan(seedBoqs),
     });
     return this.save(doc, {
       rabRevision: gate.revision,
@@ -373,6 +403,7 @@ export class QuotationService {
     if (!Types.ObjectId.isValid(userId)) throw new Error("Invalid user id");
     const projectId = String(doc.projectId);
     const project = await this.requireProject(projectId);
+    await this.assertNotWon(projectId);
     const gate = await this.rabGate(projectId);
     if (gate.blockedReason) throw new Error(gate.blockedReason);
     if (gate.revision !== doc.rabRevision) {
@@ -393,8 +424,8 @@ export class QuotationService {
 
     const issuedByName = await this.issuerFullName(userId);
 
-    const categories = await this.lineCategories(doc);
-    const lines = doc.lines.map((l, i) => ({ ...l, category: categories[i] }));
+    const metas = await this.lineItemMeta(doc);
+    const lines = doc.lines.map((l, i) => ({ ...l, ...metas[i] }));
 
     const snapshots = await this.loadSnapshots(project);
     if (!snapshots.company.name) {
@@ -461,6 +492,7 @@ export class QuotationService {
     if (doc.status !== "superseded") {
       throw new Error("Only a superseded revision can be re-issued");
     }
+    await this.assertNotWon(String(doc.projectId));
     if (!Types.ObjectId.isValid(userId)) throw new Error("Invalid user id");
     if (validUntil < jakartaYmdString()) {
       throw new Error("“Valid until” is in the past");
@@ -495,6 +527,70 @@ export class QuotationService {
     });
     if (!reissued) throw new Error("Failed to re-issue quotation");
     return this.toOut(reissued);
+  }
+
+  /**
+   * The client accepted this issued revision. Quotations for the project are
+   * locked from here on (no new revision, no re-issue) and the project is a win.
+   */
+  async markWon(id: string, userId: string): Promise<ProjectQuotationOutDto> {
+    const doc = await this.findById(id);
+    if (!doc) throw new Error("Quotation not found");
+    if (doc.status !== "issued") {
+      throw new Error("Only the issued revision can be marked as won");
+    }
+    if (!Types.ObjectId.isValid(userId)) throw new Error("Invalid user id");
+    await this.assertNotWon(String(doc.projectId));
+
+    const won = await withTx(async () => {
+      const updated = (await ProjectQuotationRepo.findOneAndUpdate(
+        { _id: doc._id, status: "issued" },
+        {
+          $set: {
+            status: "won",
+            wonAt: new Date(),
+            wonBy: new Types.ObjectId(userId),
+          },
+        },
+      )) as LeanQuotation | null;
+      if (!updated) throw new Error("Failed to mark quotation as won");
+      await ProjectRepo.findByIdAndUpdate(String(doc.projectId), {
+        $set: { status: "win", loseReason: null, closeReason: null },
+      });
+      return updated;
+    });
+    return this.toOut(won);
+  }
+
+  /** Undo "won" (back to issued) while the project is not yet in production. */
+  async unmarkWon(id: string): Promise<ProjectQuotationOutDto> {
+    const doc = await this.findById(id);
+    if (!doc) throw new Error("Quotation not found");
+    if (doc.status !== "won") throw new Error("Quotation is not marked as won");
+    const project = await ProjectRepo.model
+      .findById(doc.projectId)
+      .select({ productionReleasedAt: 1 })
+      .lean()
+      .exec();
+    if (project?.productionReleasedAt) {
+      throw new Error(
+        "Project is released to production: the won quotation cannot be undone",
+      );
+    }
+    const reverted = (await ProjectQuotationRepo.findOneAndUpdate(
+      { _id: doc._id, status: "won" },
+      { $set: { status: "issued" }, $unset: { wonAt: 1, wonBy: 1 } },
+    )) as LeanQuotation | null;
+    if (!reverted) throw new Error("Failed to undo won");
+    return this.toOut(reverted);
+  }
+
+  private async assertNotWon(projectId: string): Promise<void> {
+    const won = (await ProjectQuotationRepo.model
+      .findOne({ projectId: new Types.ObjectId(projectId), status: "won" })
+      .lean()
+      .exec()) as LeanQuotation | null;
+    if (won) throw new Error(wonLockedMessage(won));
   }
 
   private async issuerFullName(userId: string): Promise<string> {
@@ -576,13 +672,17 @@ export class QuotationService {
           phone: out.company.phone,
           email: out.company.email,
           website: out.company.website,
+          branchOfficeAddresses: out.company.branchOfficeAddresses,
           hasLogo: out.company.hasLogo,
         },
         customer: { name: out.customer.name, address: out.customer.address },
         attention:
           `${out.contact.gender === "female" ? "Ibu" : "Bapak"} ${out.contact.name}`.trim(),
         lines: out.lines.map((l) => ({
+          code: l.code,
           description: l.description,
+          descriptions: l.descriptions,
+          dimension: l.dimension,
           qty: l.qty,
           uom: l.uom,
           unitPrice: l.unitPrice,
@@ -794,7 +894,7 @@ export class QuotationService {
     const [items, files] = await Promise.all([
       ProjectShopDrawingItemRepo.model
         .find({ _id: { $in: boqs.map((b) => b.shopDrawingItemId) } })
-        .select({ name: 1 })
+        .select({ code: 1, name: 1 })
         .lean()
         .exec(),
       ProjectShopDrawingDocumentRepo.model
@@ -803,14 +903,16 @@ export class QuotationService {
         .lean()
         .exec(),
     ]);
-    const nameById = new Map(items.map((i) => [String(i._id), i.name]));
+    const itemById = new Map(items.map((i) => [String(i._id), i]));
     const versionById = new Map(files.map((f) => [String(f._id), f.version]));
 
     return boqs.map((b) => ({
       ...b,
       shopDrawingItemId: String(b.shopDrawingItemId),
       shopDrawingFileId: String(b.shopDrawingFileId),
-      itemName: nameById.get(String(b.shopDrawingItemId)) ?? "Shop drawing item",
+      itemCode: itemById.get(String(b.shopDrawingItemId))?.code ?? "",
+      itemName:
+        itemById.get(String(b.shopDrawingItemId))?.name ?? "Shop drawing item",
       fileVersion: versionById.get(String(b.shopDrawingFileId)) ?? 1,
     }));
   }
@@ -837,6 +939,7 @@ export class QuotationService {
         phone: config.phone,
         email: config.email,
         website: config.website,
+        branchOfficeAddresses: [...config.branchOfficeAddresses],
       },
       customer: {
         customerId: customer._id,
@@ -850,7 +953,9 @@ export class QuotationService {
 
   private async userNames(docs: LeanQuotation[]): Promise<Map<string, string>> {
     return userEmailsById(
-      docs.flatMap((d) => [d.createdBy, d.issuedBy].filter(Boolean)) as Types.ObjectId[],
+      docs.flatMap((d) =>
+        [d.createdBy, d.issuedBy, d.wonBy].filter(Boolean),
+      ) as Types.ObjectId[],
     );
   }
 
@@ -880,30 +985,54 @@ export class QuotationService {
       createdBy: userRef(doc.createdBy),
       issuedAt: doc.issuedAt ? doc.issuedAt.toISOString() : null,
       issuedBy: userRef(doc.issuedBy),
+      wonAt: doc.wonAt ? doc.wonAt.toISOString() : null,
+      wonBy: userRef(doc.wonBy),
     };
   }
 
-  /** Issued: the snapshot on each line. Draft: each shop drawing item's current category. */
-  private async lineCategories(doc: LeanQuotation): Promise<Array<string | null>> {
-    if (doc.status !== "draft") return doc.lines.map((l) => l.category ?? null);
+  /**
+   * Issued: the snapshot on each line. Draft: each shop drawing item's current
+   * category, kode, keterangan and ukuran.
+   */
+  private async lineItemMeta(doc: LeanQuotation): Promise<LineItemMeta[]> {
+    if (doc.status !== "draft") {
+      return doc.lines.map((l) => ({
+        category: l.category ?? null,
+        code: l.code ?? "",
+        descriptions: l.descriptions ?? [],
+        dimension: l.dimension ?? "",
+      }));
+    }
     const itemIds = doc.lines
       .map((l) => l.shopDrawingItemId)
       .filter((id): id is Types.ObjectId => Boolean(id));
-    if (itemIds.length === 0) return doc.lines.map(() => null);
+    if (itemIds.length === 0) return doc.lines.map(() => NO_ITEM_META);
     const items = await ProjectShopDrawingItemRepo.model
       .find({ _id: { $in: itemIds } })
-      .select({ category: 1 })
+      .select({ category: 1, code: 1, descriptions: 1, dimension: 1 })
       .lean()
       .exec();
-    const byId = new Map(items.map((i) => [String(i._id), i.category ?? null]));
+    const byId = new Map(
+      items.map((i): [string, LineItemMeta] => [
+        String(i._id),
+        {
+          category: i.category ?? null,
+          code: i.code ?? "",
+          descriptions: i.descriptions ?? [],
+          dimension: i.dimension ?? "",
+        },
+      ]),
+    );
     return doc.lines.map((l) =>
-      l.shopDrawingItemId ? (byId.get(String(l.shopDrawingItemId)) ?? null) : null,
+      l.shopDrawingItemId
+        ? (byId.get(String(l.shopDrawingItemId)) ?? NO_ITEM_META)
+        : NO_ITEM_META,
     );
   }
 
   private async toOut(doc: LeanQuotation): Promise<ProjectQuotationOutDto> {
     const names = await this.userNames([doc]);
-    const categories = await this.lineCategories(doc);
+    const metas = await this.lineItemMeta(doc);
     const rabOutdated =
       doc.status === "draft" &&
       (await projectRabChangeService.latestCommittedRevision(
@@ -928,6 +1057,7 @@ export class QuotationService {
         phone: doc.company.phone,
         email: doc.company.email,
         website: doc.company.website,
+        branchOfficeAddresses: doc.company.branchOfficeAddresses ?? [],
         hasLogo:
           doc.status === "draft" || isLegacyIssued(doc)
             ? Boolean(appConfigService.companyProfile)
@@ -956,10 +1086,10 @@ export class QuotationService {
         unitPrice: l.unitPrice,
         priceOverridden: l.priceOverridden === true,
         lineTotal: lineTotal(l),
-        category: categories[i] ?? null,
+        ...(metas[i] ?? NO_ITEM_META),
       })),
       sections: buildQuotationSections(
-        doc.lines.map((l, i) => ({ ...l, category: categories[i] ?? null })),
+        doc.lines.map((l, i) => ({ ...l, category: metas[i]?.category ?? null })),
       ).map((s, i) => ({ ...s, numeral: toRoman(i + 1) })),
       issuedByName:
         doc.status === "draft" ? null : doc.issuedByName?.trim() || null,

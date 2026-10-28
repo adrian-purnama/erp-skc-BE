@@ -4,6 +4,7 @@ import {
   parsePositiveDecimal,
   parseQtyDecimal,
 } from "../itemMaster/itemUomConvert";
+import type { UomRoundingMode } from "../../models/uom/uom.model";
 
 export type RabAggSourceLine = {
   materialItemId: string;
@@ -12,11 +13,34 @@ export type RabAggSourceLine = {
   makeQty: string;
 };
 
+export type RabRounding = {
+  decimals: number;
+  mode: UomRoundingMode;
+};
+
+/**
+ * Where one BOQ material×UOM lands on the RAB: the material's base UOM when
+ * convertible (factor = base units per 1 source unit), else itself (factor 1).
+ * The rounding rule is the target UOM's.
+ */
+export type RabUomRule = {
+  targetItemUomId: string;
+  factor: string;
+  rounding?: RabRounding;
+};
+
+/** Keyed by rabLineKey(materialItemId, source itemUomId). */
+export type RabUomPlan = Map<string, RabUomRule>;
+
 export type RabAggRow = {
   key: string;
   materialItemId: string;
   itemUomId: string;
+  /** Purchase qty: exactQty rounded by the UOM rule (= exactQty without one). */
   totalQty: string;
+  /** Σ qtyPerUnit × makeQty in the target UOM, before rounding. */
+  exactQty: string;
+  rounding?: RabRounding;
 };
 
 export type RabStoredPricing = {
@@ -106,38 +130,100 @@ export function assertAllLinesPriced(
   }
 }
 
-/** Sum totalQty (= qtyPerUnit × makeQty) by material × UOM. */
-export function aggregateBoqLinesToRab(rows: RabAggSourceLine[]): RabAggRow[] {
+// Absorbs 8-dp noise from yield division (2/3 × 3 = 2.00000001) before rounding.
+const ROUNDING_NOISE_DP = 6;
+
+const DECIMAL_MODE: Record<UomRoundingMode, Decimal.Rounding> = {
+  up: Decimal.ROUND_UP,
+  nearest: Decimal.ROUND_HALF_UP,
+  down: Decimal.ROUND_DOWN,
+};
+
+/** Round a purchase qty by a UOM rule. */
+export function roundRabQty(qty: Decimal, rounding: RabRounding): Decimal {
+  return qty
+    .toDecimalPlaces(ROUNDING_NOISE_DP, Decimal.ROUND_HALF_UP)
+    .toDecimalPlaces(rounding.decimals, DECIMAL_MODE[rounding.mode]);
+}
+
+/** RAB line key + factor for one BOQ source line (identity when not in plan). */
+export function resolveRabTarget(
+  materialItemId: string,
+  itemUomId: string,
+  plan?: RabUomPlan,
+): { key: string; itemUomId: string; factor: Decimal; rule?: RabUomRule } {
+  const rule = plan?.get(rabLineKey(materialItemId, itemUomId));
+  if (!rule) {
+    return {
+      key: rabLineKey(materialItemId, itemUomId),
+      itemUomId,
+      factor: new Decimal(1),
+    };
+  }
+  return {
+    key: rabLineKey(materialItemId, rule.targetItemUomId),
+    itemUomId: rule.targetItemUomId,
+    factor: parsePositiveDecimal(rule.factor, "conversionFactor"),
+    rule,
+  };
+}
+
+/**
+ * Σ qtyPerUnit × makeQty per material, converted to the plan's target UOM,
+ * then rounded once per project line (leftovers shared across drawings).
+ */
+export function aggregateBoqLinesToRab(
+  rows: RabAggSourceLine[],
+  plan?: RabUomPlan,
+): RabAggRow[] {
   const totals = new Map<string, Decimal>();
   const meta = new Map<
     string,
-    { materialItemId: string; itemUomId: string }
+    { materialItemId: string; itemUomId: string; rounding?: RabRounding }
   >();
 
   for (const row of rows) {
-    const key = rabLineKey(row.materialItemId, row.itemUomId);
+    const target = resolveRabTarget(row.materialItemId, row.itemUomId, plan);
     const qty = parsePositiveDecimal(row.qtyPerUnit, "qtyPerUnit");
     const make = parsePositiveDecimal(row.makeQty, "makeQty");
-    const add = qty.mul(make);
-    const prev = totals.get(key) ?? new Decimal(0);
-    totals.set(key, prev.add(add));
-    meta.set(key, {
+    const add = qty.mul(make).mul(target.factor);
+    const prev = totals.get(target.key) ?? new Decimal(0);
+    totals.set(target.key, prev.add(add));
+    meta.set(target.key, {
       materialItemId: row.materialItemId,
-      itemUomId: row.itemUomId,
+      itemUomId: target.itemUomId,
+      ...(target.rule?.rounding ? { rounding: target.rule.rounding } : {}),
     });
   }
 
   const out: RabAggRow[] = [];
   for (const [key, total] of totals) {
     const m = meta.get(key)!;
-    out.push({
+    const row: RabAggRow = {
       key,
       materialItemId: m.materialItemId,
       itemUomId: m.itemUomId,
-      totalQty: formatDecimal(total),
-    });
+      totalQty: formatDecimal(m.rounding ? roundRabQty(total, m.rounding) : total),
+      exactQty: formatDecimal(total),
+    };
+    if (m.rounding) row.rounding = m.rounding;
+    out.push(row);
   }
   return out;
+}
+
+/**
+ * totalQty − exactQty (purchase minus need). Negative means rounded down
+ * below need. Null when the line has no exact qty (labour / legacy).
+ */
+export function rabQtyWaste(
+  exactQty: string | null | undefined,
+  totalQty: string,
+): string | null {
+  if (exactQty === null || exactQty === undefined || exactQty === "") {
+    return null;
+  }
+  return formatDecimal(parseQtyDecimal(totalQty).sub(parseQtyDecimal(exactQty)));
 }
 
 /** Keep unitPrice/tarifId when the same material×UOM key still exists. */

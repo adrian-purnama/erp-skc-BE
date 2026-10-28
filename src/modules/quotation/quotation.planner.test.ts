@@ -78,6 +78,21 @@ describe("buildSeedLines", () => {
     assert.equal(labour.unitPrice, "660");
   });
 
+  it("orders drawing lines by kode (SA2 before SA10), then name", () => {
+    const lines = buildSeedLines({
+      boqs: [
+        { ...boq("f1", "i1", "Alpha", "1", [["m1", "u1", "1"]]), itemCode: "SA10" },
+        { ...boq("f2", "i2", "Zulu", "1", [["m1", "u1", "1"]]), itemCode: "SA2" },
+      ],
+      rabLines,
+      markupPercent: "0",
+    });
+    assert.deepEqual(
+      lines.filter((l) => l.kind === "item").map((l) => l.description),
+      ["Zulu", "Alpha"],
+    );
+  });
+
   it("suffixes version when an item has several BOQs", () => {
     const lines = buildSeedLines({
       boqs: [
@@ -121,6 +136,30 @@ describe("buildSeedLines", () => {
         markupPercent: "0",
       }),
     );
+  });
+});
+
+describe("buildSeedLines rounding waste", () => {
+  it("spreads rounded-up purchase cost over drawings by need", () => {
+    // 1.8 sheets needed, 2 bought at 900 → 1000 per needed sheet.
+    const lines = buildSeedLines({
+      boqs: [boq("f1", "i1", "Sign A", "75", [["ply", "sheet", "0.02"]])],
+      rabLines: [
+        { key: rabLineKey("ply", "sheet"), totalQty: "2", exactQty: "1.8", unitPrice: "900" },
+      ],
+      markupPercent: "0",
+    });
+    assert.equal(lines[0]!.costUnitPrice, "20");
+  });
+
+  it("prices a non-base BOQ UOM through the plan factor", () => {
+    const lines = buildSeedLines({
+      boqs: [boq("f1", "i1", "Sign A", "1", [["ply", "sheet", "1"]])],
+      rabLines: [{ key: rabLineKey("ply", "m2"), totalQty: "2.88", unitPrice: "100" }],
+      markupPercent: "0",
+      plan: new Map([["ply:sheet", { targetItemUomId: "m2", factor: "2.88" }]]),
+    });
+    assert.equal(lines[0]!.costUnitPrice, "288");
   });
 });
 

@@ -17,6 +17,7 @@ import { logger } from "../../../logger/logger";
 import { ProjectRepo } from "../../../models/project/project.model";
 import { ProjectDocumentRepo } from "../../../models/projectDocument/projectDocument.model";
 import { ProjectLooseFileRepo } from "../../../models/projectLooseFile/projectLooseFile.model";
+import { ProjectProductionFileRepo } from "../../../models/projectProductionFile/projectProductionFile.model";
 import { ProjectShopDrawingDocumentRepo } from "../../../models/projectShopDrawingDocument/projectShopDrawingDocument.model";
 import {
   ShrinkRunModel,
@@ -125,7 +126,7 @@ async function purgeBlobIfUnreferenced(
   gridFsId: Types.ObjectId,
   result: ShrinkRunResult,
 ): Promise<void> {
-  const [docLive, sdLive, looseLive] = await Promise.all([
+  const [docLive, sdLive, looseLive, productionLive] = await Promise.all([
     ProjectDocumentRepo.model
       .countDocuments({ gridFsId, isDeleted: false })
       .exec(),
@@ -135,8 +136,11 @@ async function purgeBlobIfUnreferenced(
     ProjectLooseFileRepo.model
       .countDocuments({ gridFsId, isDeleted: false })
       .exec(),
+    ProjectProductionFileRepo.model
+      .countDocuments({ gridFsId, isDeleted: false })
+      .exec(),
   ]);
-  if (docLive + sdLive + looseLive > 0) return;
+  if (docLive + sdLive + looseLive + productionLive > 0) return;
   const exists = await findFile(BUCKET, gridFsId);
   if (!exists) return;
   await deleteFileIfExists(BUCKET, gridFsId);
@@ -469,14 +473,15 @@ async function scopesMissingCurrent(): Promise<
 }
 
 async function unmatchedBlobIds(): Promise<string[]> {
-  const [docIds, sdIds, looseIds, gridIds] = await Promise.all([
+  const [docIds, sdIds, looseIds, productionIds, gridIds] = await Promise.all([
     ProjectDocumentRepo.model.distinct("gridFsId").exec(),
     ProjectShopDrawingDocumentRepo.model.distinct("gridFsId").exec(),
     ProjectLooseFileRepo.model.distinct("gridFsId").exec(),
+    ProjectProductionFileRepo.model.distinct("gridFsId").exec(),
     listFileIds(BUCKET),
   ]);
   const referenced = new Set(
-    [...docIds, ...sdIds, ...looseIds].map((id) => String(id)),
+    [...docIds, ...sdIds, ...looseIds, ...productionIds].map((id) => String(id)),
   );
   return gridIds
     .map((id) => String(id))

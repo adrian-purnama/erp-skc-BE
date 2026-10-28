@@ -39,6 +39,7 @@ export class AppConfigService {
   companyName: string = "";
   npwp: string = "";
   address: string = "";
+  branchOfficeAddresses: string[] = [];
   phone: string = "";
   email: string = "";
   website: string = "";
@@ -60,6 +61,13 @@ export class AppConfigService {
       this.companyName = existAppConfig.companyName ?? "";
       this.npwp = existAppConfig.npwp ?? "";
       this.address = existAppConfig.address ?? "";
+      this.branchOfficeAddresses = Array.isArray(
+        existAppConfig.branchOfficeAddresses,
+      )
+        ? existAppConfig.branchOfficeAddresses.filter(
+            (value): value is string => typeof value === "string",
+          )
+        : [];
       this.phone = existAppConfig.phone ?? "";
       this.email = existAppConfig.email ?? "";
       this.website = existAppConfig.website ?? "";
@@ -86,6 +94,7 @@ export class AppConfigService {
       this.companyName = "";
       this.npwp = "";
       this.address = "";
+      this.branchOfficeAddresses = [];
       this.phone = "";
       this.email = "";
       this.website = "";
@@ -115,6 +124,7 @@ export class AppConfigService {
     companyName: string;
     npwp: string;
     address: string;
+    branchOfficeAddresses: string[];
     phone: string;
     email: string;
     website: string;
@@ -129,6 +139,7 @@ export class AppConfigService {
       companyName: this.companyName,
       npwp: this.npwp,
       address: this.address,
+      branchOfficeAddresses: [...this.branchOfficeAddresses],
       phone: this.phone,
       email: this.email,
       website: this.website,
@@ -146,6 +157,7 @@ export class AppConfigService {
     companyName?: string;
     npwp?: string;
     address?: string;
+    branchOfficeAddresses?: string[];
     phone?: string;
     email?: string;
     website?: string;
@@ -166,6 +178,9 @@ export class AppConfigService {
       if (patch[key] !== undefined) {
         await this.updateField(key, patch[key] as this[typeof key]);
       }
+    }
+    if (patch.branchOfficeAddresses !== undefined) {
+      await this.updateBranchOfficeAddresses(patch.branchOfficeAddresses);
     }
   }
 
@@ -219,6 +234,7 @@ export class AppConfigService {
                   companyName: this.companyName || undefined,
                   npwp: this.npwp || undefined,
                   address: this.address || undefined,
+                  branchOfficeAddresses: this.branchOfficeAddresses,
                   phone: this.phone || undefined,
                   email: this.email || undefined,
                   website: this.website || undefined,
@@ -253,6 +269,43 @@ export class AppConfigService {
     }
   }
 
+  private async updateBranchOfficeAddresses(value: string[]): Promise<void> {
+    try {
+      const updated = await AppConfigModel.findOneAndUpdate(
+        {},
+        { $set: { branchOfficeAddresses: value } },
+        { new: true },
+      );
+
+      if (!updated) {
+        await AppConfigModel.create({
+          appName: this.appName,
+          openLogin: this.openLogin,
+          openRegister: this.openRegister,
+          appLogo: this.appLogo ?? undefined,
+          companyProfile: this.companyProfile ?? undefined,
+          description: this.description || undefined,
+          companyName: this.companyName || undefined,
+          npwp: this.npwp || undefined,
+          address: this.address || undefined,
+          branchOfficeAddresses: value,
+          phone: this.phone || undefined,
+          email: this.email || undefined,
+          website: this.website || undefined,
+        });
+      }
+
+      this.branchOfficeAddresses = value;
+    } catch (error) {
+      logger.error(
+        error instanceof Error ? error.message : String(error),
+        logSource,
+        "updateBranchOfficeAddresses",
+      );
+      throw error;
+    }
+  }
+
   private async updateField<K extends ScalarField>(
     field: K,
     value: this[K],
@@ -275,6 +328,7 @@ export class AppConfigService {
           companyName: this.companyName || undefined,
           npwp: this.npwp || undefined,
           address: this.address || undefined,
+          branchOfficeAddresses: this.branchOfficeAddresses,
           phone: this.phone || undefined,
           email: this.email || undefined,
           website: this.website || undefined,

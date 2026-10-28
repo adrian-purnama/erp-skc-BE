@@ -1,7 +1,11 @@
 import type { ProjectCustomerContactDto } from "./project.dto";
 import type { ProjectRabUserRefOutDto } from "./projectRab.dto";
 
-export type ProjectQuotationStatusDto = "draft" | "issued" | "superseded";
+export type ProjectQuotationStatusDto =
+  | "draft"
+  | "issued"
+  | "superseded"
+  | "won";
 export type ProjectQuotationDiscountTypeDto = "percent" | "amount";
 
 export type UpdateProjectQuotationInDto = {
@@ -37,6 +41,10 @@ export type ProjectQuotationLineOutDto = {
   lineTotal: string;
   /** Issued: snapshot. Draft: the shop drawing item's current category. */
   category: string | null;
+  /** Shop drawing kode, keterangan lines and ukuran (same snapshot rule as category). */
+  code: string;
+  descriptions: string[];
+  dimension: string;
 };
 
 /** Category group for printing; empty list = print flat. */
@@ -68,6 +76,7 @@ export type ProjectQuotationCompanyOutDto = {
   phone: string;
   email: string;
   website: string;
+  branchOfficeAddresses: string[];
   /** Issued: logo copy captured. Draft: AppConfig has a company profile logo. */
   hasLogo: boolean;
 };
@@ -91,6 +100,8 @@ export type ProjectQuotationSummaryOutDto = {
   createdBy: ProjectRabUserRefOutDto | null;
   issuedAt: string | null;
   issuedBy: ProjectRabUserRefOutDto | null;
+  wonAt: string | null;
+  wonBy: ProjectRabUserRefOutDto | null;
 };
 
 export type ProjectQuotationOutDto = ProjectQuotationSummaryOutDto & {
@@ -141,13 +152,17 @@ export type PublicQuotationDocOutDto = {
     phone: string;
     email: string;
     website: string;
+    branchOfficeAddresses: string[];
     /** Logo available at GET /public/quotation/:token/logo. */
     hasLogo: boolean;
   };
   customer: { name: string; address: string };
   attention: string;
   lines: Array<{
+    code: string;
     description: string;
+    descriptions: string[];
+    dimension: string;
     qty: string;
     uom: string;
     unitPrice: string;

@@ -114,6 +114,12 @@ projectShopDrawingDocumentSchema.index(
   },
 );
 projectShopDrawingDocumentSchema.index({ deletedReason: 1, isDeleted: 1 });
+/** Project file lists (newest version first) and current-file lookups per project. */
+projectShopDrawingDocumentSchema.index({ projectId: 1, version: -1 });
+projectShopDrawingDocumentSchema.index(
+  { projectId: 1, isCurrent: 1 },
+  { partialFilterExpression: { isCurrent: true } },
+);
 
 export const ProjectShopDrawingDocumentRepo =
   auditedModel<ProjectShopDrawingDocumentInterface>(

@@ -23,3 +23,5 @@ export function createSeqCounterModel(name: string): Model<SeqCounterInterface> 
 
 export const ItemSeqCounterModel = createSeqCounterModel("ItemSeqCounter");
 export const ProjectSeqCounterModel = createSeqCounterModel("ProjectSeqCounter");
+export const ProductionSeqCounterModel = createSeqCounterModel("ProductionSeqCounter");
+export const PurchasingSeqCounterModel = createSeqCounterModel("PurchasingSeqCounter");

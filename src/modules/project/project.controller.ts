@@ -266,11 +266,9 @@ export class ProjectController {
       "Failed to create Shop Drawing item",
       "Shop Drawing item created",
       () => {
-        const { name, category } = parseCreateShopDrawingItemDto(req.body);
         return projectShopDrawingService.createItem(
           parseRouteId(req.params.id),
-          name,
-          category,
+          parseCreateShopDrawingItemDto(req.body),
           req.user ? String(req.user._id) : undefined,
         );
       },
@@ -284,12 +282,10 @@ export class ProjectController {
       "Failed to rename Shop Drawing item",
       "Shop Drawing item renamed",
       () => {
-        const { name, category } = parseRenameShopDrawingItemDto(req.body);
-        return projectShopDrawingService.renameItem(
+        return projectShopDrawingService.updateItem(
           parseRouteId(req.params.id),
           parseRouteId(req.params.itemId),
-          name,
-          category,
+          parseRenameShopDrawingItemDto(req.body),
         );
       },
     );
@@ -299,9 +295,25 @@ export class ProjectController {
     return handle(
       res,
       "Failed to delete Shop Drawing item",
-      "Shop Drawing item deleted",
+      (data: { removedInChange: boolean }) =>
+        data.removedInChange
+          ? "Item removed in the RAB change; it is deleted on commit"
+          : "Shop Drawing item deleted",
+      () =>
+        projectShopDrawingService.hardDeleteItem(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.itemId),
+        ),
+    );
+  };
+
+  restoreShopDrawingItem = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to restore Shop Drawing item",
+      "Item restored in the RAB change",
       async () => {
-        await projectShopDrawingService.hardDeleteItem(
+        await projectShopDrawingService.restoreItem(
           parseRouteId(req.params.id),
           parseRouteId(req.params.itemId),
         );
@@ -362,6 +374,66 @@ export class ProjectController {
       "Shop Drawing file deleted",
       async () => {
         await projectShopDrawingService.hardDeleteFile(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.fileId),
+        );
+        return null;
+      },
+    );
+  };
+
+  uploadProductionFile = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to upload File Produksi",
+      (data: { linked?: boolean }) =>
+        data.linked ? "Linked existing file" : "File Produksi uploaded",
+      () =>
+        projectShopDrawingService.uploadProductionFile(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.itemId),
+          req.file!,
+          {
+            force: queryBool(req.query.force),
+            uploadedByUserId: req.user ? String(req.user._id) : undefined,
+          },
+        ),
+      201,
+    );
+  };
+
+  downloadProductionFile = async (req: Request, res: Response) => {
+    return streamDownload(
+      res,
+      () =>
+        projectShopDrawingService.openProductionDownload(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.fileId),
+        ),
+      "Failed to download File Produksi",
+    );
+  };
+
+  setCurrentProductionFile = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to set current File Produksi",
+      "File Produksi version set as current",
+      () =>
+        projectShopDrawingService.setCurrentProductionFile(
+          parseRouteId(req.params.id),
+          parseRouteId(req.params.fileId),
+        ),
+    );
+  };
+
+  deleteProductionFile = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to delete File Produksi",
+      "File Produksi deleted",
+      async () => {
+        await projectShopDrawingService.deleteProductionFile(
           parseRouteId(req.params.id),
           parseRouteId(req.params.fileId),
         );

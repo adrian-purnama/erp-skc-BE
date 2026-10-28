@@ -1,5 +1,6 @@
 import type {
   ProjectRabChangeBoqDiffOutDto,
+  ProjectRabChangeBoqMaterialDiffOutDto,
   ProjectRabChangeVersionDiffOutDto,
   ProjectRabLineOutDto,
   ProjectRabUserRefOutDto,
@@ -7,6 +8,7 @@ import type {
 
 export type {
   ProjectRabChangeBoqDiffOutDto,
+  ProjectRabChangeBoqMaterialDiffOutDto,
   ProjectRabChangeVersionDiffOutDto,
 } from "./projectRab.dto";
 
@@ -40,15 +42,6 @@ export type ProjectRabChangeLineDiffOutDto = {
   newUnitPrice: string | null;
 };
 
-
-export type ProjectRabChangeBoqMaterialDiffOutDto = {
-  shopDrawingFileId: string;
-  shopDrawingItemId: string;
-  key: string;
-  kind: "added" | "removed" | "changed";
-  oldTotalQty: string | null;
-  newTotalQty: string | null;
-};
 
 export type ProjectRabChangeDetailOutDto = ProjectRabChangeSummaryOutDto & {
   lineDiff: ProjectRabChangeLineDiffOutDto[];

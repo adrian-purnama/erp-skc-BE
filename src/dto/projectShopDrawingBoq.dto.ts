@@ -15,6 +15,8 @@ export type ShopDrawingBoqLineIn = {
   itemUomId: string;
   formula: string;
   inputs: ShopDrawingBoqLineInputsIn;
+  /** Units one formula quantity makes; "1" when omitted. */
+  yieldQty: string;
 };
 
 export type ShopDrawingBoqFinishingIn = {
@@ -61,6 +63,8 @@ export type UpsertShopDrawingBoqIn = {
   shopDrawingItemId: string;
   shopDrawingFileId: string;
   makeQty: string;
+  /** YYYY-MM-DD or null when client has no mockup / not approved yet. */
+  mockupApproveDate?: string | null;
   main: ShopDrawingBoqMainIn;
   lighting: ShopDrawingBoqLightingIn;
   mounting: ShopDrawingBoqMountingIn;
@@ -82,6 +86,7 @@ export type ProjectShopDrawingBoqLineOutDto = {
   uomName: string;
   formula: string;
   inputs: ProjectShopDrawingBoqLineInputsOutDto;
+  yieldQty: string;
   qtyPerUnit: string;
   totalQty: string;
   addedAt: string | null;
@@ -139,6 +144,7 @@ export type ProjectShopDrawingBoqOutDto = {
   fileVersion: number;
   originalFilename: string;
   makeQty: string;
+  mockupApproveDate: string | null;
   main: ProjectShopDrawingBoqMainOutDto;
   lighting: ProjectShopDrawingBoqLightingOutDto;
   mounting: ProjectShopDrawingBoqMountingOutDto;

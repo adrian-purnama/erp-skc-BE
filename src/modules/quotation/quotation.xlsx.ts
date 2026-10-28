@@ -33,6 +33,11 @@ const LOGO_MAX_H = 80;
 const ROW_PX = 20;
 /** Row height (pt) for one 10pt text line. */
 const LINE_PT = 15;
+/** No · Kode · Keterangan · Ukuran · Qty · Satuan · Harga/Unit · Total. */
+const COL_COUNT = 8;
+const DESC_COL = 3;
+/** Letterhead text starts right of the logo. */
+const LETTERHEAD_TEXT_COL = 4;
 
 export function buildQuotationWorkbook(
   doc: QuotationDocument,
@@ -50,10 +55,12 @@ export function buildQuotationWorkbook(
     },
   });
   ws.columns = [
+    { width: 6 },
     { width: 10 },
-    { width: 44 },
-    { width: 10 },
-    { width: 10 },
+    { width: 50 },
+    { width: 22 },
+    { width: 8 },
+    { width: 9 },
     { width: 18 },
     { width: 20 },
   ];
@@ -92,12 +99,12 @@ export function buildQuotationWorkbook(
   };
   const line = (row: number, value: string, from = 1, opts?: Parameters<typeof put>[3]) => {
     put(row, from, value, { align: "left", ...opts });
-    ws.mergeCells(row, from, row, 6);
+    ws.mergeCells(row, from, row, COL_COUNT);
   };
 
   // Letterhead: logo top-left with company text beside it, else text full width.
   const info = logo ? readLogoImageInfo(logo.buffer) : null;
-  const textCol = info ? 3 : 1;
+  const textCol = info ? LETTERHEAD_TEXT_COL : 1;
   let r = 1;
   if (logo && info) {
     const size = fitBox(info.width, info.height, LOGO_MAX_W, LOGO_MAX_H);
@@ -122,7 +129,7 @@ export function buildQuotationWorkbook(
     const logoRows = Math.ceil(LOGO_MAX_H / ROW_PX) + 1;
     r = Math.max(r, logoRows);
   }
-  for (let c = 1; c <= 6; c += 1) {
+  for (let c = 1; c <= COL_COUNT; c += 1) {
     ws.getCell(r, c).border = { bottom: { style: "medium" } };
   }
 
@@ -130,14 +137,34 @@ export function buildQuotationWorkbook(
   line(r, doc.title, 1, { bold: true, size: 13, align: "center" });
   r += 2;
 
-  for (const [label, value] of doc.meta) {
-    const lines = splitLines(value);
-    put(r, 1, label, { bold: true, align: "left" }).alignment = {
-      vertical: "top",
+  // Meta: recipient in A–C (label A–B, value C), document reference in D–H
+  // (label D, value E–H), side by side.
+  const metaRows = Math.max(doc.meta.left.length, doc.meta.right.length);
+  for (let i = 0; i < metaRows; i += 1) {
+    let lineCount = 1;
+    const metaCell = (
+      pair: [string, string] | undefined,
+      labelFrom: number,
+      labelTo: number,
+      valueFrom: number,
+      valueTo: number,
+    ) => {
+      if (!pair) return;
+      const lines = splitLines(pair[1]);
+      lineCount = Math.max(lineCount, lines.length);
+      put(r, labelFrom, pair[0], { bold: true, align: "left" }).alignment = {
+        vertical: "top",
+      };
+      if (labelTo > labelFrom) ws.mergeCells(r, labelFrom, r, labelTo);
+      put(r, valueFrom, `: ${text(lines.join("\n"))}`).alignment = {
+        vertical: "top",
+        wrapText: true,
+      };
+      if (valueTo > valueFrom) ws.mergeCells(r, valueFrom, r, valueTo);
     };
-    line(r, text(lines.join("\n")), 2);
-    ws.getCell(r, 2).alignment = { vertical: "top", wrapText: true };
-    if (lines.length > 1) ws.getRow(r).height = LINE_PT * lines.length;
+    metaCell(doc.meta.left[i], 1, 2, 3, 3);
+    metaCell(doc.meta.right[i], 4, 4, 5, COL_COUNT);
+    if (lineCount > 1) ws.getRow(r).height = LINE_PT * lineCount;
     r += 1;
   }
   r += 1;
@@ -147,6 +174,7 @@ export function buildQuotationWorkbook(
     cell.fill = HEADER_FILL;
     cell.border = THIN_BORDER;
   });
+  ws.getRow(r).height = LINE_PT * 2;
   r += 1;
 
   for (const row of doc.rows) {
@@ -156,11 +184,11 @@ export function buildQuotationWorkbook(
         bold: true,
         align: isSection ? "center" : "right",
       });
-      ws.mergeCells(r, 1, r, isSection ? 6 : 5);
+      ws.mergeCells(r, 1, r, isSection ? COL_COUNT : COL_COUNT - 1);
       label.fill = SECTION_FILL;
       label.border = THIN_BORDER;
       if (!isSection) {
-        const amount = put(r, 6, row.amount, {
+        const amount = put(r, COL_COUNT, row.amount, {
           bold: true,
           numFmt: RP_FORMAT,
           align: "right",
@@ -171,27 +199,52 @@ export function buildQuotationWorkbook(
       r += 1;
       continue;
     }
+    // Keterangan: the item name in bold, its spec lines below in one cell.
+    const keterangan: ExcelJS.CellValue = {
+      richText: [
+        { text: text(row.description), font: { name: FONT, size: 10, bold: true } },
+        ...row.descriptions.map((d) => ({
+          text: `\n${text(d)}`,
+          font: { name: FONT, size: 10 },
+        })),
+      ],
+    };
     const values: ExcelJS.CellValue[] = [
       row.no,
-      text(row.description),
+      text(row.code),
+      keterangan,
+      text(row.dimension),
       row.qty,
       text(row.uom),
       row.unitPrice,
       row.amount,
     ];
     values.forEach((v, i) => {
-      const cell = put(r, i + 1, v, {
-        align: i === 1 ? "left" : i >= 4 ? "right" : "center",
-        ...(i >= 4 ? { numFmt: RP_FORMAT } : {}),
+      const col = i + 1;
+      const money = col >= COL_COUNT - 1;
+      const cell = put(r, col, v, {
+        align: col === DESC_COL ? "left" : money ? "right" : "center",
+        ...(money ? { numFmt: RP_FORMAT } : {}),
       });
+      cell.alignment = { ...cell.alignment, vertical: "top" };
       cell.border = THIN_BORDER;
     });
+    // Excel does not grow merged/wrapped rows itself: estimate wrapped lines.
+    const descWidth = Number(ws.getColumn(DESC_COL).width ?? 50);
+    const wrapped = [row.description, ...row.descriptions].reduce(
+      (n, t) => n + Math.max(1, Math.ceil(t.length / descWidth)),
+      0,
+    );
+    ws.getRow(r).height = LINE_PT * wrapped;
     r += 1;
   }
 
   for (const total of doc.totals) {
-    put(r, 5, total.label, { bold: total.emphasis, align: "right" }).border = THIN_BORDER;
-    put(r, 6, total.amount, {
+    put(r, COL_COUNT - 1, total.label, {
+      bold: total.emphasis,
+      align: "right",
+    }).border = THIN_BORDER;
+    put(r, COL_COUNT, total.amount, {
       bold: total.emphasis,
       numFmt: RP_FORMAT,
       align: "right",
@@ -212,7 +265,7 @@ export function buildQuotationWorkbook(
   }
 
   if (verify) {
-    // QR in column A, link + note beside it in column B.
+    // QR over columns A–B, link + note beside it in column C.
     const qrId = wb.addImage({
       buffer: verify.qrPng as unknown as ExcelJS.Buffer,
       extension: "png",
@@ -221,26 +274,27 @@ export function buildQuotationWorkbook(
       tl: { col: 0.05, row: r - 1 + 0.1 },
       ext: { width: 70, height: 70 },
     });
-    put(r, 2, "Verify this quotation", { bold: true, size: 8, align: "left", wrap: false });
-    const link = ws.getCell(r + 1, 2);
+    put(r, 3, "Verify this quotation", { bold: true, size: 8, align: "left", wrap: false });
+    const link = ws.getCell(r + 1, 3);
     link.value = { text: verify.url, hyperlink: verify.url };
     link.font = { name: FONT, size: 7, color: { argb: "FF1D4ED8" }, underline: true };
-    put(r + 2, 2, VERIFY_NOTE, { size: 7, align: "left" });
+    put(r + 2, 3, VERIFY_NOTE, { size: 7, align: "left" });
     ws.getRow(r + 2).height = 22;
   }
-  put(r, 5, doc.signOff, { align: "center" });
-  ws.mergeCells(r, 5, r, 6);
-  put(r + 1, 5, text(doc.companyName), { bold: true, align: "center" });
-  ws.mergeCells(r + 1, 5, r + 1, 6);
+  const signFrom = COL_COUNT - 1;
+  put(r, signFrom, doc.signOff, { align: "center" });
+  ws.mergeCells(r, signFrom, r, COL_COUNT);
+  put(r + 1, signFrom, text(doc.companyName), { bold: true, align: "center" });
+  ws.mergeCells(r + 1, signFrom, r + 1, COL_COUNT);
   r += 5;
   const signer = put(
     r,
-    5,
+    signFrom,
     text(doc.signerName ?? "(....................................)"),
     { bold: Boolean(doc.signerName), align: "center" },
   );
   if (doc.signerName) signer.font = { ...signer.font, underline: true };
-  ws.mergeCells(r, 5, r, 6);
+  ws.mergeCells(r, signFrom, r, COL_COUNT);
 
   return wb;
 }

@@ -316,6 +316,13 @@ router.delete(
 );
 
 router.post(
+  "/:id/shop-drawing/items/:itemId/restore",
+  requireUser,
+  requirePermission({ key: "project.manage" }),
+  projectController.restoreShopDrawingItem,
+);
+
+router.post(
   "/:id/shop-drawing/items/:itemId/files",
   requireUser,
   requirePermission({ key: "project.manage" }),
@@ -342,6 +349,35 @@ router.delete(
   requireUser,
   requirePermission({ key: "project.manage" }),
   projectController.deleteShopDrawingFile,
+);
+
+router.post(
+  "/:id/shop-drawing/items/:itemId/production-files",
+  requireUser,
+  requirePermission({ key: "project.manage" }),
+  upload.single("file"),
+  projectController.uploadProductionFile,
+);
+
+router.get(
+  "/:id/shop-drawing/production-files/:fileId/download",
+  requireUser,
+  requirePermission({ key: "project.view" }),
+  projectController.downloadProductionFile,
+);
+
+router.post(
+  "/:id/shop-drawing/production-files/:fileId/current",
+  requireUser,
+  requirePermission({ key: "project.manage" }),
+  projectController.setCurrentProductionFile,
+);
+
+router.delete(
+  "/:id/shop-drawing/production-files/:fileId",
+  requireUser,
+  requirePermission({ key: "project.manage" }),
+  projectController.deleteProductionFile,
 );
 
 router.get(

@@ -29,6 +29,20 @@ export class ItemTarifService {
     return docs.map((doc) => toOut(doc as ItemTarifLean));
   }
 
+  /** Item ids (of `itemIds`) that have a tarif on or before `asOfYmd`, in one query. */
+  async itemIdsWithTarifAsOf(
+    itemIds: string[],
+    asOfYmd: string,
+  ): Promise<Set<string>> {
+    const ids = [...new Set(itemIds)].filter((id) => Types.ObjectId.isValid(id));
+    if (ids.length === 0) return new Set();
+    const found = (await ItemTarifRepo.model.distinct("itemId", {
+      itemId: { $in: ids.map((id) => new Types.ObjectId(id)) },
+      effectiveDate: { $lte: asOfYmd },
+    })) as Types.ObjectId[];
+    return new Set(found.map(String));
+  }
+
   async resolveAsOf(
     itemId: string,
     asOfYmd: string,

@@ -2,6 +2,7 @@ import { Schema, type Types } from "mongoose";
 import { auditedModel } from "../../core/audit/auditedModel";
 import {
   PROJECT_RAB_LINE_ORIGINS,
+  projectRabLineRoundingSchema,
   type ProjectRabLine,
 } from "../projectRab/projectRab.model";
 import type {
@@ -23,6 +24,7 @@ export type ProjectRabChangeBoqSnapshot = {
   shopDrawingItemId: Types.ObjectId;
   shopDrawingFileId: Types.ObjectId;
   makeQty: string;
+  mockupApproveDate?: string | null;
   main: ProjectShopDrawingBoqMain;
   lighting: ProjectShopDrawingBoqLighting;
   mounting: ProjectShopDrawingBoqMounting;
@@ -54,6 +56,8 @@ export interface ProjectRabChangeInterface {
   baselineCurrentFiles?: ProjectRabChangeCurrentFile[];
   /** Current file per item at commit. Absent on draft / legacy records. */
   currentFiles?: ProjectRabChangeCurrentFile[];
+  /** Shop drawing items removed in this change; hard-deleted on commit, kept on discard. */
+  removedItemIds?: Types.ObjectId[];
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -72,6 +76,8 @@ const projectRabLineSchema = new Schema(
       required: true,
     },
     totalQty: { type: String, required: true, trim: true },
+    exactQty: { type: String, required: false, trim: true },
+    rounding: { type: projectRabLineRoundingSchema, required: false },
     unitPrice: { type: String, required: false, trim: true },
     tarifId: {
       type: Schema.Types.ObjectId,
@@ -107,6 +113,12 @@ const projectRabChangeBoqSchema = new Schema(
       required: true,
     },
     makeQty: { type: String, required: true, trim: true },
+    mockupApproveDate: {
+      type: String,
+      required: false,
+      default: null,
+      trim: true,
+    },
     main: { type: Schema.Types.Mixed, required: true },
     lighting: { type: Schema.Types.Mixed, required: true },
     mounting: { type: Schema.Types.Mixed, required: true },
@@ -189,6 +201,11 @@ const projectRabChangeSchema = new Schema<ProjectRabChangeInterface>(
       required: false,
       default: undefined,
     },
+    removedItemIds: {
+      type: [{ type: Schema.Types.ObjectId, ref: "ProjectShopDrawingItem" }],
+      required: false,
+      default: undefined,
+    },
   },
   { timestamps: true },
 );
@@ -201,6 +218,10 @@ projectRabChangeSchema.index(
     partialFilterExpression: { status: "draft" },
   },
 );
+
+/** Committed history (newest first) and the latest revision per project. */
+projectRabChangeSchema.index({ projectId: 1, status: 1, committedAt: -1 });
+projectRabChangeSchema.index({ projectId: 1, status: 1, revision: -1 });
 
 export const ProjectRabChangeRepo = auditedModel<ProjectRabChangeInterface>(
   "ProjectRabChange",

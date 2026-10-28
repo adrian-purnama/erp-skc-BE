@@ -5,7 +5,9 @@ import {
 import { SHRINK_DB_PERMS } from "../../modules/admin/shrinkDb/shrinkDb.permissions";
 import { CUSTOMER_PERMS } from "../../modules/customer/customer.permissions";
 import { ITEM_MASTER_PERMS } from "../../modules/itemMaster/itemMaster.permissions";
+import { PRODUCTION_PERMS } from "../../modules/production/production.permissions";
 import { PROJECT_PERMS } from "../../modules/project/project.permissions";
+import { PURCHASING_PERMS } from "../../modules/purchasing/purchasing.permissions";
 import { QUOTATION_PERMS } from "../../modules/quotation/quotation.permissions";
 import { TERM_OF_PAYMENT_PERMS } from "../../modules/termOfPayment/termOfPayment.permissions";
 import { UOM_PERMS } from "../../modules/uom/uom.permissions";
@@ -17,6 +19,8 @@ const MODULE_PERMS: readonly PermissionDef[] = [
   ...CUSTOMER_PERMS,
   ...ITEM_MASTER_PERMS,
   ...PROJECT_PERMS,
+  ...PRODUCTION_PERMS,
+  ...PURCHASING_PERMS,
   ...QUOTATION_PERMS,
   ...TERM_OF_PAYMENT_PERMS,
   ...UOM_PERMS,

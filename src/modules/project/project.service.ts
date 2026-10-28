@@ -54,6 +54,7 @@ type LeanProject = {
   loseReason?: ProjectLoseReason | null;
   closeReason?: ProjectCloseReason | null;
   isActive?: boolean;
+  productionReleasedAt?: Date | null;
 };
 
 function normalizeStatus(doc: LeanProject): {
@@ -116,6 +117,9 @@ export class ProjectService {
       loseReason: statusFields.loseReason,
       closeReason: statusFields.closeReason,
       isActive: doc.isActive !== false,
+      productionReleasedAt: doc.productionReleasedAt
+        ? doc.productionReleasedAt.toISOString()
+        : null,
     };
   }
 
@@ -208,6 +212,18 @@ export class ProjectService {
 
     if (patch.customerId !== undefined) {
       await this.assertCustomerExists(patch.customerId);
+    }
+    if (patch.status === "open" || patch.status === "lose") {
+      const current = await ProjectRepo.model
+        .findById(id)
+        .select({ productionReleasedAt: 1 })
+        .lean()
+        .exec();
+      if (current?.productionReleasedAt) {
+        throw new Error(
+          "Project is released to production: status cannot go back to open or lose",
+        );
+      }
     }
 
     const updated = await ProjectRepo.findByIdAndUpdate(id, {

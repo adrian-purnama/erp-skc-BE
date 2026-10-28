@@ -26,6 +26,7 @@ export class AdminController {
         companyName?: string;
         npwp?: string;
         address?: string;
+        branchOfficeAddresses?: string[];
         phone?: string;
         email?: string;
         website?: string;
@@ -69,6 +70,25 @@ export class AdminController {
         patch[key] = body[key].trim();
       }
 
+      if ("branchOfficeAddresses" in body) {
+        if (!Array.isArray(body.branchOfficeAddresses)) {
+          return fail(res, null, "branchOfficeAddresses must be an array of strings");
+        }
+        const addresses: string[] = [];
+        for (const entry of body.branchOfficeAddresses) {
+          if (typeof entry !== "string") {
+            return fail(
+              res,
+              null,
+              "branchOfficeAddresses must be an array of strings",
+            );
+          }
+          const trimmed = entry.trim();
+          if (trimmed) addresses.push(trimmed);
+        }
+        patch.branchOfficeAddresses = addresses;
+      }
+
       if (
         patch.appName === undefined &&
         patch.description === undefined &&
@@ -77,6 +97,7 @@ export class AdminController {
         patch.companyName === undefined &&
         patch.npwp === undefined &&
         patch.address === undefined &&
+        patch.branchOfficeAddresses === undefined &&
         patch.phone === undefined &&
         patch.email === undefined &&
         patch.website === undefined

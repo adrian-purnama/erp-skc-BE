@@ -21,6 +21,8 @@ import {
 } from "../modules/itemMaster/itemUomConvert";
 import { parseUomFormula } from "../modules/uom/uomFormula";
 
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+
 function parseObjectId(raw: unknown, field: string): string {
   if (typeof raw !== "string" || !Types.ObjectId.isValid(raw)) {
     throw new Error(`Invalid ${field}`);
@@ -102,7 +104,17 @@ function parseMaterialLine(
   }
   seenPair.add(pairKey);
 
-  return { materialItemId, itemUomId, formula, inputs };
+  let yieldQty = "1";
+  if (line.yieldQty !== undefined && line.yieldQty !== null && line.yieldQty !== "") {
+    if (typeof line.yieldQty !== "string" && typeof line.yieldQty !== "number") {
+      throw new Error(`${path}.yieldQty must be a number`);
+    }
+    yieldQty = formatDecimal(
+      parsePositiveDecimal(String(line.yieldQty), `${path}.yieldQty`),
+    );
+  }
+
+  return { materialItemId, itemUomId, formula, inputs, yieldQty };
 }
 
 function parseLineList(
@@ -298,6 +310,20 @@ export function parseUpsertShopDrawingBoqDto(
   }
   const makeQty = formatDecimal(parsePositiveDecimal(b.makeQty, "makeQty"));
 
+  let mockupApproveDate: string | null = null;
+  if (b.mockupApproveDate !== undefined && b.mockupApproveDate !== null) {
+    if (typeof b.mockupApproveDate !== "string") {
+      throw new Error("mockupApproveDate must be YYYY-MM-DD or null");
+    }
+    const ymd = b.mockupApproveDate.trim();
+    if (ymd) {
+      if (!YMD.test(ymd)) {
+        throw new Error("mockupApproveDate must be YYYY-MM-DD");
+      }
+      mockupApproveDate = ymd;
+    }
+  }
+
   const main = parseMain(b.main);
 
   let lightingRaw = b.lighting;
@@ -341,6 +367,7 @@ export function parseUpsertShopDrawingBoqDto(
     shopDrawingItemId,
     shopDrawingFileId,
     makeQty,
+    mockupApproveDate,
     main,
     lighting,
     mounting,

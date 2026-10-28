@@ -17,6 +17,8 @@ import mediaRoutes from "./modules/media/media.route";
 import itemMasterRoutes from "./modules/itemMaster/itemMaster.route";
 import projectRoutes from "./modules/project/project.route";
 import quotationRoutes from "./modules/quotation/quotation.route";
+import productionRoutes from "./modules/production/production.route";
+import purchasingRoutes from "./modules/purchasing/purchasing.route";
 import publicQuotationRoutes from "./modules/quotation/publicQuotation.route";
 import termOfPaymentRoutes from "./modules/termOfPayment/termOfPayment.route";
 import uomRoutes from "./modules/uom/uom.route";
@@ -98,6 +100,18 @@ function createApp(): Express {
     "/quotation",
     quotationRoutes,
     require.resolve("./modules/quotation/quotation.route"),
+  );
+  mountRouter(
+    app,
+    "/production",
+    productionRoutes,
+    require.resolve("./modules/production/production.route"),
+  );
+  mountRouter(
+    app,
+    "/purchasing",
+    purchasingRoutes,
+    require.resolve("./modules/purchasing/purchasing.route"),
   );
   mountRouter(
     app,

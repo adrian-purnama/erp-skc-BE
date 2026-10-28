@@ -9,11 +9,13 @@ import {
   mergeRabPricing,
   sumGrandTotal,
   type BoqLike,
+  type RabUomPlan,
 } from "./projectRab.planner";
 export type LeanBoqDoc = {
   shopDrawingItemId: Types.ObjectId;
   shopDrawingFileId: Types.ObjectId;
   makeQty: string;
+  mockupApproveDate?: string | null;
   main?: ProjectRabChangeBoqSnapshot["main"];
   lighting?: ProjectRabChangeBoqSnapshot["lighting"];
   mounting?: ProjectRabChangeBoqSnapshot["mounting"];
@@ -72,8 +74,9 @@ export function diffCurrentFiles(
 export function syncRabLinesFromBoqs(
   boqs: LeanBoqDoc[],
   previous: ProjectRabLine[],
+  plan?: RabUomPlan,
 ): ProjectRabLine[] {
-  const scaffold = aggregateBoqLinesToRab(collectSourceLines(boqs));
+  const scaffold = aggregateBoqLinesToRab(collectSourceLines(boqs), plan);
   const labour = previous.filter(isLabourLine);
   const prevMaterial = previous
     .filter((l) => !isLabourLine(l))
@@ -102,11 +105,13 @@ export function syncRabLinesFromBoqs(
       materialItemId: new Types.ObjectId(row.materialItemId),
       itemUomId: new Types.ObjectId(row.itemUomId),
       totalQty: row.totalQty,
+      exactQty: row.exactQty,
       origin:
         prev?.origin === "lock" || prev?.origin === "append"
           ? prev.origin
           : "append",
     };
+    if (row.rounding) line.rounding = row.rounding;
     if (row.unitPrice) line.unitPrice = row.unitPrice;
     if (row.tarifId && Types.ObjectId.isValid(row.tarifId)) {
       line.tarifId = new Types.ObjectId(row.tarifId);
@@ -200,12 +205,13 @@ type BoqFileSnap = BoqLike & {
   shopDrawingFileId: Types.ObjectId | string;
 };
 
-/** Qty contribution of one BOQ file, keyed by RAB material line key. */
+/** Exact (unrounded) qty contribution of one BOQ file, keyed by RAB line key. */
 export function materialQtyByBoqFile(
   boq: BoqLike,
+  plan?: RabUomPlan,
 ): Map<string, string> {
-  const rows = aggregateBoqLinesToRab(collectSourceLines([boq]));
-  return new Map(rows.map((r) => [r.key, r.totalQty]));
+  const rows = aggregateBoqLinesToRab(collectSourceLines([boq]), plan);
+  return new Map(rows.map((r) => [r.key, r.exactQty]));
 }
 
 export type BoqMaterialDiffKind = "added" | "removed" | "changed";
@@ -226,6 +232,7 @@ export type BoqMaterialDiffEntry = {
 export function diffBoqMaterialContributions(
   baseline: BoqFileSnap[],
   next: BoqFileSnap[],
+  plan?: RabUomPlan,
 ): BoqMaterialDiffEntry[] {
   const baseByFile = new Map(
     baseline.map((b) => [String(b.shopDrawingFileId), b] as const),
@@ -242,8 +249,12 @@ export function diffBoqMaterialContributions(
     const itemId = String(
       (nextBoq ?? baseBoq)!.shopDrawingItemId,
     );
-    const baseQty = baseBoq ? materialQtyByBoqFile(baseBoq) : new Map<string, string>();
-    const nextQty = nextBoq ? materialQtyByBoqFile(nextBoq) : new Map<string, string>();
+    const baseQty = baseBoq
+      ? materialQtyByBoqFile(baseBoq, plan)
+      : new Map<string, string>();
+    const nextQty = nextBoq
+      ? materialQtyByBoqFile(nextBoq, plan)
+      : new Map<string, string>();
     const keys = new Set([...baseQty.keys(), ...nextQty.keys()]);
     for (const key of keys) {
       const oldTotalQty = baseQty.get(key) ?? null;

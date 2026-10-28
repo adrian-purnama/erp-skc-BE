@@ -18,6 +18,7 @@ type LineLike = {
   itemUomId: Types.ObjectId | string;
   formula: string;
   inputs: { v1: string; v2?: string; v3?: string };
+  yieldQty?: string;
   qtyPerUnit: string;
   spec?: string;
   addedAt?: Date;
@@ -48,6 +49,7 @@ export function lineContentKey(line: LineLike): string {
     idStr(line.itemUomId),
     line.formula.trim(),
     inputsKey(line.inputs),
+    line.yieldQty?.trim() || "1",
     line.qtyPerUnit.trim(),
     (line.spec ?? "").trim(),
   ].join("::");

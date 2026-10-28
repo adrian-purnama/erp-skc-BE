@@ -65,6 +65,8 @@ function sample(overrides: Partial<ProjectQuotationOutDto> = {}): ProjectQuotati
     createdBy: null,
     issuedAt: "2026-10-24T03:00:00.000Z",
     issuedBy: null,
+    wonAt: null,
+    wonBy: null,
     subject: "Penawaran signage",
     markupPercent: "10",
     discountType: "percent",
@@ -81,6 +83,7 @@ function sample(overrides: Partial<ProjectQuotationOutDto> = {}): ProjectQuotati
       phone: "021-1",
       email: "a@b.c",
       website: "",
+      branchOfficeAddresses: [],
       hasLogo: true,
     },
     customer: { customerId: "c1", name: "PT Klien", address: "Jl. Melati", npwp: "" },
@@ -99,6 +102,9 @@ function sample(overrides: Partial<ProjectQuotationOutDto> = {}): ProjectQuotati
         priceOverridden: false,
         lineTotal: "2000",
         category: null,
+        code: "",
+        descriptions: [],
+        dimension: "",
       },
       {
         key: "labour",
@@ -113,6 +119,9 @@ function sample(overrides: Partial<ProjectQuotationOutDto> = {}): ProjectQuotati
         priceOverridden: false,
         lineTotal: "500",
         category: null,
+        code: "",
+        descriptions: [],
+        dimension: "",
       },
     ],
     totals: {
@@ -159,7 +168,11 @@ describe("buildQuotationDocument", () => {
       doc.totals.map((t) => t.label),
       ["Subtotal", "Diskon 10%", "DPP", "PPN 11%", "Total"],
     );
-    assert.ok(doc.meta.some(([k, v]) => k === "Up." && v === "Ibu Sari"));
+    assert.ok(doc.meta.left.some(([k, v]) => k === "Up." && v === "Ibu Sari"));
+    assert.deepEqual(
+      doc.meta.right.map(([k]) => k),
+      ["No.", "Tanggal", "Perihal"],
+    );
     assert.equal(doc.title, "PENAWARAN HARGA");
   });
   it("splits multi-line company address and keeps website on its own line", () => {
@@ -179,6 +192,25 @@ describe("buildQuotationDocument", () => {
       "Telp: 021-1 · a@b.c",
       "https://example.com",
       "NPWP: 01.234",
+    ]);
+  });
+
+  it("labels head and branch offices when branches exist", () => {
+    const base = sample();
+    const doc = buildQuotationDocument(
+      sample({
+        company: {
+          ...base.company,
+          address: "Jl. Raya 85-D\nSurabaya",
+          branchOfficeAddresses: ["City Walk D/3\nJakarta", "  "],
+        },
+      }),
+    );
+    assert.deepEqual(doc.letterhead.slice(0, 4), [
+      "Head Office: Jl. Raya 85-D",
+      "Surabaya",
+      "Branch Office: City Walk D/3",
+      "Jakarta",
     ]);
   });
 

@@ -9,6 +9,8 @@ export const PROJECT_QUOTATION_STATUSES = [
   "draft",
   "issued",
   "superseded",
+  /** The client accepted this revision: quotations for the project are locked. */
+  "won",
 ] as const;
 export type ProjectQuotationStatus =
   (typeof PROJECT_QUOTATION_STATUSES)[number];
@@ -38,6 +40,10 @@ export type ProjectQuotationLine = {
   priceOverridden: boolean;
   /** Shop drawing item category, copied on issue (drafts read it live). */
   category?: string | null;
+  /** Shop drawing item kode / keterangan / ukuran, copied on issue like category. */
+  code?: string;
+  descriptions?: string[];
+  dimension?: string;
 };
 
 /** Letterhead copied from AppConfig. */
@@ -48,6 +54,8 @@ export type ProjectQuotationCompanySnapshot = {
   phone: string;
   email: string;
   website: string;
+  /** Branch office addresses (multi-line each), printed under the head office. */
+  branchOfficeAddresses?: string[];
   /** Copy of the company profile logo in the `quotation` bucket (set on issue). */
   logoFileId?: Types.ObjectId | null;
   /** AppConfig.companyProfile id the copy was made from (dedupes copies). */
@@ -94,6 +102,8 @@ export interface ProjectQuotationInterface {
   issuedBy?: Types.ObjectId;
   /** Issuer's full name at issue time (printed under "Hormat kami"). */
   issuedByName?: string;
+  wonAt?: Date;
+  wonBy?: Types.ObjectId;
   /** Unguessable id in the client link; the link itself is the credential. */
   verifyToken?: string;
   createdAt?: Date;
@@ -121,6 +131,9 @@ const lineSchema = new Schema(
     unitPrice: { type: String, required: true, trim: true },
     priceOverridden: { type: Boolean, required: true, default: false },
     category: { type: String, required: false, default: null, trim: true },
+    code: { type: String, required: false, trim: true },
+    descriptions: { type: [String], required: false, default: undefined },
+    dimension: { type: String, required: false, trim: true },
   },
   { _id: false },
 );
@@ -133,6 +146,7 @@ const companySchema = new Schema(
     phone: { type: String, default: "", trim: true },
     email: { type: String, default: "", trim: true },
     website: { type: String, default: "", trim: true },
+    branchOfficeAddresses: { type: [String], default: () => [] },
     logoFileId: { type: Schema.Types.ObjectId, required: false, default: null },
     logoSourceId: { type: Schema.Types.ObjectId, required: false, default: null },
   },
@@ -215,6 +229,8 @@ const projectQuotationSchema = new Schema<ProjectQuotationInterface>(
       required: false,
     },
     issuedByName: { type: String, required: false, trim: true },
+    wonAt: { type: Date, required: false },
+    wonBy: { type: Schema.Types.ObjectId, ref: "User", required: false },
   },
   { timestamps: true },
 );

@@ -13,6 +13,7 @@ import type {
   ProjectRabOutDto,
   ProjectRabUserRefOutDto,
 } from "../../dto/projectRab.dto";
+import type { ProjectRabChangeDetailOutDto } from "../../dto/projectRabChange.dto";
 import type {
   ProjectShopDrawingBoqLineOutDto,
   ProjectShopDrawingBoqOutDto,
@@ -39,6 +40,7 @@ import {
 } from "./projectRabChange.service";
 import { assertProjectExists } from "./projectShared";
 import { projectShopDrawingBoqService } from "./projectShopDrawingBoq.service";
+import { loadRabUomPlan } from "./projectRabUomPlan";
 import { userEmailsById } from "../../utils/shared";
 import {
   aggregateBoqLinesToRab,
@@ -47,6 +49,7 @@ import {
   computeLineTotal,
   isLabourLine,
   mergeRabPricing,
+  rabQtyWaste,
   sumGrandTotal,
 } from "./projectRab.planner";
 
@@ -184,17 +187,6 @@ export class ProjectRabService {
     }
 
     const projectOid = new Types.ObjectId(projectId);
-    const [allBoqs, currentFiles] = await Promise.all([
-      ProjectShopDrawingBoqRepo.model
-        .find({ projectId: projectOid })
-        .lean()
-        .exec() as Promise<Array<LeanBoq & { shopDrawingFileId: Types.ObjectId }>>,
-      liveCurrentFiles(projectId),
-    ]);
-    // Only each item's current file version feeds the RAB.
-    const boqs = filterCountedBoqs(allBoqs, currentFiles);
-    const scaffold = aggregateBoqLinesToRab(collectSourceLines(boqs));
-
     let doc = (await ProjectRabRepo.model
       .findOne({ projectId: projectOid })
       .lean()
@@ -217,6 +209,20 @@ export class ProjectRabService {
       }
       return this.toOut(doc, null);
     }
+
+    const [allBoqs, currentFiles] = await Promise.all([
+      ProjectShopDrawingBoqRepo.model
+        .find({ projectId: projectOid })
+        .lean()
+        .exec() as Promise<Array<LeanBoq & { shopDrawingFileId: Types.ObjectId }>>,
+      liveCurrentFiles(projectId),
+    ]);
+    // Only each item's current file version feeds the RAB.
+    const boqs = filterCountedBoqs(allBoqs, currentFiles);
+    const scaffold = aggregateBoqLinesToRab(
+      collectSourceLines(boqs),
+      await loadRabUomPlan(boqs),
+    );
 
     // Draft: live qty from BOQ; keep labour lines; persist scaffold + prices
     if (scaffold.length === 0) {
@@ -250,7 +256,9 @@ export class ProjectRabService {
         materialItemId: new Types.ObjectId(row.materialItemId),
         itemUomId: new Types.ObjectId(row.itemUomId),
         totalQty: row.totalQty,
+        exactQty: row.exactQty,
       };
+      if (row.rounding) line.rounding = row.rounding;
       if (row.unitPrice) line.unitPrice = row.unitPrice;
       if (row.tarifId && Types.ObjectId.isValid(row.tarifId)) {
         line.tarifId = new Types.ObjectId(row.tarifId);
@@ -294,16 +302,12 @@ export class ProjectRabService {
         }>);
     const boqs = filterCountedBoqs(source, await liveCurrentFiles(projectId));
 
-    const documents: ProjectRabElaborationDocOutDto[] = [];
-    for (const row of boqs) {
-      const out = await projectShopDrawingBoqService.get(
+    const documents: ProjectRabElaborationDocOutDto[] = (
+      await projectShopDrawingBoqService.getMany(
         projectId,
-        String(row.shopDrawingItemId),
-        String(row.shopDrawingFileId),
-      );
-      if (!out) continue;
-      documents.push(boqToElaborationDoc(out));
-    }
+        boqs.map((row) => String(row.shopDrawingFileId)),
+      )
+    ).map(boqToElaborationDoc);
 
     documents.sort((a, b) => {
       const byName = a.shopDrawingItemName.localeCompare(b.shopDrawingItemName);
@@ -403,19 +407,15 @@ export class ProjectRabService {
   ): Promise<ProjectRabLabourItemOutDto[]> {
     await assertProjectExists(projectId);
     const items = await itemMasterService.listActiveItems("labour");
-    const result: ProjectRabLabourItemOutDto[] = [];
-    for (const item of items) {
-      const uoms = await itemUomService.listByItem(item.id);
-      result.push({
-        id: item.id,
-        itemId: item.itemId,
-        name: item.name,
-        description: item.description,
-        baseUomId: item.baseUomId,
-        uoms,
-      });
-    }
-    return result;
+    const uomsByItem = await itemUomService.listByItems(items.map((i) => i.id));
+    return items.map((item) => ({
+      id: item.id,
+      itemId: item.itemId,
+      name: item.name,
+      description: item.description,
+      baseUomId: item.baseUomId,
+      uoms: uomsByItem.get(item.id) ?? [],
+    }));
   }
 
   async addLabourLine(
@@ -532,6 +532,8 @@ export class ProjectRabService {
         materialItemId: l.materialItemId,
         itemUomId: l.itemUomId,
         totalQty: l.totalQty,
+        ...(l.exactQty ? { exactQty: l.exactQty } : {}),
+        ...(l.rounding ? { rounding: l.rounding } : {}),
         ...(l.origin ? { origin: l.origin } : {}),
         ...(l.addedAt ? { addedAt: l.addedAt } : {}),
         ...(l.addedBy ? { addedBy: l.addedBy } : {}),
@@ -617,14 +619,11 @@ export class ProjectRabService {
       return { id, name: names.get(id) ?? id };
     };
 
-    const { items: itemMeta, uoms: uomMeta } = await loadItemMeta(itemIds);
-    await Promise.all(
-      itemIds.map(async (id) => {
-        const tarif = await itemTarifService.resolveAsOf(id, asOf);
-        const meta = itemMeta.get(id);
-        if (meta) meta.hasTarif = tarif !== null;
-      }),
-    );
+    const [{ items: itemMeta, uoms: uomMeta }, withTarif] = await Promise.all([
+      loadItemMeta(itemIds),
+      itemTarifService.itemIdsWithTarifAsOf(itemIds, asOf),
+    ]);
+    for (const [id, meta] of itemMeta) meta.hasTarif = withTarif.has(id);
 
     const status = doc.status ?? "draft";
     const changeDraftOpen = Boolean(change);
@@ -648,6 +647,11 @@ export class ProjectRabService {
         uomSymbol: uom.symbol,
         uomName: uom.name,
         totalQty: line.totalQty,
+        exactQty: line.exactQty ?? null,
+        wasteQty: rabQtyWaste(line.exactQty, line.totalQty),
+        rounding: line.rounding
+          ? { decimals: line.rounding.decimals, mode: line.rounding.mode }
+          : null,
         unitPrice,
         tarifId: line.tarifId ? String(line.tarifId) : null,
         lineTotal: computeLineTotal(line.totalQty, unitPrice),
@@ -687,6 +691,7 @@ export class ProjectRabService {
     let changeDraft: ProjectRabChangeDraftRefOutDto | null = null;
     let baselineGrandTotal: string | null = null;
     let changeDiff: ProjectRabChangeDiffOutDto | null = null;
+    let draftDetail: ProjectRabChangeDetailOutDto | null = null;
     if (change) {
       const openedBy = userRef(String(change.openedBy));
       if (openedBy) {
@@ -698,6 +703,7 @@ export class ProjectRabService {
         };
       }
       const detail = await projectRabChangeService.describe(change);
+      draftDetail = detail;
       baselineGrandTotal = detail.baselineGrandTotal;
       changeDiff = {
         lineDiff: detail.lineDiff.map((d) => ({
@@ -719,6 +725,13 @@ export class ProjectRabService {
       await projectRabChangeService.latestCommittedRevision(
         String(doc.projectId),
       );
+    const materialChanges =
+      status === "locked"
+        ? await projectRabChangeService.materialChangeHistory(
+            String(doc.projectId),
+            draftDetail,
+          )
+        : [];
 
     return {
       id: String(doc._id),
@@ -730,6 +743,7 @@ export class ProjectRabService {
       currentRevision,
       baselineGrandTotal,
       changeDiff,
+      materialChanges,
       groups: [...groupsMap.values()],
       grandTotal: sumGrandTotal(lineOuts.map((l) => l.lineTotal)),
     };

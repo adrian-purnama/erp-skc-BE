@@ -69,6 +69,20 @@ router.post(
   quotationController.reissue,
 );
 
+router.post(
+  "/:id/won",
+  requireUser,
+  requirePermission({ key: "quotation.manage" }),
+  quotationController.markWon,
+);
+
+router.delete(
+  "/:id/won",
+  requireUser,
+  requirePermission({ key: "quotation.manage" }),
+  quotationController.unmarkWon,
+);
+
 router.delete(
   "/:id",
   requireUser,

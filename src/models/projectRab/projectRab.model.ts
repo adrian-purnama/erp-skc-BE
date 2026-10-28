@@ -1,5 +1,6 @@
 import { Schema, type Types } from "mongoose";
 import { auditedModel } from "../../core/audit/auditedModel";
+import { UOM_ROUNDING_MODES, type UomRoundingMode } from "../uom/uom.model";
 
 export const PROJECT_RAB_STATUSES = ["draft", "locked"] as const;
 export type ProjectRabStatus = (typeof PROJECT_RAB_STATUSES)[number];
@@ -12,7 +13,12 @@ export type ProjectRabLine = {
   key: string;
   materialItemId: Types.ObjectId;
   itemUomId: Types.ObjectId;
+  /** Purchase qty (exactQty rounded by the UOM rule); priced quantity. */
   totalQty: string;
+  /** Σ BOQ need before rounding; absent on labour / legacy lines. */
+  exactQty?: string;
+  /** UOM rounding rule applied, snapshotted with the line. */
+  rounding?: { decimals: number; mode: UomRoundingMode };
   unitPrice?: string;
   tarifId?: Types.ObjectId;
   /** Set at lock (all then-current lines) or when appended after lock. */
@@ -33,6 +39,14 @@ export interface ProjectRabInterface {
   updatedAt?: Date;
 }
 
+export const projectRabLineRoundingSchema = new Schema(
+  {
+    decimals: { type: Number, required: true, min: 0 },
+    mode: { type: String, required: true, enum: UOM_ROUNDING_MODES },
+  },
+  { _id: false },
+);
+
 const projectRabLineSchema = new Schema(
   {
     key: { type: String, required: true, trim: true },
@@ -47,6 +61,8 @@ const projectRabLineSchema = new Schema(
       required: true,
     },
     totalQty: { type: String, required: true, trim: true },
+    exactQty: { type: String, required: false, trim: true },
+    rounding: { type: projectRabLineRoundingSchema, required: false },
     unitPrice: { type: String, required: false, trim: true },
     tarifId: {
       type: Schema.Types.ObjectId,

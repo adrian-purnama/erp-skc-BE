@@ -5,16 +5,19 @@ import type {
   ProjectShopDrawingFileOutDto,
   ProjectShopDrawingItemOutDto,
 } from "../../dto/projectShopDrawing.dto";
+import { ProjectRepo } from "../../models/project/project.model";
+import { ProjectProductionFileRepo } from "../../models/projectProductionFile/projectProductionFile.model";
 import { ProjectShopDrawingBoqRepo } from "../../models/projectShopDrawingBoq/projectShopDrawingBoq.model";
 import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument/projectShopDrawingDocument.model";
 import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem/projectShopDrawingItem.model";
 import {
   assertShopDrawingFile,
-  parseShopDrawingItemCategory,
-  parseShopDrawingItemName,
+  type ShopDrawingItemInDto,
 } from "../../validation/projectShopDrawing";
+import { projectRabChangeService } from "./projectRabChange.service";
 import { rabLockState } from "./projectRabLock";
-import { assertProjectExists } from "./projectShared";
+import { purgeShopDrawingItem } from "./projectShopDrawingPurge";
+import { assertProjectExists, shopDrawingItemLabel } from "./projectShared";
 import {
   sameAsVersionFor,
   VersionedProjectFileService,
@@ -116,8 +119,12 @@ function shopDrawingOriginalFilename(
 type LeanItem = {
   _id: Types.ObjectId;
   projectId: Types.ObjectId;
+  code?: string;
   name: string;
+  descriptions?: string[];
+  dimension?: string;
   category?: string | null;
+  mockupApproveDate?: string | null;
   isDeleted?: boolean;
   deletedAt?: Date | null;
   deletedBy?: Types.ObjectId | null;
@@ -136,6 +143,52 @@ async function assertLiveItem(
   if (!item) throw new Error("Item not found");
   if (item.isDeleted) throw new Error("Item deleted");
   return item;
+}
+
+type ItemMetaOut = Pick<
+  ProjectShopDrawingItemOutDto,
+  | "id"
+  | "code"
+  | "name"
+  | "label"
+  | "descriptions"
+  | "dimension"
+  | "category"
+  | "mockupApproveDate"
+>;
+
+function toItemMeta(item: LeanItem): ItemMetaOut {
+  return {
+    id: String(item._id),
+    code: item.code ?? "",
+    name: item.name,
+    label: shopDrawingItemLabel(item),
+    descriptions: item.descriptions ?? [],
+    dimension: item.dimension ?? "",
+    category: item.category ?? null,
+    mockupApproveDate: item.mockupApproveDate?.trim()
+      ? item.mockupApproveDate.trim()
+      : null,
+  };
+}
+
+/** Kode is the item's identity within a project. */
+async function assertCodeFree(
+  projectId: string,
+  code: string,
+  exceptItemId?: string,
+): Promise<void> {
+  const dup = await ProjectShopDrawingItemRepo.model
+    .findOne({
+      projectId,
+      code,
+      isDeleted: false,
+      ...(exceptItemId ? { _id: { $ne: exceptItemId } } : {}),
+    })
+    .select({ _id: 1 })
+    .lean()
+    .exec();
+  if (dup) throw new Error(`Kode ${code} is already used by another item`);
 }
 
 function toFileOut(
@@ -189,13 +242,50 @@ const files = new VersionedProjectFileService({
   },
 });
 
+/** File Produksi: same versioning as SD files, but no BOQ and no RAB lock. */
+const productionFiles = new VersionedProjectFileService({
+  repo: ProjectProductionFileRepo,
+  scopeField: "itemId",
+  noun: "file",
+  toOut: toFileOut,
+  assertUpload: async (projectId, itemId, file) => {
+    await assertLiveItem(projectId, itemId);
+    assertShopDrawingFile(file);
+  },
+  assertScopeLive: assertLiveItem,
+  hardDelete: { beforeDelete: async () => {} },
+});
+
+/** After release, production must always have a current File Produksi. */
+async function assertProductionFileDeletable(
+  projectId: string,
+  fileId: string,
+): Promise<void> {
+  const project = await ProjectRepo.model
+    .findById(projectId)
+    .select({ productionReleasedAt: 1 })
+    .lean()
+    .exec();
+  if (!project?.productionReleasedAt) return;
+  const file = await ProjectProductionFileRepo.model
+    .findOne({ _id: fileId, projectId })
+    .select({ isCurrent: 1 })
+    .lean()
+    .exec();
+  if (file?.isCurrent) {
+    throw new Error(
+      "Project is released to production: upload or select another version before deleting the current File Produksi",
+    );
+  }
+}
+
 export class ProjectShopDrawingService {
   async listByProject(projectId: string): Promise<ProjectShopDrawingItemOutDto[]> {
     await assertProjectExists(projectId);
 
     const items = (await ProjectShopDrawingItemRepo.model
       .find({ projectId, isDeleted: false })
-      .sort({ name: 1 })
+      .sort({ code: 1, name: 1 })
       .lean()
       .exec()) as LeanItem[];
 
@@ -209,8 +299,27 @@ export class ProjectShopDrawingService {
       docs.map((f) => f._id),
     );
 
+    const production = await productionFiles.list(
+      { projectId, isDeleted: { $ne: true } },
+      { version: -1 },
+    );
+    const { change } = await rabLockState(projectId);
+    const removedInChange = new Set(
+      (change?.removedItemIds ?? []).map(String),
+    );
+
     return items.map((item) => {
       const itemId = String(item._id);
+      const itemProduction = production.docs.filter(
+        (d) => String(d.itemId) === itemId,
+      );
+      const productionVersions = itemProduction.map((d) =>
+        toFileOut(d, production.names, {
+          sameAsVersion: sameAsVersionFor(d, itemProduction),
+        }),
+      );
+      const productionCurrent =
+        productionVersions.find((v) => v.isCurrent && !v.isDeleted) ?? null;
       const itemDocs = docs.filter((d) => String(d.itemId) === itemId);
       const versions = itemDocs.map((d) =>
         toFileOut(d, names, {
@@ -221,80 +330,74 @@ export class ProjectShopDrawingService {
       const current =
         versions.find((v) => v.isCurrent && !v.isDeleted) ?? null;
       return {
-        id: itemId,
-        name: item.name,
-        category: item.category ?? null,
+        ...toItemMeta(item),
         current,
         versions,
+        productionCurrent,
+        productionVersions,
+        removedInChange: removedInChange.has(itemId),
       };
     });
   }
 
   async createItem(
     projectId: string,
-    rawName: string,
-    rawCategory: string | null,
+    input: ShopDrawingItemInDto,
     createdByUserId?: string,
   ): Promise<ProjectShopDrawingItemOutDto> {
     await assertProjectExists(projectId);
-    const name = parseShopDrawingItemName(rawName);
-    const category = parseShopDrawingItemCategory(rawCategory);
     const actorId =
       createdByUserId || als.getStore()?.userId || undefined;
+    await assertCodeFree(projectId, input.code);
 
-    const dup = await ProjectShopDrawingItemRepo.model
-      .findOne({ projectId, name, isDeleted: false })
-      .lean()
-      .exec();
-    if (dup) throw new Error("An item with this name already exists");
-
-    const created = await ProjectShopDrawingItemRepo.create({
+    const created = (await ProjectShopDrawingItemRepo.create({
       projectId: new Types.ObjectId(projectId),
-      name,
-      category,
+      code: input.code,
+      name: input.name,
+      descriptions: input.descriptions,
+      dimension: input.dimension,
+      category: input.category,
+      mockupApproveDate: input.mockupApproveDate,
       createdBy: actorId ? new Types.ObjectId(actorId) : undefined,
       isDeleted: false,
       deletedAt: null,
       deletedBy: null,
-    });
+    })) as unknown as LeanItem;
 
     return {
-      id: String(created._id),
-      name,
-      category,
+      ...toItemMeta(created),
       current: null,
       versions: [],
+      productionCurrent: null,
+      productionVersions: [],
+      removedInChange: false,
     };
   }
 
-  async renameItem(
+  /** Edit kode, name, keterangan, ukuran and category; file names follow the label. */
+  async updateItem(
     projectId: string,
     itemId: string,
-    rawName: string,
-    rawCategory: string | null,
+    input: ShopDrawingItemInDto,
   ): Promise<ProjectShopDrawingItemOutDto> {
     await assertProjectExists(projectId);
     const existing = await assertLiveItem(projectId, itemId);
-    const name = parseShopDrawingItemName(rawName);
-    const category = parseShopDrawingItemCategory(rawCategory);
-
-    const dup = await ProjectShopDrawingItemRepo.model
-      .findOne({
-        projectId,
-        name,
-        isDeleted: false,
-        _id: { $ne: itemId },
-      })
-      .lean()
-      .exec();
-    if (dup) throw new Error("An item with this name already exists");
+    await assertCodeFree(projectId, input.code, itemId);
 
     const updated = await ProjectShopDrawingItemRepo.findByIdAndUpdate(itemId, {
-      $set: { name, category },
+      $set: {
+        code: input.code,
+        name: input.name,
+        descriptions: input.descriptions,
+        dimension: input.dimension,
+        category: input.category,
+        mockupApproveDate: input.mockupApproveDate,
+      },
     });
     if (!updated) throw new Error("Item not found");
 
-    if (existing.name !== name) {
+    const label = shopDrawingItemLabel(input);
+    if (shopDrawingItemLabel(existing) !== label) {
       const docs = (await ProjectShopDrawingDocumentRepo.model
         .find({ projectId, itemId })
         .select({ _id: 1, version: 1, originalFilename: 1 })
@@ -308,7 +411,7 @@ export class ProjectShopDrawingService {
         await files.rename(
           projectId,
           String(doc._id),
-          shopDrawingOriginalFilename(doc.version, name, doc.originalFilename),
+          shopDrawingOriginalFilename(doc.version, label, doc.originalFilename),
         );
       }
     }
@@ -319,29 +422,37 @@ export class ProjectShopDrawingService {
     return row;
   }
 
-  async hardDeleteItem(projectId: string, itemId: string): Promise<void> {
+  /**
+   * RAB not locked: delete now. RAB locked: the item is removed inside the open
+   * change and deleted on commit (discard keeps it).
+   */
+  async hardDeleteItem(
+    projectId: string,
+    itemId: string,
+  ): Promise<{ removedInChange: boolean }> {
     await assertProjectExists(projectId);
     await assertLiveItem(projectId, itemId);
 
-    const rows = (await ProjectShopDrawingDocumentRepo.model
-      .find({ projectId, itemId })
-      .select({ _id: 1 })
-      .lean()
-      .exec()) as Array<{ _id: Types.ObjectId }>;
-    await assertFilesDeletableWhileLocked(
-      projectId,
-      rows.map((r) => String(r._id)),
-    );
-
-    for (const row of rows) {
-      await files.remove(projectId, String(row._id));
+    const { locked, change } = await rabLockState(projectId);
+    if (locked) {
+      if (!change) {
+        throw new Error(
+          "RAB is locked: open a RAB change to remove this item",
+        );
+      }
+      await projectRabChangeService.markItemRemovedInDraft(projectId, itemId);
+      return { removedInChange: true };
     }
 
-    const removed = await ProjectShopDrawingItemRepo.deleteOne({
-      _id: itemId,
-      projectId,
-    });
-    if (!removed) throw new Error("Item not found");
+    await purgeShopDrawingItem(projectId, itemId);
+    return { removedInChange: false };
+  }
+
+  /** Undo "remove" on an item inside the open RAB change. */
+  async restoreItem(projectId: string, itemId: string): Promise<void> {
+    await assertProjectExists(projectId);
+    await assertLiveItem(projectId, itemId);
+    await projectRabChangeService.restoreItemInDraft(projectId, itemId);
   }
 
   async upload(
@@ -361,7 +472,11 @@ export class ProjectShopDrawingService {
     return files.rename(
       projectId,
       out.id,
-      shopDrawingOriginalFilename(out.version, item.name, file.originalname),
+      shopDrawingOriginalFilename(
+        out.version,
+        shopDrawingItemLabel(item),
+        file.originalname,
+      ),
     );
   }
 
@@ -382,6 +497,34 @@ export class ProjectShopDrawingService {
 
   openDownload(projectId: string, fileId: string) {
     return files.openDownload(projectId, fileId);
+  }
+
+  async uploadProductionFile(
+    projectId: string,
+    itemId: string,
+    file: Express.Multer.File,
+    opts: { force?: boolean; uploadedByUserId?: string } = {},
+  ): Promise<ProjectShopDrawingFileOutDto> {
+    await assertLiveItem(projectId, itemId);
+    return productionFiles.upload(projectId, itemId, file, opts);
+  }
+
+  setCurrentProductionFile(
+    projectId: string,
+    fileId: string,
+  ): Promise<ProjectShopDrawingFileOutDto> {
+    return productionFiles.setCurrent(projectId, fileId);
+  }
+
+  async deleteProductionFile(projectId: string, fileId: string): Promise<void> {
+    await assertProjectExists(projectId);
+    if (!Types.ObjectId.isValid(fileId)) throw new Error("Invalid file id");
+    await assertProductionFileDeletable(projectId, fileId);
+    await productionFiles.remove(projectId, fileId);
+  }
+
+  openProductionDownload(projectId: string, fileId: string) {
+    return productionFiles.openDownload(projectId, fileId);
   }
 }
 

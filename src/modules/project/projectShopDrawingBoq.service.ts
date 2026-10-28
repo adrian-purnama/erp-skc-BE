@@ -25,11 +25,17 @@ import {
   parsePositiveDecimal,
 } from "../itemMaster/itemUomConvert";
 import { itemMasterService } from "../itemMaster/itemMaster.service";
+import {
+  loadItemMeta,
+  type ItemMeta,
+  type UomMeta,
+} from "../itemMaster/itemMeta";
 import { itemUomService } from "../itemMaster/itemUom.service";
 import { uomService } from "../uom/uom.service";
+import { collectSourceLines } from "./projectRab.planner";
 import { projectRabChangeService } from "./projectRabChange.service";
 import { rabLocked } from "./projectRabLock";
-import { assertProjectExists } from "./projectShared";
+import { assertProjectExists, shopDrawingItemLabel } from "./projectShared";
 
 type LeanFile = {
   _id: Types.ObjectId;
@@ -44,8 +50,18 @@ type LeanFile = {
 type LeanItem = {
   _id: Types.ObjectId;
   projectId: Types.ObjectId;
+  code?: string;
   name: string;
   isDeleted?: boolean;
+};
+
+/** Everything toOut needs besides the BOQ itself, loaded once per batch. */
+type BoqRenderContext = {
+  materials: Map<string, ItemMeta>;
+  uoms: Map<string, UomMeta>;
+  sdItems: Map<string, LeanItem>;
+  files: Map<string, LeanFile>;
+  rabLocked: boolean;
 };
 
 type StoredLine = ProjectShopDrawingBoqLine;
@@ -57,6 +73,7 @@ type LeanBoq = {
   shopDrawingItemId: Types.ObjectId;
   shopDrawingFileId: Types.ObjectId;
   makeQty: string;
+  mockupApproveDate?: string | null;
   main?: ProjectShopDrawingBoqInterface["main"];
   lighting?: ProjectShopDrawingBoqInterface["lighting"];
   mounting?: ProjectShopDrawingBoqInterface["mounting"];
@@ -68,8 +85,10 @@ type LeanBoq = {
 function snapshotFromLine(line: StoredLine): {
   formula: string;
   inputs: { v1: string; v2?: string; v3?: string };
+  yieldQty: string;
   qtyPerUnit: string;
 } {
+  const yieldQty = line.yieldQty?.trim() || "1";
   if (line.formula && line.inputs?.v1) {
     const inputs: { v1: string; v2?: string; v3?: string } = {
       v1: line.inputs.v1,
@@ -79,12 +98,14 @@ function snapshotFromLine(line: StoredLine): {
     return {
       formula: line.formula,
       inputs,
+      yieldQty,
       qtyPerUnit: line.qtyPerUnit,
     };
   }
   return {
     formula: "v1",
     inputs: { v1: line.qtyPerUnit },
+    yieldQty,
     qtyPerUnit: line.qtyPerUnit,
   };
 }
@@ -118,20 +139,16 @@ export class ProjectShopDrawingBoqService {
   ): Promise<ProjectShopDrawingBoqMaterialOutDto[]> {
     await assertProjectExists(projectId);
     const items = await itemMasterService.listActiveItems("material");
-    const result: ProjectShopDrawingBoqMaterialOutDto[] = [];
-    for (const item of items) {
-      const uoms = await itemUomService.listByItem(item.id);
-      result.push({
-        id: item.id,
-        itemId: item.itemId,
-        name: item.name,
-        description: item.description,
-        categoryIds: item.categoryIds ?? [],
-        baseUomId: item.baseUomId,
-        uoms,
-      });
-    }
-    return result;
+    const uomsByItem = await itemUomService.listByItems(items.map((i) => i.id));
+    return items.map((item) => ({
+      id: item.id,
+      itemId: item.itemId,
+      name: item.name,
+      description: item.description,
+      categoryIds: item.categoryIds ?? [],
+      baseUomId: item.baseUomId,
+      uoms: uomsByItem.get(item.id) ?? [],
+    }));
   }
 
   async summary(
@@ -141,7 +158,7 @@ export class ProjectShopDrawingBoqService {
 
     const items = (await ProjectShopDrawingItemRepo.model
       .find({ projectId, isDeleted: false })
-      .sort({ name: 1 })
+      .sort({ code: 1, name: 1 })
       .lean()
       .exec()) as LeanItem[];
 
@@ -172,7 +189,7 @@ export class ProjectShopDrawingBoqService {
           isCurrent: Boolean(f.isCurrent),
           hasBoq: boqFileIds.has(String(f._id)),
         }));
-      return { itemId, name: item.name, versions };
+      return { itemId, name: shopDrawingItemLabel(item), versions };
     });
   }
 
@@ -184,7 +201,7 @@ export class ProjectShopDrawingBoqService {
 
     const items = (await ProjectShopDrawingItemRepo.model
       .find({ projectId, isDeleted: false })
-      .sort({ name: 1 })
+      .sort({ code: 1, name: 1 })
       .lean()
       .exec()) as LeanItem[];
     if (items.length === 0) return [];
@@ -227,6 +244,7 @@ export class ProjectShopDrawingBoqService {
           shopDrawingItemId: snap.shopDrawingItemId,
           shopDrawingFileId: snap.shopDrawingFileId,
           makeQty: snap.makeQty,
+          mockupApproveDate: snap.mockupApproveDate ?? null,
           main: snap.main,
           lighting: snap.lighting,
           mounting: snap.mounting,
@@ -235,15 +253,54 @@ export class ProjectShopDrawingBoqService {
       }
     }
 
-    const result: ProjectShopDrawingBoqOutDto[] = [];
+    const ordered: LeanBoq[] = [];
     for (const item of items) {
       const file = fileByItemId.get(String(item._id));
       if (!file) continue;
       const boq = boqByFileId.get(String(file._id));
       if (!boq) continue;
-      result.push(await this.toOut(boq, changeDraftOpen));
+      ordered.push(boq);
     }
-    return result;
+    return this.toOutMany(ordered, changeDraftOpen);
+  }
+
+  /**
+   * Several BOQs by file, as the open change sees them when there is one.
+   * Loads materials, drawing items and files once for the whole batch.
+   */
+  async getMany(
+    projectId: string,
+    shopDrawingFileIds: string[],
+  ): Promise<ProjectShopDrawingBoqOutDto[]> {
+    await assertProjectExists(projectId);
+    const wanted = new Set(shopDrawingFileIds);
+    if (wanted.size === 0) return [];
+    const change = await projectRabChangeService.findOpenDraft(projectId);
+    const boqs: LeanBoq[] = change
+      ? change.boqs
+          .filter((snap) => wanted.has(String(snap.shopDrawingFileId)))
+          .map((snap) => ({
+            _id: snap.shopDrawingFileId,
+            projectId: new Types.ObjectId(projectId),
+            shopDrawingItemId: snap.shopDrawingItemId,
+            shopDrawingFileId: snap.shopDrawingFileId,
+            makeQty: snap.makeQty,
+            mockupApproveDate: snap.mockupApproveDate ?? null,
+            main: snap.main,
+            lighting: snap.lighting,
+            mounting: snap.mounting,
+            other: snap.other,
+          }))
+      : ((await ProjectShopDrawingBoqRepo.model
+          .find({
+            projectId,
+            shopDrawingFileId: {
+              $in: [...wanted].map((id) => new Types.ObjectId(id)),
+            },
+          })
+          .lean()
+          .exec()) as LeanBoq[]);
+    return this.toOutMany(boqs, Boolean(change));
   }
 
   async get(
@@ -272,6 +329,7 @@ export class ProjectShopDrawingBoqService {
         shopDrawingItemId: snap.shopDrawingItemId,
         shopDrawingFileId: snap.shopDrawingFileId,
         makeQty: snap.makeQty,
+        mockupApproveDate: snap.mockupApproveDate ?? null,
         main: snap.main,
         lighting: snap.lighting,
         mounting: snap.mounting,
@@ -369,6 +427,7 @@ export class ProjectShopDrawingBoqService {
         shopDrawingItemId: new Types.ObjectId(input.shopDrawingItemId),
         shopDrawingFileId: fileOid,
         makeQty: input.makeQty,
+        mockupApproveDate: input.mockupApproveDate ?? null,
         main: resolvedMain,
         lighting: resolvedLighting,
         mounting: resolvedMounting,
@@ -380,6 +439,7 @@ export class ProjectShopDrawingBoqService {
         shopDrawingItemId: new Types.ObjectId(input.shopDrawingItemId),
         shopDrawingFileId: fileOid,
         makeQty: input.makeQty,
+        mockupApproveDate: input.mockupApproveDate ?? null,
         main: resolvedMain,
         lighting: resolvedLighting,
         mounting: resolvedMounting,
@@ -398,6 +458,7 @@ export class ProjectShopDrawingBoqService {
       shopDrawingItemId: new Types.ObjectId(input.shopDrawingItemId),
       shopDrawingFileId: new Types.ObjectId(input.shopDrawingFileId),
       makeQty: input.makeQty,
+      mockupApproveDate: input.mockupApproveDate ?? null,
       main: resolvedMain,
       lighting: resolvedLighting,
       mounting: resolvedMounting,
@@ -509,37 +570,44 @@ export class ProjectShopDrawingBoqService {
     if (!itemUom) {
       throw new Error("UOM must belong to the selected material");
     }
-    const qtyPerUnit = uomService.calculateQty(line.formula, line.inputs);
+    const formulaQty = uomService.calculateQty(line.formula, line.inputs);
+    const yieldQty = parsePositiveDecimal(line.yieldQty, "yieldQty");
+    const qtyPerUnit = parsePositiveDecimal(formulaQty, "qtyPerUnit").div(
+      yieldQty,
+    );
+    if (qtyPerUnit.lte(0) || qtyPerUnit.toDecimalPlaces(8).lte(0)) {
+      throw new Error("Quantity per unit is too small (check yield)");
+    }
     return {
       materialItemId: new Types.ObjectId(line.materialItemId),
       itemUomId: new Types.ObjectId(line.itemUomId),
       formula: line.formula,
       inputs: line.inputs,
-      qtyPerUnit,
+      ...(yieldQty.eq(1) ? {} : { yieldQty: formatDecimal(yieldQty) }),
+      qtyPerUnit: formatDecimal(qtyPerUnit),
     };
   }
 
-  private async toLineOut(
+  private toLineOut(
     line: StoredLine,
     makeQty: string,
-  ): Promise<ProjectShopDrawingBoqLineOutDto> {
-    const material = await itemMasterService.getById(
-      String(line.materialItemId),
-    );
-    const uoms = await itemUomService.listByItem(String(line.materialItemId));
-    const uom = uoms.find((u) => u.id === String(line.itemUomId));
+    ctx: BoqRenderContext,
+  ): ProjectShopDrawingBoqLineOutDto {
+    const material = ctx.materials.get(String(line.materialItemId));
+    const uom = ctx.uoms.get(String(line.itemUomId));
     const snap = snapshotFromLine(line);
     const qty = parsePositiveDecimal(snap.qtyPerUnit, "qtyPerUnit");
     const make = parsePositiveDecimal(makeQty, "makeQty");
     return {
       materialItemId: String(line.materialItemId),
-      materialCode: material?.itemId ?? "—",
+      materialCode: material?.code ?? "—",
       materialName: material?.name ?? "Unknown",
       itemUomId: String(line.itemUomId),
       uomSymbol: uom?.symbol ?? "—",
       uomName: uom?.name ?? "—",
       formula: snap.formula,
       inputs: snap.inputs,
+      yieldQty: snap.yieldQty,
       qtyPerUnit: snap.qtyPerUnit,
       totalQty: formatDecimal(qty.mul(make)),
       addedAt: line.addedAt ? line.addedAt.toISOString() : null,
@@ -548,39 +616,78 @@ export class ProjectShopDrawingBoqService {
     };
   }
 
-  private async toBaseOut(
+  private toBaseOut(
     base: StoredBase,
     makeQty: string,
-  ): Promise<ProjectShopDrawingBoqBaseOutDto> {
-    const out = await this.toLineOut(base, makeQty);
+    ctx: BoqRenderContext,
+  ): ProjectShopDrawingBoqBaseOutDto {
+    const out = this.toLineOut(base, makeQty, ctx);
     return {
       ...out,
       key: base.key,
       ...(base.spec ? { spec: base.spec } : {}),
-      finishings: await Promise.all(
-        (base.finishings ?? []).map(async (finishing) => ({
-          finishingOrder: finishing.finishingOrder,
-          placement: finishing.placement as ShopDrawingBoqFinishPlacement,
-          lines: await Promise.all(
-            finishing.lines.map((line) => this.toLineOut(line, makeQty)),
-          ),
-        })),
-      ),
+      finishings: (base.finishings ?? []).map((finishing) => ({
+        finishingOrder: finishing.finishingOrder,
+        placement: finishing.placement as ShopDrawingBoqFinishPlacement,
+        lines: finishing.lines.map((line) => this.toLineOut(line, makeQty, ctx)),
+      })),
     };
+  }
+
+  /** Materials, drawing items, files and the RAB lock for a batch of BOQs of one project. */
+  private async loadRenderContext(boqs: LeanBoq[]): Promise<BoqRenderContext> {
+    const materialIds = collectSourceLines(boqs).map(
+      (l) => l.materialItemId,
+    );
+    const [meta, sdItems, files, locked] = await Promise.all([
+      loadItemMeta(materialIds),
+      boqs.length > 0
+        ? (ProjectShopDrawingItemRepo.model
+            .find({ _id: { $in: boqs.map((b) => b.shopDrawingItemId) } })
+            .lean()
+            .exec() as Promise<LeanItem[]>)
+        : Promise.resolve([] as LeanItem[]),
+      boqs.length > 0
+        ? (ProjectShopDrawingDocumentRepo.model
+            .find({ _id: { $in: boqs.map((b) => b.shopDrawingFileId) } })
+            .lean()
+            .exec() as Promise<LeanFile[]>)
+        : Promise.resolve([] as LeanFile[]),
+      boqs.length > 0 ? rabLocked(String(boqs[0]!.projectId)) : false,
+    ]);
+    return {
+      materials: meta.items,
+      uoms: meta.uoms,
+      sdItems: new Map(sdItems.map((i) => [String(i._id), i])),
+      files: new Map(files.map((f) => [String(f._id), f])),
+      rabLocked: locked,
+    };
+  }
+
+  private async toOutMany(
+    boqs: LeanBoq[],
+    changeDraftOpen: boolean,
+  ): Promise<ProjectShopDrawingBoqOutDto[]> {
+    if (boqs.length === 0) return [];
+    const ctx = await this.loadRenderContext(boqs);
+    return boqs.map((boq) => this.render(boq, changeDraftOpen, ctx));
   }
 
   private async toOut(
     boq: LeanBoq,
     changeDraftOpen: boolean,
   ): Promise<ProjectShopDrawingBoqOutDto> {
-    const item = (await ProjectShopDrawingItemRepo.model
-      .findById(boq.shopDrawingItemId)
-      .lean()
-      .exec()) as LeanItem | null;
-    const file = (await ProjectShopDrawingDocumentRepo.model
-      .findById(boq.shopDrawingFileId)
-      .lean()
-      .exec()) as LeanFile | null;
+    const ctx = await this.loadRenderContext([boq]);
+    return this.render(boq, changeDraftOpen, ctx);
+  }
+
+  private render(
+    boq: LeanBoq,
+    changeDraftOpen: boolean,
+    ctx: BoqRenderContext,
+  ): ProjectShopDrawingBoqOutDto {
+    const item = ctx.sdItems.get(String(boq.shopDrawingItemId)) ?? null;
+    const file = ctx.files.get(String(boq.shopDrawingFileId)) ?? null;
 
     const structured = isStructuredBoq(boq);
     const main = structured && boq.main ? boq.main : emptyMain();
@@ -595,26 +702,22 @@ export class ProjectShopDrawingBoqService {
       ? main.assembly.lines
       : [];
     const mainOut = {
-      parts: await Promise.all(
-        parts.map(async (part) => {
-          const bases = Array.isArray(part.bases) ? part.bases : [];
-          return {
-            key: part.key,
-            ...(part.label ? { label: part.label } : {}),
-            bases: await Promise.all(
-              bases.map((base) => this.toBaseOut(base, boq.makeQty)),
-            ),
-          };
-        }),
-      ),
+      parts: parts.map((part) => {
+        const bases = Array.isArray(part.bases) ? part.bases : [];
+        return {
+          key: part.key,
+          ...(part.label ? { label: part.label } : {}),
+          bases: bases.map((base) => this.toBaseOut(base, boq.makeQty, ctx)),
+        };
+      }),
       assembly: {
-        lines: await Promise.all(
-          assemblyLines.map((line) => this.toLineOut(line, boq.makeQty)),
+        lines: assemblyLines.map((line) =>
+          this.toLineOut(line, boq.makeQty, ctx),
         ),
       },
     };
 
-    const isLocked = await rabLocked(String(boq.projectId));
+    const isLocked = ctx.rabLocked;
     const contentFrozenAt = boq.contentFrozenAt ?? null;
     const contentFrozen =
       (Boolean(contentFrozenAt) || isLocked) && !changeDraftOpen;
@@ -623,26 +726,29 @@ export class ProjectShopDrawingBoqService {
       id: String(boq._id),
       projectId: String(boq.projectId),
       shopDrawingItemId: String(boq.shopDrawingItemId),
-      shopDrawingItemName: item?.name ?? "—",
+      shopDrawingItemName: item ? shopDrawingItemLabel(item) : "—",
       shopDrawingFileId: String(boq.shopDrawingFileId),
       fileVersion: file?.version ?? 0,
       originalFilename: file?.originalFilename ?? "—",
       makeQty: boq.makeQty,
+      mockupApproveDate: boq.mockupApproveDate?.trim()
+        ? boq.mockupApproveDate.trim()
+        : null,
       main: mainOut,
       lighting: {
-        lines: await Promise.all(
-          lighting.lines.map((line) => this.toLineOut(line, boq.makeQty)),
+        lines: lighting.lines.map((line) =>
+          this.toLineOut(line, boq.makeQty, ctx),
         ),
       },
       mounting: {
         type: (mounting.type ?? "mounted") as ShopDrawingBoqMountingType,
-        lines: await Promise.all(
-          mounting.lines.map((line) => this.toLineOut(line, boq.makeQty)),
+        lines: mounting.lines.map((line) =>
+          this.toLineOut(line, boq.makeQty, ctx),
         ),
       },
       other: {
-        lines: await Promise.all(
-          other.lines.map((line) => this.toLineOut(line, boq.makeQty)),
+        lines: other.lines.map((line) =>
+          this.toLineOut(line, boq.makeQty, ctx),
         ),
       },
       contentFrozen,

@@ -9,6 +9,7 @@ export interface AppConfigInterface {
     companyName?: string;
     npwp?: string;
     address?: string;
+    branchOfficeAddresses?: string[];
     phone?: string;
     email?: string;
     website?: string;
@@ -47,6 +48,11 @@ const appConfigSchema = new Schema<AppConfigInterface>({
     companyName: optionalString,
     npwp: optionalString,
     address: optionalString,
+    branchOfficeAddresses: {
+        type: [String],
+        required: false,
+        default: () => [],
+    },
     phone: optionalString,
     email: optionalString,
     website: optionalString,

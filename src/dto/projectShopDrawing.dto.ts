@@ -19,8 +19,19 @@ export type ProjectShopDrawingFileOutDto = {
 
 export type ProjectShopDrawingItemOutDto = {
   id: string;
+  code: string;
   name: string;
+  /** `{code}-{name}`. */
+  label: string;
+  descriptions: string[];
+  dimension: string;
   category: string | null;
+  mockupApproveDate: string | null;
   current: ProjectShopDrawingFileOutDto | null;
   versions: ProjectShopDrawingFileOutDto[];
+  /** File Produksi (CNC / cutting files); `hasBoq` is always false here. */
+  productionCurrent: ProjectShopDrawingFileOutDto | null;
+  productionVersions: ProjectShopDrawingFileOutDto[];
+  /** Removed in the open RAB change; deleted on commit. */
+  removedInChange: boolean;
 };

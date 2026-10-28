@@ -47,6 +47,9 @@ export interface ProjectInterface {
   loseReason?: ProjectLoseReason | null;
   closeReason?: ProjectCloseReason | null;
   isActive?: boolean;
+  /** Set once the project is released to production (all SD ready, quotation won). */
+  productionReleasedAt?: Date | null;
+  productionReleasedBy?: import("mongoose").Types.ObjectId | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -121,6 +124,15 @@ const projectSchema = new Schema<ProjectInterface>(
     isActive: {
       type: Boolean,
       default: true,
+    },
+    productionReleasedAt: {
+      type: Date,
+      default: null,
+    },
+    productionReleasedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
     },
   },
   { timestamps: true },

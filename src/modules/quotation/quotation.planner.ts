@@ -5,8 +5,9 @@ import {
 } from "../itemMaster/itemUomConvert";
 import {
   collectSourceLines,
-  rabLineKey,
+  resolveRabTarget,
   type BoqLike,
+  type RabUomPlan,
 } from "../project/projectRab.planner";
 
 export const LABOUR_LINE_KEY = "labour";
@@ -32,6 +33,8 @@ export type PlannerLine = {
 export type SeedBoq = BoqLike & {
   shopDrawingItemId: string;
   shopDrawingFileId: string;
+  /** Kode; lines are ordered by it, then by name. */
+  itemCode?: string;
   itemName: string;
   fileVersion: number;
 };
@@ -39,6 +42,8 @@ export type SeedBoq = BoqLike & {
 export type SeedRabLine = {
   key: string;
   totalQty: string;
+  /** Need before rounding; rounding waste is spread over drawings by it. */
+  exactQty?: string | null;
   unitPrice?: string | null;
   origin?: string | null;
 };
@@ -72,21 +77,41 @@ export function sellPriceFromCost(costUnitPrice: string, markupPercent: string):
   return rupiah(cost.mul(factor));
 }
 
-/** Cost of one unit of a drawing = Σ qtyPerUnit × RAB unit price. */
+/**
+ * Cost of one unit of a drawing = Σ qtyPerUnit (in RAB UOM) × RAB cost per
+ * needed unit. `priceByKey` already carries the rounding-waste share.
+ */
 export function boqUnitCost(
   boq: BoqLike,
   priceByKey: Map<string, string>,
+  plan?: RabUomPlan,
 ): string {
   let sum = new Decimal(0);
   for (const row of collectSourceLines([{ ...boq, makeQty: "1" }])) {
-    const key = rabLineKey(row.materialItemId, row.itemUomId);
-    const price = priceByKey.get(key);
+    const target = resolveRabTarget(row.materialItemId, row.itemUomId, plan);
+    const price = priceByKey.get(target.key);
     if (price === undefined) {
-      throw new Error(`RAB has no price for material line ${key}`);
+      throw new Error(`RAB has no price for material line ${target.key}`);
     }
-    sum = sum.add(parseQtyDecimal(row.qtyPerUnit).mul(parseQtyDecimal(price)));
+    sum = sum.add(
+      parseQtyDecimal(row.qtyPerUnit)
+        .mul(target.factor)
+        .mul(parseQtyDecimal(price)),
+    );
   }
   return formatDecimal(sum);
+}
+
+/** unitPrice × totalQty / exactQty: purchase cost spread over the real need. */
+function costPerNeededUnit(line: SeedRabLine, unitPrice: string): string {
+  if (!line.exactQty) return unitPrice;
+  const exact = parseQtyDecimal(line.exactQty);
+  if (exact.isZero()) return unitPrice;
+  return formatDecimal(
+    parseQtyDecimal(unitPrice)
+      .mul(parseQtyDecimal(line.totalQty))
+      .div(exact),
+  );
 }
 
 /**
@@ -98,6 +123,7 @@ export function buildSeedLines(input: {
   rabLines: SeedRabLine[];
   markupPercent: string;
   previous?: PlannerLine[];
+  plan?: RabUomPlan;
 }): PlannerLine[] {
   const priceByKey = new Map<string, string>();
   let labourCost = new Decimal(0);
@@ -111,7 +137,7 @@ export function buildSeedLines(input: {
       );
       continue;
     }
-    priceByKey.set(line.key, line.unitPrice);
+    priceByKey.set(line.key, costPerNeededUnit(line, line.unitPrice));
   }
 
   const prevByKey = new Map((input.previous ?? []).map((l) => [l.key, l]));
@@ -124,6 +150,10 @@ export function buildSeedLines(input: {
   }
 
   const sorted = [...input.boqs].sort((a, b) => {
+    const byCode = (a.itemCode ?? "").localeCompare(b.itemCode ?? "", undefined, {
+      numeric: true,
+    });
+    if (byCode !== 0) return byCode;
     const byName = a.itemName.localeCompare(b.itemName);
     if (byName !== 0) return byName;
     return a.fileVersion - b.fileVersion;
@@ -144,7 +174,7 @@ export function buildSeedLines(input: {
   };
 
   for (const boq of sorted) {
-    const costUnitPrice = boqUnitCost(boq, priceByKey);
+    const costUnitPrice = boqUnitCost(boq, priceByKey, input.plan);
     const description =
       (boqsPerItem.get(boq.shopDrawingItemId) ?? 0) > 1
         ? `${boq.itemName} (v${boq.fileVersion})`

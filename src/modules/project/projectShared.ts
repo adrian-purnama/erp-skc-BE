@@ -8,6 +8,15 @@ import { ProjectRepo } from "../../models/project/project.model";
 
 const BUCKET = "project";
 
+/** Display name of a shop drawing item: `{code}-{name}`, or the name alone. */
+export function shopDrawingItemLabel(item: {
+  code?: string | null;
+  name: string;
+}): string {
+  const code = item.code?.trim();
+  return code ? `${code}-${item.name}` : item.name;
+}
+
 export async function assertProjectExists(projectId: string): Promise<void> {
   if (!Types.ObjectId.isValid(projectId)) {
     throw new Error("Invalid project id");

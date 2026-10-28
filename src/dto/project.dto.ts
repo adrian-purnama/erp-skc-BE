@@ -43,6 +43,8 @@ export type ProjectListItemOutDto = {
   loseReason: ProjectLoseReason | null;
   closeReason: ProjectCloseReason | null;
   isActive: boolean;
+  /** ISO time the project was released to production, or null. */
+  productionReleasedAt: string | null;
 };
 
 export type ProjectDetailOutDto = ProjectListItemOutDto & {

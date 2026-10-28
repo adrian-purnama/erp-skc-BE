@@ -111,15 +111,22 @@ function factorsRelativeToPreviousBase(
 
 export class ItemUomService {
   async listByItem(itemId: string): Promise<ItemUomOutDto[]> {
-    if (!Types.ObjectId.isValid(itemId)) return [];
-    const docs = await ItemUomRepo.model
-      .find({ itemId })
+    return (await this.listByItems([itemId])).get(itemId) ?? [];
+  }
+
+  /** UOM rows for many items in two queries, keyed by item id. */
+  async listByItems(itemIds: string[]): Promise<Map<string, ItemUomOutDto[]>> {
+    const byItem = new Map<string, ItemUomOutDto[]>();
+    const ids = [...new Set(itemIds)].filter((id) => Types.ObjectId.isValid(id));
+    if (ids.length === 0) return byItem;
+    const docs = (await ItemUomRepo.model
+      .find({ itemId: { $in: ids.map((id) => new Types.ObjectId(id)) } })
       .sort({ sortOrder: 1, createdAt: 1 })
       .lean()
-      .exec();
-    if (docs.length === 0) return [];
+      .exec()) as ItemUomLean[];
+    if (docs.length === 0) return byItem;
 
-    const uomIds = docs.map((d) => d.uomId);
+    const uomIds = [...new Set(docs.map((d) => String(d.uomId)))];
     const uoms = await UomRepo.model
       .find({ _id: { $in: uomIds } })
       .lean()
@@ -135,9 +142,13 @@ export class ItemUomService {
       ]),
     );
 
-    return docs.map((doc) =>
-      toOut(doc as ItemUomLean, meta.get(String(doc.uomId))),
-    );
+    for (const doc of docs) {
+      const key = String(doc.itemId);
+      const list = byItem.get(key) ?? [];
+      list.push(toOut(doc, meta.get(String(doc.uomId))));
+      byItem.set(key, list);
+    }
+    return byItem;
   }
 
   async replaceForItem(

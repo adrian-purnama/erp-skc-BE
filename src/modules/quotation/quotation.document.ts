@@ -5,7 +5,14 @@ export type QuotationDocumentRow =
   | {
       type: "line";
       no: number;
+      /** Kode, e.g. "SA1" (empty for labour). */
+      code: string;
+      /** Item name, printed bold. */
       description: string;
+      /** Keterangan lines printed under the name. */
+      descriptions: string[];
+      /** Ukuran, e.g. "600 x 3 x 500". */
+      dimension: string;
       qty: number;
       uom: string;
       unitPrice: number;
@@ -21,8 +28,9 @@ export type QuotationDocument = {
   companyName: string;
   letterhead: string[];
   title: string;
-  meta: Array<[string, string]>;
-  tableHeader: [string, string, string, string, string, string];
+  /** Recipient on the left, document reference on the right. */
+  meta: { left: Array<[string, string]>; right: Array<[string, string]> };
+  tableHeader: string[];
   rows: QuotationDocumentRow[];
   totals: Array<{ label: string; amount: number; emphasis: boolean }>;
   terbilang: string;
@@ -39,7 +47,10 @@ function documentRows(q: ProjectQuotationOutDto): QuotationDocumentRow[] {
     return {
       type: "line",
       no,
+      code: line.code,
       description: line.description,
+      descriptions: line.descriptions,
+      dimension: line.dimension,
       qty: Number(line.qty),
       uom: line.uom,
       unitPrice: Number(line.unitPrice),
@@ -89,9 +100,20 @@ export function buildQuotationDocument(
   now = new Date(),
 ): QuotationDocument {
   // One printed line per entry: multi-line addresses split, website on its own
-  // line so nothing wraps beside the logo.
+  // line so nothing wraps beside the logo. With branches, each address block
+  // is labelled like the printed letterhead ("Head Office:" / "Branch Office:").
+  const branches = q.company.branchOfficeAddresses
+    .map(splitLines)
+    .filter((lines) => lines.length > 0);
+  const labelled = (label: string, lines: string[]) =>
+    lines.map((l, i) => (i === 0 ? `${label}: ${l}` : l));
   const letterhead = [
-    ...splitLines(q.company.address),
+    ...(branches.length > 0
+      ? [
+          ...labelled("Head Office", splitLines(q.company.address)),
+          ...branches.flatMap((lines) => labelled("Branch Office", lines)),
+        ]
+      : splitLines(q.company.address)),
     [q.company.phone && `Telp: ${q.company.phone}`, q.company.email]
       .filter(Boolean)
       .join(" · "),
@@ -100,19 +122,23 @@ export function buildQuotationDocument(
   ].filter((line): line is string => Boolean(line));
 
   const issueDate = q.issuedAt ? new Date(q.issuedAt) : now;
-  const meta: Array<[string, string]> = (
-    [
-      ["No.", q.quotationNumber],
-      ["Tanggal", formatLongDate(issueDate)],
+  const present = (pairs: Array<[string, string]>) =>
+    pairs.filter(([, value]) => Boolean(value));
+  const meta: QuotationDocument["meta"] = {
+    left: present([
       ["Kepada", q.customer.name],
       ["Alamat", q.customer.address],
       [
         "Up.",
         `${q.contact.gender === "female" ? "Ibu" : "Bapak"} ${q.contact.name}`.trim(),
       ],
+    ]),
+    right: present([
+      ["No.", q.quotationNumber],
+      ["Tanggal", formatLongDate(issueDate)],
       ["Perihal", q.subject],
-    ] as Array<[string, string]>
-  ).filter(([, value]) => Boolean(value));
+    ]),
+  };
 
   const totals: QuotationDocument["totals"] = [
     { label: "Subtotal", amount: Number(q.totals.subtotal), emphasis: false },
@@ -143,7 +169,16 @@ export function buildQuotationDocument(
     letterhead,
     title: q.status === "draft" ? "PENAWARAN HARGA (DRAFT)" : "PENAWARAN HARGA",
     meta,
-    tableHeader: ["No", "Uraian", "Qty", "Satuan", "Harga Satuan", "Jumlah"],
+    tableHeader: [
+      "No",
+      "Kode",
+      "Keterangan",
+      "Ukuran\n(p x tebal x t mm)",
+      "Qty",
+      "Satuan",
+      "Harga/Unit",
+      "Total",
+    ],
     rows: documentRows(q),
     totals,
     terbilang: `Terbilang: ${terbilangRupiah(Number(q.totals.grandTotal))}`,

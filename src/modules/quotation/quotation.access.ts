@@ -16,12 +16,12 @@ export type VerifyState = "valid" | "expired" | "superseded" | "unavailable";
  * `validUntil` is inclusive and compared in Jakarta calendar days.
  */
 export function verifyState(input: {
-  status: "draft" | "issued" | "superseded";
+  status: "draft" | "issued" | "superseded" | "won";
   validUntil: string | null | undefined;
   todayYmd: string;
 }): VerifyState {
   if (input.status === "superseded") return "superseded";
-  if (input.status !== "issued") return "unavailable";
+  if (input.status !== "issued" && input.status !== "won") return "unavailable";
   if (!input.validUntil || input.validUntil < input.todayYmd) return "expired";
   return "valid";
 }

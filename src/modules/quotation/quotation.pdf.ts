@@ -18,16 +18,25 @@ const HEADER_FILL = "#D9D9D9";
 const LINE_COLOR = "#000000";
 const SECTION_FILL = "#F2F2F2";
 
-/** No · Uraian · Qty · Satuan · Harga Satuan · Jumlah — sums to A4 content width. */
-const COLS = [28, 212, 45, 50, 90, 90] as const;
+/**
+ * No · Kode · Keterangan · Ukuran · Qty · Satuan · Harga/Unit · Total — sums to
+ * A4 content width.
+ */
+const COLS = [22, 34, 138, 84, 28, 42, 77, 90] as const;
 const ALIGN: Array<"left" | "center" | "right"> = [
   "center",
+  "center",
   "left",
+  "center",
   "center",
   "center",
   "right",
   "right",
 ];
+/** Keterangan column: the item name in bold, its spec lines below. */
+const DESC_COL = 2;
+
+type Cell = string | { title: string; lines: string[] };
 
 export function buildQuotationPdf(
   doc: QuotationDocument,
@@ -37,7 +46,9 @@ export function buildQuotationPdf(
   const pdf = new PDFDocument({
     size: "A4",
     margin: MARGIN,
-    info: { Title: doc.meta.find(([k]) => k === "No.")?.[1] ?? "Quotation" },
+    info: {
+      Title: doc.meta.right.find(([k]) => k === "No.")?.[1] ?? "Quotation",
+    },
   });
   const chunks: Buffer[] = [];
   const done = new Promise<Buffer>((resolve, reject) => {
@@ -89,26 +100,45 @@ export function buildQuotationPdf(
   });
   pdf.moveDown(1);
 
-  // Meta block
+  // Meta block: recipient left, document reference right, side by side.
   pdf.fontSize(10);
-  const labelW = 60;
-  for (const [label, value] of doc.meta) {
-    const y = pdf.y;
-    pdf.font(FONT_BOLD).text(label, left, y, { width: labelW });
-    pdf.font(FONT).text(`: ${value}`, left + labelW, y, { width: width - labelW });
-    pdf.y = Math.max(pdf.y, y) + 2;
-  }
+  const labelW = 52;
+  const gap = 16;
+  const halfW = (width - gap) / 2;
+  const metaTop = pdf.y;
+  const metaColumn = (pairs: Array<[string, string]>, x: number) => {
+    pdf.y = metaTop;
+    for (const [label, value] of pairs) {
+      const y = pdf.y;
+      pdf.font(FONT_BOLD).text(label, x, y, { width: labelW });
+      pdf.font(FONT).text(`: ${value}`, x + labelW, y, { width: halfW - labelW });
+      pdf.y = Math.max(pdf.y, y) + 2;
+    }
+    return pdf.y;
+  };
+  const leftEnd = metaColumn(doc.meta.left, left);
+  const rightEnd = metaColumn(doc.meta.right, left + halfW + gap);
+  pdf.y = Math.max(leftEnd, rightEnd);
   pdf.moveDown(0.8);
 
   // Lines table
+  const cellHeight = (c: Cell, i: number, bold: boolean) => {
+    const w = COLS[i]! - CELL_PAD * 2;
+    if (typeof c === "string") {
+      return pdf.font(bold ? FONT_BOLD : FONT).fontSize(9).heightOfString(c, { width: w });
+    }
+    const title = pdf.font(FONT_BOLD).fontSize(9).heightOfString(c.title, { width: w });
+    const lines =
+      c.lines.length > 0
+        ? pdf.font(FONT).fontSize(9).heightOfString(c.lines.join("\n"), { width: w })
+        : 0;
+    return title + lines;
+  };
   const drawRow = (
-    cells: string[],
+    cells: Cell[],
     opts: { bold?: boolean; fill?: string; aligns?: typeof ALIGN },
   ) => {
-    pdf.font(opts.bold ? FONT_BOLD : FONT).fontSize(9);
-    const heights = cells.map(
-      (c, i) => pdf.heightOfString(c, { width: COLS[i]! - CELL_PAD * 2 }),
-    );
+    const heights = cells.map((c, i) => cellHeight(c, i, opts.bold === true));
     const h = Math.max(...heights) + CELL_PAD * 2;
     const y = pdf.y;
     let x = left;
@@ -116,10 +146,21 @@ export function buildQuotationPdf(
       const w = COLS[i]!;
       if (opts.fill) pdf.rect(x, y, w, h).fill(opts.fill).fillColor("#000000");
       pdf.rect(x, y, w, h).lineWidth(0.5).strokeColor(LINE_COLOR).stroke();
-      pdf.text(c, x + CELL_PAD, y + CELL_PAD, {
-        width: w - CELL_PAD * 2,
-        align: (opts.aligns ?? ALIGN)[i],
-      });
+      const align = (opts.aligns ?? ALIGN)[i];
+      if (typeof c === "string") {
+        pdf.font(opts.bold ? FONT_BOLD : FONT).fontSize(9);
+        pdf.text(c, x + CELL_PAD, y + CELL_PAD, { width: w - CELL_PAD * 2, align });
+      } else {
+        pdf.font(FONT_BOLD).fontSize(9);
+        pdf.text(c.title, x + CELL_PAD, y + CELL_PAD, { width: w - CELL_PAD * 2, align });
+        if (c.lines.length > 0) {
+          pdf.font(FONT).fontSize(9);
+          pdf.text(c.lines.join("\n"), x + CELL_PAD, pdf.y, {
+            width: w - CELL_PAD * 2,
+            align,
+          });
+        }
+      }
       x += w;
     });
     pdf.y = y + h;
@@ -138,7 +179,7 @@ export function buildQuotationPdf(
     opts: { fill?: string; align: "center" | "right" },
   ) => {
     pdf.font(FONT_BOLD).fontSize(9);
-    const amountW = amount === null ? 0 : COLS[5];
+    const amountW = amount === null ? 0 : COLS[7];
     const labelW = width - amountW;
     const h = pdf.heightOfString(label, { width: labelW - CELL_PAD * 2 }) + CELL_PAD * 2;
     if (pdf.y + h > bottom()) {
@@ -172,18 +213,17 @@ export function buildQuotationPdf(
       fullRow(row.label, formatRp(row.amount), { fill: SECTION_FILL, align: "right" });
       continue;
     }
-    const cells = [
+    const cells: Cell[] = [
       String(row.no),
-      row.description,
+      row.code,
+      { title: row.description, lines: row.descriptions },
+      row.dimension,
       new Intl.NumberFormat("id-ID").format(row.qty),
       row.uom,
       formatRp(row.unitPrice),
       formatRp(row.amount),
     ];
-    pdf.font(FONT).fontSize(9);
-    const needed =
-      pdf.heightOfString(row.description, { width: COLS[1] - CELL_PAD * 2 }) +
-      CELL_PAD * 2;
+    const needed = cellHeight(cells[DESC_COL]!, DESC_COL, false) + CELL_PAD * 2;
     if (pdf.y + needed > bottom()) {
       pdf.addPage();
       header();
@@ -192,9 +232,9 @@ export function buildQuotationPdf(
   }
 
   // Totals (right two columns)
-  const totalsX = left + COLS[0] + COLS[1] + COLS[2] + COLS[3];
-  const labelColW = COLS[4];
-  const amountColW = COLS[5];
+  const totalsX = left + COLS.slice(0, 6).reduce((a, b) => a + b, 0);
+  const labelColW = COLS[6];
+  const amountColW = COLS[7];
   for (const total of doc.totals) {
     ensure(18);
     const y = pdf.y;

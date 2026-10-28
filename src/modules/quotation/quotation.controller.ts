@@ -100,6 +100,18 @@ export class QuotationController {
     );
   };
 
+  markWon = async (req: Request, res: Response) => {
+    return handle(res, "Failed to mark quotation as won", "Quotation marked as won", () =>
+      quotationService.markWon(parseRouteId(req.params.id), userId(req)),
+    );
+  };
+
+  unmarkWon = async (req: Request, res: Response) => {
+    return handle(res, "Failed to undo won", "Quotation set back to issued", () =>
+      quotationService.unmarkWon(parseRouteId(req.params.id)),
+    );
+  };
+
   /** Issue / re-issue: a missing full name gets a code the client can prompt on. */
   private issueLike = async (
     res: Response,

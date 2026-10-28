@@ -31,6 +31,8 @@ describe("uom validation", () => {
       category: "length",
       name: "Centimeter",
       formulas: ["v1"],
+      decimals: 4,
+      rounding: "up",
     });
   });
 
@@ -101,6 +103,8 @@ describe("uomService.create", () => {
           category: "length",
           name: "Centimeter",
           formulas: ["v1"],
+          decimals: 4,
+          rounding: "up",
         }),
       /already exists/,
     );

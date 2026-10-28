@@ -1,4 +1,5 @@
 import type { ItemUomOutDto } from "./itemMaster.dto";
+import type { UomRoundingMode } from "../models/uom/uom.model";
 
 export type PatchProjectRabLineInDto = {
   /** Null or empty clears the line price (and tarif ref). */
@@ -34,7 +35,13 @@ export type ProjectRabLineOutDto = {
   itemUomId: string;
   uomSymbol: string;
   uomName: string;
+  /** Purchase qty after UOM rounding; the priced quantity. */
   totalQty: string;
+  /** BOQ need before rounding (null for labour / legacy lines). */
+  exactQty: string | null;
+  /** totalQty − exactQty; negative when rounded down below need. */
+  wasteQty: string | null;
+  rounding: { decimals: number; mode: UomRoundingMode } | null;
   unitPrice: string | null;
   tarifId: string | null;
   lineTotal: string | null;
@@ -62,6 +69,21 @@ export type ProjectRabChangeDraftRefOutDto = {
 };
 
 export type ProjectRabLineChangeKind = "added" | "removed" | "changed";
+
+export type ProjectRabChangeBoqMaterialDiffOutDto = {
+  shopDrawingFileId: string;
+  shopDrawingItemId: string;
+  /** `{kode}-{name}` of the shop drawing item. */
+  shopDrawingItemName: string;
+  fileVersion: number | null;
+  key: string;
+  kind: "added" | "removed" | "changed";
+  materialCode: string | null;
+  materialName: string | null;
+  uomSymbol: string | null;
+  oldTotalQty: string | null;
+  newTotalQty: string | null;
+};
 
 export type ProjectRabChangeBoqDiffOutDto = {
   shopDrawingItemId: string;
@@ -94,14 +116,22 @@ export type ProjectRabChangeDiffOutDto = {
   /** Items whose counted (current) file version was switched. */
   versionDiff: ProjectRabChangeVersionDiffOutDto[];
   /** Per shop-drawing file material contribution diffs (elaboration). */
-  boqMaterialDiff: Array<{
-    shopDrawingFileId: string;
-    shopDrawingItemId: string;
-    key: string;
-    kind: ProjectRabLineChangeKind;
-    oldTotalQty: string | null;
-    newTotalQty: string | null;
-  }>;
+  boqMaterialDiff: ProjectRabChangeBoqMaterialDiffOutDto[];
+};
+
+/**
+ * One RAB change (committed, or the open draft) and the materials it added to,
+ * changed in, or removed from shop drawings.
+ */
+export type ProjectRabMaterialChangeGroupOutDto = {
+  changeId: string;
+  status: "draft" | "committed";
+  revision: number | null;
+  reason: string;
+  /** committedAt, or openedAt for the open draft. */
+  at: string;
+  by: ProjectRabUserRefOutDto | null;
+  materials: ProjectRabChangeBoqMaterialDiffOutDto[];
 };
 
 export type ProjectRabOutDto = {
@@ -118,6 +148,8 @@ export type ProjectRabOutDto = {
   baselineGrandTotal: string | null;
   /** Present when a draft change is open — line/BOQ diffs vs baseline. */
   changeDiff: ProjectRabChangeDiffOutDto | null;
+  /** Locked RAB: shop drawing material changes per change, newest first. */
+  materialChanges: ProjectRabMaterialChangeGroupOutDto[];
   groups: ProjectRabItemGroupOutDto[];
   grandTotal: string | null;
 };

@@ -1,8 +1,10 @@
 import { Types } from "mongoose";
+import { ProjectRepo } from "../../models/project/project.model";
 import { withTx } from "../../core/audit/context";
 import type {
   OpenProjectRabChangeInDto,
   ProjectRabChangeBoqDiffOutDto,
+  ProjectRabChangeBoqMaterialDiffOutDto,
   ProjectRabChangeDetailOutDto,
   ProjectRabChangeLineDiffOutDto,
   ProjectRabChangeSummaryOutDto,
@@ -10,6 +12,7 @@ import type {
 } from "../../dto/projectRabChange.dto";
 import type {
   ProjectRabLineOutDto,
+  ProjectRabMaterialChangeGroupOutDto,
   ProjectRabUserRefOutDto,
 } from "../../dto/projectRab.dto";
 import {
@@ -25,8 +28,7 @@ import {
 import { ProjectShopDrawingBoqRepo } from "../../models/projectShopDrawingBoq/projectShopDrawingBoq.model";
 import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument/projectShopDrawingDocument.model";
 import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem/projectShopDrawingItem.model";
-import { itemMasterService } from "../itemMaster/itemMaster.service";
-import { itemUomService } from "../itemMaster/itemUom.service";
+import { loadItemMeta } from "../itemMaster/itemMeta";
 import { fileVersionsById, liveCurrentFiles } from "./projectCurrentFiles";
 import {
   diffBoqFiles,
@@ -38,9 +40,16 @@ import {
   syncRabLinesFromBoqs,
   type LeanBoqDoc,
 } from "./projectRabChange.planner";
-import { assertProjectExists } from "./projectShared";
+import { assertProjectExists, shopDrawingItemLabel } from "./projectShared";
 import { userEmailsById } from "../../utils/shared";
-import { assertAllLinesPriced, computeLineTotal } from "./projectRab.planner";
+import { logger } from "../../logger/logger";
+import {
+  assertAllLinesPriced,
+  computeLineTotal,
+  rabQtyWaste,
+} from "./projectRab.planner";
+import { loadRabUomPlan } from "./projectRabUomPlan";
+import { purgeShopDrawingItem } from "./projectShopDrawingPurge";
 
 export { syncRabLinesFromBoqs } from "./projectRabChange.planner";
 
@@ -80,6 +89,7 @@ function cloneBoqSnap(boq: LeanBoqDoc): ProjectRabChangeBoqSnapshot {
     shopDrawingItemId: boq.shopDrawingItemId,
     shopDrawingFileId: boq.shopDrawingFileId,
     makeQty: boq.makeQty,
+    mockupApproveDate: boq.mockupApproveDate ?? null,
     main: boq.main ?? { parts: [], assembly: { lines: [] } },
     lighting: boq.lighting ?? { lines: [] },
     mounting: boq.mounting ?? { type: "mounted", lines: [] },
@@ -94,6 +104,7 @@ function cloneLines(lines: ProjectRabLine[]): ProjectRabLine[] {
 function boqContentKey(boq: LeanBoqDoc): string {
   return JSON.stringify({
     q: boq.makeQty,
+    mockupApproveDate: boq.mockupApproveDate ?? null,
     main: boq.main,
     lighting: boq.lighting,
     mounting: boq.mounting,
@@ -144,6 +155,16 @@ export class ProjectRabChangeService {
       .exec();
     if (!rab || rab.status !== "locked") {
       throw new Error("RAB must be locked before opening a change");
+    }
+    const project = await ProjectRepo.model
+      .findById(projectOid)
+      .select({ productionReleasedAt: 1 })
+      .lean()
+      .exec();
+    if (project?.productionReleasedAt) {
+      throw new Error(
+        "Project is released to production: the RAB can no longer be changed",
+      );
     }
 
     const existing = await this.findOpenDraft(projectId);
@@ -236,6 +257,36 @@ export class ProjectRabChangeService {
   }
 
   /**
+   * Shop drawing material changes per committed change (newest first), with
+   * the open draft (already described by the caller) on top.
+   */
+  async materialChangeHistory(
+    projectId: string,
+    draftDetail: ProjectRabChangeDetailOutDto | null,
+  ): Promise<ProjectRabMaterialChangeGroupOutDto[]> {
+    const committed = (await ProjectRabChangeRepo.model
+      .find({ projectId: new Types.ObjectId(projectId), status: "committed" })
+      .sort({ committedAt: -1 })
+      .lean()
+      .exec()) as LeanChange[];
+    const details = [
+      ...(draftDetail ? [draftDetail] : []),
+      ...(await Promise.all(committed.map((doc) => this.toDetail(doc)))),
+    ];
+    return details
+      .filter((d) => d.boqMaterialDiff.length > 0)
+      .map((d) => ({
+        changeId: d.id,
+        status: d.status === "draft" ? "draft" : "committed",
+        revision: d.revision,
+        reason: d.reason,
+        at: d.committedAt ?? d.openedAt,
+        by: d.committedBy ?? d.openedBy,
+        materials: d.boqMaterialDiff,
+      }));
+  }
+
+  /**
    * Drop the draft and put back the file versions that were current when it
    * was opened, so nothing done inside the change survives on live data.
    */
@@ -285,10 +336,15 @@ export class ProjectRabChangeService {
       throw new Error("RAB must be locked to commit a change");
     }
 
-    const currentFiles = await liveCurrentFiles(projectId);
+    const removedItemIds = (draft.removedItemIds ?? []).map(String);
+    const currentFiles = (await liveCurrentFiles(projectId)).filter(
+      (f) => !removedItemIds.includes(String(f.shopDrawingItemId)),
+    );
+    const counted = filterCountedBoqs(draft.boqs, currentFiles);
     const synced = syncRabLinesFromBoqs(
-      filterCountedBoqs(draft.boqs, currentFiles),
+      counted,
       draft.rabLines,
+      await loadRabUomPlan(counted),
     );
     if (synced.length === 0) {
       throw new Error("A committed RAB needs at least one line");
@@ -330,6 +386,7 @@ export class ProjectRabChangeService {
           shopDrawingItemId: snap.shopDrawingItemId,
           shopDrawingFileId: snap.shopDrawingFileId,
           makeQty: snap.makeQty,
+          mockupApproveDate: snap.mockupApproveDate ?? null,
           main: snap.main,
           lighting: snap.lighting,
           mounting: snap.mounting,
@@ -382,6 +439,19 @@ export class ProjectRabChangeService {
       return row;
     });
 
+    // Files live in GridFS (not transactional): delete removed items only once committed.
+    for (const itemId of removedItemIds) {
+      try {
+        await purgeShopDrawingItem(projectId, itemId);
+      } catch (error) {
+        logger.error(
+          `Failed to delete removed item ${itemId}: ${error instanceof Error ? error.message : String(error)}`,
+          "modules/project/projectRabChange.service.ts",
+          "commit",
+        );
+      }
+    }
+
     const names = await userEmailsById([
       String(updated.openedBy),
       userId,
@@ -389,12 +459,75 @@ export class ProjectRabChangeService {
     return this.toSummary(updated, names);
   }
 
+  /**
+   * Remove a shop drawing item inside the open change: its BOQ leaves the
+   * change (RAB lines resync) and the item is deleted on commit.
+   */
+  async markItemRemovedInDraft(projectId: string, itemId: string): Promise<void> {
+    const draft = await this.findOpenDraft(projectId);
+    if (!draft) {
+      throw new Error("RAB is locked: open a change before removing an item");
+    }
+    const removed = (draft.removedItemIds ?? []).map(String);
+    if (removed.includes(itemId)) return;
+    const boqs = draft.boqs.filter(
+      (b) => String(b.shopDrawingItemId) !== itemId,
+    );
+    const currentFiles = await liveCurrentFiles(projectId);
+    const counted = filterCountedBoqs(boqs, currentFiles);
+    const rabLines = syncRabLinesFromBoqs(
+      counted,
+      draft.rabLines,
+      await loadRabUomPlan(counted),
+    );
+    await this.writeDraft(draft._id, {
+      boqs,
+      rabLines,
+      removedItemIds: [...removed, itemId].map((id) => new Types.ObjectId(id)),
+    });
+  }
+
+  /** Undo a removal in the open change: the item's BOQ from when the change opened comes back. */
+  async restoreItemInDraft(projectId: string, itemId: string): Promise<void> {
+    const draft = await this.findOpenDraft(projectId);
+    if (!draft) throw new Error("No open draft change");
+    const removed = (draft.removedItemIds ?? []).map(String);
+    if (!removed.includes(itemId)) {
+      throw new Error("This item is not removed in the open change");
+    }
+    const present = new Set(draft.boqs.map((b) => String(b.shopDrawingFileId)));
+    const restored = baselineBoqsOf(draft)
+      .filter(
+        (b) =>
+          String(b.shopDrawingItemId) === itemId &&
+          !present.has(String(b.shopDrawingFileId)),
+      )
+      .map(cloneBoqSnap);
+    const boqs = [...draft.boqs, ...restored];
+    const currentFiles = await liveCurrentFiles(projectId);
+    const counted = filterCountedBoqs(boqs, currentFiles);
+    const rabLines = syncRabLinesFromBoqs(
+      counted,
+      draft.rabLines,
+      await loadRabUomPlan(counted),
+    );
+    await this.writeDraft(draft._id, {
+      boqs,
+      rabLines,
+      removedItemIds: removed
+        .filter((id) => id !== itemId)
+        .map((id) => new Types.ObjectId(id)),
+    });
+  }
+
   /** Rebuild the draft's RAB lines from its BOQs (current versions only) and save. */
   async syncDraft(projectId: string, draft: LeanChange): Promise<LeanChange> {
     const currentFiles = await liveCurrentFiles(projectId);
+    const counted = filterCountedBoqs(draft.boqs, currentFiles);
     const rabLines = syncRabLinesFromBoqs(
-      filterCountedBoqs(draft.boqs, currentFiles),
+      counted,
       draft.rabLines,
+      await loadRabUomPlan(counted),
     );
     return this.writeDraft(draft._id, { rabLines });
   }
@@ -407,6 +540,15 @@ export class ProjectRabChangeService {
     if (!draft) {
       throw new Error("RAB is locked: open a change before editing BOQ");
     }
+    if (
+      (draft.removedItemIds ?? []).some(
+        (id) => String(id) === String(snap.shopDrawingItemId),
+      )
+    ) {
+      throw new Error(
+        "This item is removed in the open change: restore it before editing its BOQ",
+      );
+    }
     const fileId = String(snap.shopDrawingFileId);
     const boqs = [...draft.boqs];
     const idx = boqs.findIndex(
@@ -416,9 +558,11 @@ export class ProjectRabChangeService {
     else boqs.push(snap);
 
     const currentFiles = await liveCurrentFiles(projectId);
+    const counted = filterCountedBoqs(boqs, currentFiles);
     const rabLines = syncRabLinesFromBoqs(
-      filterCountedBoqs(boqs, currentFiles),
+      counted,
       draft.rabLines,
+      await loadRabUomPlan(counted),
     );
     return this.writeDraft(draft._id, { boqs, rabLines });
   }
@@ -435,9 +579,11 @@ export class ProjectRabChangeService {
       (b) => String(b.shopDrawingFileId) !== shopDrawingFileId,
     );
     const currentFiles = await liveCurrentFiles(projectId);
+    const counted = filterCountedBoqs(boqs, currentFiles);
     const rabLines = syncRabLinesFromBoqs(
-      filterCountedBoqs(boqs, currentFiles),
+      counted,
       draft.rabLines,
+      await loadRabUomPlan(counted),
     );
     await this.writeDraft(draft._id, { boqs, rabLines });
   }
@@ -456,7 +602,9 @@ export class ProjectRabChangeService {
   /** Every draft write is conditional on the change still being a draft. */
   private async writeDraft(
     id: Types.ObjectId,
-    set: Partial<Pick<ProjectRabChangeInterface, "boqs" | "rabLines">>,
+    set: Partial<
+      Pick<ProjectRabChangeInterface, "boqs" | "rabLines" | "removedItemIds">
+    >,
   ): Promise<LeanChange> {
     const updated = (await ProjectRabChangeRepo.findOneAndUpdate(
       { _id: id, status: "draft" },
@@ -576,17 +724,19 @@ export class ProjectRabChangeService {
         : (doc.currentFiles ?? null);
     const baselineCounted = filterCountedBoqs(baseline.boqs, baselineCurrent);
     const nextCounted = filterCountedBoqs(doc.boqs, nextCurrent);
+    const plan = await loadRabUomPlan([...baselineCounted, ...nextCounted]);
 
     // Committed / discarded records are history: show them as stored.
     const nextLines =
       doc.status === "draft"
-        ? syncRabLinesFromBoqs(nextCounted, doc.rabLines)
+        ? syncRabLinesFromBoqs(nextCounted, doc.rabLines, plan)
         : doc.rabLines;
     const lineDiffRaw = diffRabLines(baseline.lines, nextLines);
     const boqDiffRaw = diffBoqFiles(baselineCounted, nextCounted);
-    const boqMaterialDiff = diffBoqMaterialContributions(
+    const boqMaterialDiffRaw = diffBoqMaterialContributions(
       baselineCounted,
       nextCounted,
+      plan,
     );
     const versionDiffRaw =
       baselineCurrent && nextCurrent
@@ -594,27 +744,13 @@ export class ProjectRabChangeService {
         : [];
 
     const itemIds = [
-      ...new Set(
-        [...nextLines, ...baseline.lines].map((l) => String(l.materialItemId)),
-      ),
+      ...new Set([
+        ...[...nextLines, ...baseline.lines].map((l) => String(l.materialItemId)),
+        // Key is `${materialItemId}:${itemUomId}`.
+        ...boqMaterialDiffRaw.map((d) => d.key.split(":")[0]!),
+      ]),
     ];
-    const itemMeta = new Map<string, { code: string; name: string }>();
-    await Promise.all(
-      itemIds.map(async (id) => {
-        const item = await itemMasterService.getById(id);
-        itemMeta.set(id, {
-          code: item?.itemId ?? "—",
-          name: item?.name ?? "Unknown",
-        });
-      }),
-    );
-    const uomMeta = new Map<string, { symbol: string; name: string }>();
-    await Promise.all(
-      itemIds.map(async (id) => {
-        const uoms = await itemUomService.listByItem(id);
-        for (const u of uoms) uomMeta.set(u.id, { symbol: u.symbol, name: u.name });
-      }),
-    );
+    const { items: itemMeta, uoms: uomMeta } = await loadItemMeta(itemIds);
 
     const lineByKey = new Map(nextLines.map((l) => [l.key, l]));
     const baseByKey = new Map(baseline.lines.map((l) => [l.key, l]));
@@ -642,6 +778,7 @@ export class ProjectRabChangeService {
       ...new Set([
         ...boqDiffRaw.map((b) => b.shopDrawingItemId),
         ...versionDiffRaw.map((v) => v.shopDrawingItemId),
+        ...boqMaterialDiffRaw.map((d) => d.shopDrawingItemId),
       ]),
     ];
     const itemNames = new Map<string, string>();
@@ -650,15 +787,16 @@ export class ProjectRabChangeService {
         .find({
           _id: { $in: drawingItemIds.map((id) => new Types.ObjectId(id)) },
         })
-        .select({ name: 1 })
+        .select({ code: 1, name: 1 })
         .lean()
         .exec();
       for (const it of items) {
-        itemNames.set(String(it._id), (it as { name?: string }).name ?? "—");
+        itemNames.set(String(it._id), shopDrawingItemLabel(it));
       }
     }
     const versions = await fileVersionsById([
       ...boqDiffRaw.map((b) => b.shopDrawingFileId),
+      ...boqMaterialDiffRaw.map((d) => d.shopDrawingFileId),
       ...versionDiffRaw.flatMap((v) =>
         [v.fromFileId, v.toFileId].filter((id): id is string => Boolean(id)),
       ),
@@ -682,6 +820,25 @@ export class ProjectRabChangeService {
         toVersion: v.toFileId ? (versions.get(v.toFileId) ?? null) : null,
       }),
     );
+
+    const boqMaterialDiff: ProjectRabChangeBoqMaterialDiffOutDto[] =
+      boqMaterialDiffRaw.map((d) => {
+        const [materialItemId = "", itemUomId = ""] = d.key.split(":");
+        const meta = itemMeta.get(materialItemId);
+        return {
+          shopDrawingFileId: d.shopDrawingFileId,
+          shopDrawingItemId: d.shopDrawingItemId,
+          shopDrawingItemName: itemNames.get(d.shopDrawingItemId) ?? "—",
+          fileVersion: versions.get(d.shopDrawingFileId) ?? null,
+          key: d.key,
+          kind: d.kind,
+          materialCode: meta?.code ?? null,
+          materialName: meta?.name ?? null,
+          uomSymbol: uomMeta.get(itemUomId)?.symbol ?? null,
+          oldTotalQty: d.oldTotalQty,
+          newTotalQty: d.newTotalQty,
+        };
+      });
 
     const addedByNames = await userEmailsById(
       nextLines
@@ -708,6 +865,11 @@ export class ProjectRabChangeService {
         uomSymbol: uom?.symbol ?? "—",
         uomName: uom?.name ?? "—",
         totalQty: line.totalQty,
+        exactQty: line.exactQty ?? null,
+        wasteQty: rabQtyWaste(line.exactQty, line.totalQty),
+        rounding: line.rounding
+          ? { decimals: line.rounding.decimals, mode: line.rounding.mode }
+          : null,
         unitPrice,
         tarifId: line.tarifId ? String(line.tarifId) : null,
         lineTotal: computeLineTotal(line.totalQty, unitPrice),
@@ -764,6 +926,8 @@ export class ProjectRabChangeService {
         projectId: new Types.ObjectId(projectId),
         status: "committed",
       })
+      .sort({ revision: -1 })
+      .limit(1)
       .select({ revision: 1 })
       .lean()
       .exec()) as Array<{ revision?: number }>;

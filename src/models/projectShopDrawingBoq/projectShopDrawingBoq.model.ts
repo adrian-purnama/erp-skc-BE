@@ -31,6 +31,9 @@ export type ProjectShopDrawingBoqLine = {
   /** Snapshotted expression; not re-read from UOM master after save. */
   formula: string;
   inputs: ProjectShopDrawingBoqLineInputs;
+  /** How many SD units one formula quantity makes (1 sheet → 50 pcs). Absent = 1. */
+  yieldQty?: string;
+  /** formula result ÷ yieldQty. */
   qtyPerUnit: string;
   /** Set when the line was added after RAB lock froze this BOQ. */
   addedAt?: Date;
@@ -86,6 +89,8 @@ export interface ProjectShopDrawingBoqInterface {
   shopDrawingItemId: Types.ObjectId;
   shopDrawingFileId: Types.ObjectId;
   makeQty: string;
+  /** YYYY-MM-DD when client mockup was approved; null/absent if not needed or not yet. */
+  mockupApproveDate?: string | null;
   main: ProjectShopDrawingBoqMain;
   lighting: ProjectShopDrawingBoqLighting;
   mounting: ProjectShopDrawingBoqMounting;
@@ -127,6 +132,7 @@ const projectShopDrawingBoqLineSchema = new Schema(
       type: projectShopDrawingBoqLineInputsSchema,
       required: true,
     },
+    yieldQty: { type: String, required: false, trim: true },
     qtyPerUnit: {
       type: String,
       required: true,
@@ -183,6 +189,7 @@ const projectShopDrawingBoqBaseSchema = new Schema(
       type: projectShopDrawingBoqLineInputsSchema,
       required: true,
     },
+    yieldQty: { type: String, required: false, trim: true },
     qtyPerUnit: {
       type: String,
       required: true,
@@ -306,6 +313,12 @@ const projectShopDrawingBoqSchema = new Schema<ProjectShopDrawingBoqInterface>(
     makeQty: {
       type: String,
       required: true,
+      trim: true,
+    },
+    mockupApproveDate: {
+      type: String,
+      required: false,
+      default: null,
       trim: true,
     },
     main: {
