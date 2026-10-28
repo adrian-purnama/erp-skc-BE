@@ -12,10 +12,26 @@ export type PurchaseRealizationLine = {
   _id?: Types.ObjectId;
   /** `_id` of the line inside the PO. */
   poLineId: Types.ObjectId;
+  /** Copied from the PO line so arrived qty rolls up per SPP line / SPK. */
+  requestLineId: Types.ObjectId;
   qty: string;
   /** Actual integer rupiah per unit. */
   unitPrice: string;
   note: string;
+};
+
+export const PURCHASE_REALIZATION_CHARGE_KINDS = ["percent", "fixed"] as const;
+export type PurchaseRealizationChargeKind = (typeof PURCHASE_REALIZATION_CHARGE_KINDS)[number];
+
+/** Extra cost on top of the goods, e.g. PPN 11%, ongkir, biaya admin. */
+export type PurchaseRealizationCharge = {
+  _id?: Types.ObjectId;
+  label: string;
+  kind: PurchaseRealizationChargeKind;
+  /** Percent of the lines subtotal (DPP); null for fixed charges. */
+  rate?: string | null;
+  /** Integer rupiah. */
+  amount: string;
 };
 
 /** A nota / invoice photo or scan, stored in the `purchasing` GridFS bucket. */
@@ -29,7 +45,11 @@ export type PurchaseRealizationPhoto = {
   uploadedAt: Date;
 };
 
-/** Nota Realisasi: what was actually bought for an approved PO, with proof. */
+/**
+ * What actually happened on an approved PO, with proof: `vendor` = Penerimaan
+ * (goods + invoice from the vendor), `staff` = Nota Realisasi (staff bought it).
+ * Posted qty is what arrived; posted money (+ charges) is the actual cost.
+ */
 export interface PurchaseRealizationInterface {
   number: string;
   purchaseOrderId: Types.ObjectId;
@@ -46,9 +66,18 @@ export interface PurchaseRealizationInterface {
   place: string;
   /** Number printed on the nota / invoice, if any. */
   notaNumber: string;
+  /** Who took the goods in, if recorded. */
+  receivedByUserId?: Types.ObjectId | null;
+  receivedByName: string;
+  /** Surat jalan / delivery note number, if any. */
+  deliveryNoteNumber: string;
   comments: string;
   lines: PurchaseRealizationLine[];
+  charges: PurchaseRealizationCharge[];
   /** Σ qty × unitPrice, integer rupiah. */
+  subtotal: string;
+  chargesTotal: string;
+  /** subtotal + chargesTotal. */
   total: string;
   photos: PurchaseRealizationPhoto[];
   createdBy?: Types.ObjectId;
@@ -64,9 +93,20 @@ export interface PurchaseRealizationInterface {
 const lineSchema = new Schema(
   {
     poLineId: { type: Schema.Types.ObjectId, required: true },
+    requestLineId: { type: Schema.Types.ObjectId, required: true },
     qty: { type: String, required: true, trim: true },
     unitPrice: { type: String, required: true, trim: true },
     note: { type: String, trim: true, default: "" },
+  },
+  { _id: true },
+);
+
+const chargeSchema = new Schema(
+  {
+    label: { type: String, required: true, trim: true },
+    kind: { type: String, enum: PURCHASE_REALIZATION_CHARGE_KINDS, required: true },
+    rate: { type: String, trim: true, default: null },
+    amount: { type: String, required: true, trim: true },
   },
   { _id: true },
 );
@@ -106,8 +146,14 @@ const purchaseRealizationSchema = new Schema<PurchaseRealizationInterface>(
     purchaseDate: { type: String, required: true, trim: true },
     place: { type: String, trim: true, default: "" },
     notaNumber: { type: String, trim: true, default: "" },
+    receivedByUserId: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    receivedByName: { type: String, trim: true, default: "" },
+    deliveryNoteNumber: { type: String, trim: true, default: "" },
     comments: { type: String, trim: true, default: "" },
     lines: { type: [lineSchema], default: [] },
+    charges: { type: [chargeSchema], default: [] },
+    subtotal: { type: String, required: true, default: "0" },
+    chargesTotal: { type: String, required: true, default: "0" },
     total: { type: String, required: true, default: "0" },
     photos: { type: [photoSchema], default: [] },
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },
@@ -121,6 +167,7 @@ const purchaseRealizationSchema = new Schema<PurchaseRealizationInterface>(
 );
 
 purchaseRealizationSchema.index({ status: 1, createdAt: -1 });
+purchaseRealizationSchema.index({ requestId: 1, status: 1 });
 
 export const PurchaseRealizationRepo = auditedModel<PurchaseRealizationInterface>(
   "PurchaseRealization",

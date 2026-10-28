@@ -30,9 +30,9 @@ export class PurchasingController {
     );
   };
 
-  projects = async (_req: Request, res: Response) => {
-    return handle(res, "Failed to load projects", "Projects retrieved", () =>
-      purchasingService.listProjects(),
+  mySpks = async (req: Request, res: Response) => {
+    return handle(res, "Failed to load SPKs", "SPKs retrieved", async () =>
+      purchasingService.listMySpks((await viewer(req)).userId),
     );
   };
 
@@ -114,6 +114,12 @@ export class PurchasingController {
         parseCancelPurchaseRequestDto(req.body).reason,
         await viewer(req),
       ),
+    );
+  };
+
+  confirmReceived = async (req: Request, res: Response) => {
+    return handle(res, "Failed to confirm SPP", "SPP confirmed as received", async () =>
+      purchasingService.confirmReceived(parseRouteId(req.params.id), await viewer(req)),
     );
   };
 

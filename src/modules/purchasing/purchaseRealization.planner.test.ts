@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import Decimal from "decimal.js";
 import {
+  checkRealizationCharges,
   checkRealizationLines,
   realizationStatus,
   remainingToRealize,
@@ -70,5 +71,50 @@ describe("checkRealizationLines", () => {
     assert.throws(() => check([line({ poLineId: "x" })]), /not on this PO/);
     assert.throws(() => check([line({ qty: "0" })]), /greater than 0/);
     assert.throws(() => check([line({ unitPrice: "0" })]), /actual price/);
+  });
+});
+
+describe("checkRealizationCharges", () => {
+  it("adds PPN as a percent of the subtotal and fixed charges as entered", () => {
+    const out = checkRealizationCharges("7500000", [
+      { label: " PPN 11% ", kind: "percent", rate: "11", amount: "0" },
+      { label: "Ongkir", kind: "fixed", rate: null, amount: "150000" },
+    ]);
+    assert.deepEqual(out.charges, [
+      { label: "PPN 11%", kind: "percent", rate: "11", amount: "825000" },
+      { label: "Ongkir", kind: "fixed", rate: null, amount: "150000" },
+    ]);
+    assert.equal(out.chargesTotal, "975000");
+    assert.equal(out.total, "8475000");
+  });
+
+  it("recomputes a percent amount from the subtotal, rounding half up", () => {
+    const out = checkRealizationCharges("12345", [
+      { label: "PPN", kind: "percent", rate: "11", amount: "999999" },
+    ]);
+    // 12345 × 11% = 1357.95
+    assert.equal(out.charges[0]!.amount, "1358");
+    assert.equal(out.total, "13703");
+  });
+
+  it("is a no-op without charges", () => {
+    const out = checkRealizationCharges("5000", []);
+    assert.equal(out.chargesTotal, "0");
+    assert.equal(out.total, "5000");
+  });
+
+  it("rejects bad charges", () => {
+    assert.throws(
+      () => checkRealizationCharges("100", [{ label: " ", kind: "fixed", rate: null, amount: "5" }]),
+      /needs a name/,
+    );
+    assert.throws(
+      () => checkRealizationCharges("100", [{ label: "Ongkir", kind: "fixed", rate: null, amount: "0" }]),
+      /above 0/,
+    );
+    assert.throws(
+      () => checkRealizationCharges("100", [{ label: "PPN", kind: "percent", rate: "150", amount: "0" }]),
+      /between 0 and 100/,
+    );
   });
 });

@@ -46,6 +46,9 @@ export interface PurchaseRequestInterface {
   declinedAt?: Date | null;
   declinedBy?: Types.ObjectId | null;
   declineReason?: string;
+  /** The requester confirmed they got everything, after it all arrived. */
+  receivedAt?: Date | null;
+  receivedBy?: Types.ObjectId | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -97,6 +100,8 @@ const purchaseRequestSchema = new Schema<PurchaseRequestInterface>(
     declinedAt: { type: Date, default: null },
     declinedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     declineReason: { type: String, trim: true, default: "" },
+    receivedAt: { type: Date, default: null },
+    receivedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
   },
   { timestamps: true },
 );

@@ -66,6 +66,8 @@ export type PurchaseRequestSummaryOutDto = {
   orderStatus: RequestLineOrderStatusDto;
   /** How much of the requested material has arrived. */
   receiptStatus: RealizationProgressDto;
+  /** When the requester confirmed they received everything. */
+  receivedAt: string | null;
   requestedBy: ProjectRabUserRefOutDto | null;
   createdAt: string | null;
   submittedAt: string | null;
@@ -81,6 +83,9 @@ export type PurchaseRequestOutDto = PurchaseRequestSummaryOutDto & {
   declinedAt: string | null;
   declinedBy: ProjectRabUserRefOutDto | null;
   declineReason: string;
+  receivedBy: ProjectRabUserRefOutDto | null;
+  /** The viewer made this SPP, all of it arrived and it is not confirmed yet. */
+  canConfirmReceived: boolean;
   /** POs made from this SPP (any status). */
   orders: Array<{ id: string; number: string; status: PurchaseOrderStatusDto; vendorName: string; total: string }>;
   /** The viewer may edit, submit, delete or cancel it (requester or purchasing). */
@@ -100,7 +105,7 @@ export type PurchaseRequestPlanRowOutDto = {
   inRab: boolean;
   /** On live POs for this SPK's SPPs. */
   orderedQty: string;
-  /** Arrived on posted receipts for this SPK's SPPs. */
+  /** Arrived on posted realizations for this SPK's SPPs. */
   receivedQty: string;
 };
 
@@ -121,6 +126,16 @@ export type PurchasingProjectOutDto = {
   id: string;
   projectNumber: string;
   name: string;
+};
+
+/** A released / in-progress SPK the viewer is PIC of, for a new SPP. */
+export type PurchasingSpkOutDto = {
+  id: string;
+  number: string;
+  itemLabel: string;
+  projectId: string;
+  projectNumber: string;
+  projectName: string;
 };
 
 /** What the SPP editor needs about a project. */
@@ -207,10 +222,8 @@ export type PurchaseOrderLineOutDto = Omit<
   overBudget: boolean;
   /** PO line note (the SPP reason stays in `note`). */
   orderNote: string;
-  /** Realized on posted notas. */
+  /** Arrived / bought on posted realizations. */
   realizedQty: string;
-  /** Arrived on posted receipts. */
-  receivedQty: string;
 };
 
 export type PurchaseOrderSummaryOutDto = {
@@ -250,43 +263,47 @@ export type PurchaseOrderOutDto = PurchaseOrderSummaryOutDto & {
   cancelReason: string;
   /** The viewer created it (or is super admin), so may edit, send, revise or cancel it. */
   canChange: boolean;
-  /** Approved POs: how far the purchase is realized (posted notas only). */
+  /** Approved POs: how far the goods arrived / were bought (posted realizations only). */
   realizationStatus: RealizationProgressDto;
-  /** Σ posted nota amounts, integer rupiah. */
+  /** Σ posted realization totals incl. charges, integer rupiah. */
   realizedTotal: string;
   realizations: Array<{
     id: string;
     number: string;
     status: PurchaseRealizationStatusDto;
+    method: PurchaseRealizationMethodDto;
     purchaseDate: string;
     total: string;
     difference: string;
-  }>;
-  /** Approved POs: how much of the goods arrived (posted receipts only). */
-  receiptStatus: RealizationProgressDto;
-  receipts: Array<{
-    id: string;
-    number: string;
-    status: GoodsReceiptStatusDto;
-    receivedDate: string;
-    lineCount: number;
   }>;
 };
 
 /** Where one SPP line stands in ordering. */
 export type PurchaseRequestLineOrderOutDto = {
   orderedQty: string;
-  /** Arrived on posted receipts. */
+  /** Arrived on posted realizations. */
   receivedQty: string;
   orderStatus: RequestLineOrderStatusDto;
   orders: Array<{ id: string; number: string; status: PurchaseOrderStatusDto; qty: string }>;
 };
 
-// ---- Nota Realisasi ----
+// ---- Realization (vendor: Penerimaan, staff: Nota Realisasi) ----
 
 export type PurchaseRealizationStatusDto = "draft" | "posted" | "voided";
 export type PurchaseRealizationMethodDto = "vendor" | "staff";
 export type RealizationProgressDto = "none" | "partial" | "full";
+export type RealizationChargeKindDto = "percent" | "fixed";
+
+export type RealizationChargeInDto = {
+  label: string;
+  kind: RealizationChargeKindDto;
+  /** Percent of the lines subtotal; required for `percent`. */
+  rate: string | null;
+  /** Integer rupiah; required for `fixed`, recomputed for `percent`. */
+  amount: string;
+};
+
+export type RealizationChargeOutDto = RealizationChargeInDto & { id: string };
 
 export type SaveRealizationInDto = {
   purchaseOrderId: string;
@@ -296,8 +313,11 @@ export type SaveRealizationInDto = {
   purchaseDate: string;
   place: string;
   notaNumber: string;
+  receivedByUserId: string | null;
+  deliveryNoteNumber: string;
   comments: string;
   lines: Array<{ poLineId: string; qty: string; unitPrice: string; note: string }>;
+  charges: RealizationChargeInDto[];
 };
 
 /** One approved PO line and how much of it is already realized. */
@@ -361,9 +381,16 @@ export type RealizationSummaryOutDto = {
   projectNumber: string;
   projectName: string;
   buyerName: string;
+  receivedByName: string;
   purchaseDate: string;
   place: string;
+  deliveryNoteNumber: string;
+  /** Σ line amounts. */
+  subtotal: string;
+  chargesTotal: string;
+  /** subtotal + chargesTotal. */
   total: string;
+  /** Goods lines only: Σ (actual − approved); charges are not included. */
   difference: string;
   photoCount: number;
   createdBy: ProjectRabUserRefOutDto | null;
@@ -373,9 +400,11 @@ export type RealizationSummaryOutDto = {
 
 export type RealizationOutDto = RealizationSummaryOutDto & {
   buyerUserId: string | null;
+  receivedByUserId: string | null;
   notaNumber: string;
   comments: string;
   lines: RealizationLineOutDto[];
+  charges: RealizationChargeOutDto[];
   photos: RealizationPhotoOutDto[];
   postedBy: ProjectRabUserRefOutDto | null;
   voidedAt: string | null;
@@ -392,80 +421,3 @@ export type RealizationQueueRowOutDto = PurchaseOrderSummaryOutDto & {
 };
 
 export type PurchasingUserOutDto = { id: string; name: string; email: string };
-
-// ---- Penerimaan Barang ----
-
-export type GoodsReceiptStatusDto = "posted" | "voided";
-
-export type CreateGoodsReceiptInDto = {
-  purchaseOrderId: string;
-  receivedDate: string;
-  receivedByUserId: string | null;
-  deliveryNoteNumber: string;
-  notes: string;
-  lines: Array<{ poLineId: string; qty: string; note: string }>;
-};
-
-export type ReceiptPoLineOutDto = {
-  poLineId: string;
-  materialCode: string;
-  materialName: string;
-  uomSymbol: string;
-  orderedQty: string;
-  receivedQty: string;
-  remainingQty: string;
-};
-
-export type ReceiptPlanOutDto = {
-  purchaseOrderId: string;
-  poNumber: string;
-  vendorName: string;
-  requestId: string;
-  requestNumber: string;
-  projectNumber: string;
-  projectName: string;
-  expectedDate: string | null;
-  lines: ReceiptPoLineOutDto[];
-};
-
-export type GoodsReceiptLineOutDto = {
-  id: string;
-  poLineId: string;
-  materialCode: string;
-  materialName: string;
-  uomSymbol: string;
-  orderedQty: string;
-  qty: string;
-  note: string;
-};
-
-export type GoodsReceiptSummaryOutDto = {
-  id: string;
-  number: string;
-  status: GoodsReceiptStatusDto;
-  purchaseOrderId: string;
-  poNumber: string;
-  vendorName: string;
-  requestNumber: string;
-  projectNumber: string;
-  projectName: string;
-  receivedDate: string;
-  receivedByName: string;
-  deliveryNoteNumber: string;
-  lineCount: number;
-  createdBy: ProjectRabUserRefOutDto | null;
-  createdAt: string | null;
-};
-
-export type GoodsReceiptOutDto = GoodsReceiptSummaryOutDto & {
-  notes: string;
-  lines: GoodsReceiptLineOutDto[];
-  voidedAt: string | null;
-  voidedBy: ProjectRabUserRefOutDto | null;
-  voidReason: string;
-};
-
-/** An approved PO still waiting for (more) goods. */
-export type ReceiptQueueRowOutDto = PurchaseOrderSummaryOutDto & {
-  receiptStatus: RealizationProgressDto;
-};

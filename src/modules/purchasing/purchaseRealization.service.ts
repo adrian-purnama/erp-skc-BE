@@ -27,6 +27,7 @@ import { projectNumberParts } from "../project/projectNumber";
 import { lineAmount } from "./purchaseOrder.planner";
 import { purchaseOrderService, type PoActor } from "./purchaseOrder.service";
 import {
+  checkRealizationCharges,
   checkRealizationLines,
   realizationStatus,
   remainingToRealize,
@@ -59,9 +60,9 @@ async function allocateNumber(): Promise<string> {
 }
 
 async function requireRealization(id: string): Promise<LeanRealization> {
-  if (!Types.ObjectId.isValid(id)) throw new Error("Invalid nota id");
+  if (!Types.ObjectId.isValid(id)) throw new Error("Invalid realization id");
   const doc = (await PurchaseRealizationRepo.model.findById(id).lean().exec()) as LeanRealization | null;
-  if (!doc) throw new Error("Nota not found");
+  if (!doc) throw new Error("Realization not found");
   return doc;
 }
 
@@ -70,8 +71,8 @@ function isOwner(doc: LeanRealization, actor: PoActor): boolean {
 }
 
 function assertDraftOwner(doc: LeanRealization, actor: PoActor): void {
-  if (!isOwner(doc, actor)) throw new Error("Only the person who recorded this nota can change it");
-  if (doc.status !== "draft") throw new Error("Only a draft nota can be changed");
+  if (!isOwner(doc, actor)) throw new Error("Only the person who recorded this realization can change it");
+  if (doc.status !== "draft") throw new Error("Only a draft realization can be changed");
 }
 
 async function userName(userId: string): Promise<string> {
@@ -195,7 +196,17 @@ export class PurchaseRealizationService {
     const q = filter.q?.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter((r) =>
-      [r.number, r.poNumber, r.vendorName, r.requestNumber, r.projectNumber, r.buyerName, r.place].some(
+      [
+        r.number,
+        r.poNumber,
+        r.vendorName,
+        r.requestNumber,
+        r.projectNumber,
+        r.buyerName,
+        r.receivedByName,
+        r.place,
+        r.deliveryNoteNumber,
+      ].some(
         (v) => v.toLowerCase().includes(q),
       ),
     );
@@ -214,6 +225,7 @@ export class PurchaseRealizationService {
     return {
       ...summary!,
       buyerUserId: doc.buyerUserId ? String(doc.buyerUserId) : null,
+      receivedByUserId: doc.receivedByUserId ? String(doc.receivedByUserId) : null,
       notaNumber: doc.notaNumber ?? "",
       comments: doc.comments ?? "",
       lines: doc.lines.map((l): RealizationLineOutDto => {
@@ -234,6 +246,13 @@ export class PurchaseRealizationService {
           note: l.note ?? "",
         };
       }),
+      charges: (doc.charges ?? []).map((c) => ({
+        id: String(c._id),
+        label: c.label,
+        kind: c.kind,
+        rate: c.rate ?? null,
+        amount: c.amount,
+      })),
       photos: doc.photos.map((p) => ({
         id: String(p._id),
         originalFilename: p.originalFilename,
@@ -268,7 +287,7 @@ export class PurchaseRealizationService {
     const doc = await requireRealization(id);
     assertDraftOwner(doc, actor);
     if (String(doc.purchaseOrderId) !== input.purchaseOrderId) {
-      throw new Error("A nota cannot move to another PO");
+      throw new Error("A realization cannot move to another PO");
     }
     await withTx(async () => {
       const fields = await this.checkedFields(input, id);
@@ -276,7 +295,7 @@ export class PurchaseRealizationService {
         { _id: doc._id, status: "draft" },
         { $set: fields },
       );
-      if (!updated) throw new Error("Nota is no longer a draft");
+      if (!updated) throw new Error("Realization is no longer a draft");
     });
     return this.get(id, actor);
   }
@@ -285,7 +304,7 @@ export class PurchaseRealizationService {
     const doc = await requireRealization(id);
     assertDraftOwner(doc, actor);
     const removed = await PurchaseRealizationRepo.deleteOne({ _id: doc._id, status: "draft" });
-    if (!removed) throw new Error("Nota not found");
+    if (!removed) throw new Error("Realization not found");
     for (const p of doc.photos) {
       await deleteFileIfExists(PURCHASING_BUCKET, p.gridFsId).catch((error: unknown) =>
         logger.warn(
@@ -302,7 +321,7 @@ export class PurchaseRealizationService {
     assertDraftOwner(doc, actor);
     if (files.length === 0) throw new Error("Choose at least one file");
     if (doc.photos.length + files.length > PHOTO_MAX) {
-      throw new Error(`At most ${PHOTO_MAX} files per nota`);
+      throw new Error(`At most ${PHOTO_MAX} files per realization`);
     }
     for (const f of files) {
       if (!PHOTO_TYPES.test(f.mimetype)) {
@@ -332,7 +351,7 @@ export class PurchaseRealizationService {
         { _id: doc._id, status: "draft" },
         { $push: { photos: { $each: uploaded } } },
       );
-      if (!updated) throw new Error("Nota is no longer a draft");
+      if (!updated) throw new Error("Realization is no longer a draft");
     } catch (error) {
       for (const p of uploaded) await deleteFileIfExists(PURCHASING_BUCKET, p.gridFsId);
       throw error;
@@ -369,7 +388,9 @@ export class PurchaseRealizationService {
   async post(id: string, actor: PoActor): Promise<RealizationOutDto> {
     const doc = await requireRealization(id);
     assertDraftOwner(doc, actor);
-    if (doc.photos.length === 0) throw new Error("Add at least one nota photo or scan before posting");
+    if (doc.photos.length === 0) {
+      throw new Error("Add at least one file (nota, invoice, surat jalan or photo) before posting");
+    }
     await withTx(async () => {
       await this.checkedFields(
         {
@@ -379,12 +400,20 @@ export class PurchaseRealizationService {
           purchaseDate: doc.purchaseDate,
           place: doc.place,
           notaNumber: doc.notaNumber,
+          receivedByUserId: doc.receivedByUserId ? String(doc.receivedByUserId) : null,
+          deliveryNoteNumber: doc.deliveryNoteNumber ?? "",
           comments: doc.comments,
           lines: doc.lines.map((l) => ({
             poLineId: String(l.poLineId),
             qty: l.qty,
             unitPrice: l.unitPrice,
             note: l.note,
+          })),
+          charges: (doc.charges ?? []).map((c) => ({
+            label: c.label,
+            kind: c.kind,
+            rate: c.rate ?? null,
+            amount: c.amount,
           })),
         },
         id,
@@ -393,14 +422,14 @@ export class PurchaseRealizationService {
         { _id: doc._id, status: "draft" },
         { $set: { status: "posted", postedAt: new Date(), postedBy: new Types.ObjectId(actor.userId) } },
       );
-      if (!updated) throw new Error("Nota is no longer a draft");
+      if (!updated) throw new Error("Realization is no longer a draft");
     });
     return this.get(id, actor);
   }
 
   async void(id: string, reason: string, actor: PoActor): Promise<RealizationOutDto> {
     const doc = await requireRealization(id);
-    if (doc.status !== "posted") throw new Error("Only a posted nota can be voided");
+    if (doc.status !== "posted") throw new Error("Only a posted realization can be voided");
     const updated = await PurchaseRealizationRepo.findOneAndUpdate(
       { _id: doc._id, status: "posted" },
       {
@@ -412,14 +441,18 @@ export class PurchaseRealizationService {
         },
       },
     );
-    if (!updated) throw new Error("Failed to void nota");
+    if (!updated) throw new Error("Failed to void realization");
     return this.get(id, actor);
   }
 
   private async checkedFields(input: SaveRealizationInDto, exceptId?: string) {
     const order = await purchaseOrderService.get(input.purchaseOrderId);
     if (order.status !== "approved") throw new Error("Only an approved PO can be realized");
-    const buyerName = input.buyerUserId ? await userName(input.buyerUserId) : "";
+    const [buyerName, receivedByName] = await Promise.all([
+      input.buyerUserId ? userName(input.buyerUserId) : Promise.resolve(""),
+      input.receivedByUserId ? userName(input.receivedByUserId) : Promise.resolve(""),
+    ]);
+    const requestLineOf = new Map(order.lines.map((l) => [l.id, l.requestLineId]));
     const poLines = new Map<string, PoLineRef>(
       order.lines.map((l) => [
         l.id,
@@ -431,6 +464,7 @@ export class PurchaseRealizationService {
       poLines,
       realizedElsewhere: await realizedOnOrder(input.purchaseOrderId, exceptId),
     });
+    const priced = checkRealizationCharges(checked.total, input.charges);
     return {
       purchaseOrderId: new Types.ObjectId(order.id),
       requestId: new Types.ObjectId(order.requestId),
@@ -440,10 +474,17 @@ export class PurchaseRealizationService {
       purchaseDate: input.purchaseDate,
       place: input.place,
       notaNumber: input.notaNumber,
+      receivedByUserId: input.receivedByUserId ? new Types.ObjectId(input.receivedByUserId) : null,
+      receivedByName,
+      deliveryNoteNumber: input.deliveryNoteNumber,
       comments: input.comments,
-      total: checked.total,
+      subtotal: checked.total,
+      chargesTotal: priced.chargesTotal,
+      total: priced.total,
+      charges: priced.charges,
       lines: checked.lines.map((l) => ({
         poLineId: new Types.ObjectId(l.poLineId),
+        requestLineId: new Types.ObjectId(requestLineOf.get(l.poLineId)!),
         qty: l.qty,
         unitPrice: l.unitPrice,
         note: l.note,
@@ -487,8 +528,12 @@ export class PurchaseRealizationService {
         projectNumber: po?.projectNumber ?? "—",
         projectName: po?.projectName ?? "Unknown project",
         buyerName: d.buyerName ?? "",
+        receivedByName: d.receivedByName ?? "",
         purchaseDate: d.purchaseDate,
         place: d.place ?? "",
+        deliveryNoteNumber: d.deliveryNoteNumber ?? "",
+        subtotal: d.subtotal ?? d.total,
+        chargesTotal: d.chargesTotal ?? "0",
         total: d.total,
         difference: difference.toFixed(0),
         photoCount: d.photos.length,

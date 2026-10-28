@@ -1,7 +1,7 @@
 import { Schema, type Types } from "mongoose";
 import { auditedModel } from "../../core/audit/auditedModel";
 
-/** Phase 2b: approval flow. Receiving / closing come with Penerimaan Barang. */
+/** Approval flow; arrival and actual cost are tracked on realizations. */
 export const PURCHASE_ORDER_STATUSES = [
   "draft",
   "pending_approval",
@@ -11,12 +11,14 @@ export const PURCHASE_ORDER_STATUSES = [
 ] as const;
 export type PurchaseOrderStatus = (typeof PURCHASE_ORDER_STATUSES)[number];
 
-/** Statuses whose lines hold qty against their SPP lines. */
+/**
+ * Statuses whose lines hold qty against their SPP lines. A rejected PO frees
+ * its qty at once; revising it back to draft checks the lines again on submit.
+ */
 export const PURCHASE_ORDER_LIVE_STATUSES: PurchaseOrderStatus[] = [
   "draft",
   "pending_approval",
   "approved",
-  "rejected",
 ];
 
 export type PurchaseOrderLine = {

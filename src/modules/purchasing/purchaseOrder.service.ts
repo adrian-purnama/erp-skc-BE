@@ -45,7 +45,6 @@ import {
 import { liveOrderLines } from "./purchaseOrderLines";
 import { PurchaseRealizationRepo } from "../../models/purchaseRealization/purchaseRealization.model";
 import { realizationStatus, sumRealized } from "./purchaseRealization.planner";
-import { GoodsReceiptRepo } from "../../models/goodsReceipt/goodsReceipt.model";
 import QRCode from "qrcode";
 import { env } from "../../environment/env";
 import { buildPoPdf, type PoPdfData } from "./purchaseOrder.pdf";
@@ -305,7 +304,7 @@ export class PurchaseOrderService {
     const doc = await requireOrder(id);
     const notas = await PurchaseRealizationRepo.model
       .find({ purchaseOrderId: doc._id })
-      .select({ number: 1, status: 1, purchaseDate: 1, total: 1, lines: 1 })
+      .select({ number: 1, status: 1, method: 1, purchaseDate: 1, total: 1, lines: 1 })
       .sort({ purchaseDate: 1, createdAt: 1 })
       .lean()
       .exec();
@@ -314,17 +313,6 @@ export class PurchaseOrderService {
       posted.flatMap((n) => n.lines.map((l) => ({ poLineId: String(l.poLineId), qty: l.qty }))),
     );
     const approvedPrice = new Map(doc.lines.map((l) => [String(l._id), l.unitPrice]));
-    const receipts = await GoodsReceiptRepo.model
-      .find({ purchaseOrderId: doc._id })
-      .select({ number: 1, status: 1, receivedDate: 1, lines: 1 })
-      .sort({ receivedDate: 1, createdAt: 1 })
-      .lean()
-      .exec();
-    const received = sumRealized(
-      receipts
-        .filter((r) => r.status === "posted")
-        .flatMap((r) => r.lines.map((l) => ({ poLineId: String(l.poLineId), qty: l.qty }))),
-    );
     const notaDiff = (n: (typeof notas)[number]) =>
       n.lines
         .reduce(
@@ -393,7 +381,6 @@ export class PurchaseOrderService {
         overBudget: rabPrice !== null && new Decimal(l.unitPrice).gt(rabPrice),
         orderNote: l.note ?? "",
         realizedQty: formatDecimal(realized.get(String(l._id)) ?? new Decimal(0)),
-        receivedQty: formatDecimal(received.get(String(l._id)) ?? new Decimal(0)),
       };
     });
 
@@ -421,19 +408,10 @@ export class PurchaseOrderService {
         id: String(n._id),
         number: n.number,
         status: n.status,
+        method: n.method,
         purchaseDate: n.purchaseDate,
         total: n.total,
         difference: notaDiff(n),
-      })),
-      receiptStatus: realizationStatus(
-        doc.lines.map((l) => ({ qty: l.qty, realized: received.get(String(l._id)) })),
-      ),
-      receipts: receipts.map((r) => ({
-        id: String(r._id),
-        number: r.number,
-        status: r.status,
-        receivedDate: r.receivedDate,
-        lineCount: r.lines.length,
       })),
     };
   }
@@ -545,6 +523,11 @@ export class PurchaseOrderService {
     const doc = await requireOrder(id);
     assertOwner(doc, actor);
     if (doc.status !== "rejected") throw new Error("Only a rejected PO can be revised");
+    // A rejected PO holds no qty, so its SPP may have been declined or cancelled meanwhile.
+    const request = await PurchaseRequestRepo.model.findById(doc.requestId).select({ status: 1 }).lean().exec();
+    if (request?.status !== "submitted") {
+      throw new Error("The SPP of this PO is no longer open; cancel this PO instead");
+    }
     await this.transition(doc, "rejected", { status: "draft", submittedAt: null, submittedBy: null });
     return this.get(id, actor);
   }
@@ -562,13 +545,7 @@ export class PurchaseOrderService {
       .countDocuments({ purchaseOrderId: doc._id, status: { $ne: "voided" } })
       .exec();
     if (notas > 0) {
-      throw new Error("This PO has nota realisasi: void them before cancelling the PO");
-    }
-    const receipts = await GoodsReceiptRepo.model
-      .countDocuments({ purchaseOrderId: doc._id, status: "posted" })
-      .exec();
-    if (receipts > 0) {
-      throw new Error("Goods were already received on this PO: void the receipts before cancelling it");
+      throw new Error("This PO has realizations (Penerimaan / Nota Realisasi): void them before cancelling the PO");
     }
     await this.transition(doc, doc.status, {
       status: "cancelled",

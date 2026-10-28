@@ -110,3 +110,29 @@ export function checkRequestLines(input: {
     return { ...line, source: "extra", note, inRab, overPlan: false };
   });
 }
+
+/** Per SPK material: what is requested, ordered and received so far. */
+export type MaterialFlowRow = {
+  key: string;
+  requested: Decimal;
+  ordered: Decimal;
+  received: Decimal;
+};
+
+/** Add one SPP line's numbers into the per-material roll-up. */
+export function addFlow(
+  rows: Map<string, MaterialFlowRow>,
+  key: string,
+  part: { requested?: string; ordered?: Decimal; received?: Decimal },
+): void {
+  const row = rows.get(key) ?? {
+    key,
+    requested: new Decimal(0),
+    ordered: new Decimal(0),
+    received: new Decimal(0),
+  };
+  if (part.requested) row.requested = row.requested.plus(part.requested);
+  if (part.ordered) row.ordered = row.ordered.plus(part.ordered);
+  if (part.received) row.received = row.received.plus(part.received);
+  rows.set(key, row);
+}

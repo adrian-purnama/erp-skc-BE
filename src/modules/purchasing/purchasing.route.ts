@@ -3,7 +3,6 @@ import { requireUser } from "../../middleware/requireUser";
 import { createRouter } from "../../core/permissions/routing";
 import { requirePermission } from "../../core/permissions/requirePermission";
 import { PurchaseOrderController } from "./purchaseOrder.controller";
-import { GoodsReceiptController } from "./goodsReceipt.controller";
 import { PurchaseRealizationController } from "./purchaseRealization.controller";
 import { PurchasingController } from "./purchasing.controller";
 
@@ -16,7 +15,6 @@ const router = createRouter();
 const purchasingController = new PurchasingController();
 const purchaseOrderController = new PurchaseOrderController();
 const realizationController = new PurchaseRealizationController();
-const receiptController = new GoodsReceiptController();
 
 router.get(
   "/materials",
@@ -26,10 +24,10 @@ router.get(
 );
 
 router.get(
-  "/projects",
+  "/spks/mine",
   requireUser,
   requirePermission({ key: "purchasing.request" }),
-  purchasingController.projects,
+  purchasingController.mySpks,
 );
 
 router.get(
@@ -86,6 +84,13 @@ router.post(
   requireUser,
   requirePermission({ key: "purchasing.request" }),
   purchasingController.submit,
+);
+
+router.post(
+  "/requests/:id/received",
+  requireUser,
+  requirePermission({ key: "purchasing.request" }),
+  purchasingController.confirmReceived,
 );
 
 router.post(
@@ -297,55 +302,6 @@ router.post(
   requireUser,
   requirePermission({ key: "purchasing.manage" }),
   realizationController.void,
-);
-
-router.get(
-  "/receipts/receivers",
-  requireUser,
-  requirePermission({ key: "purchasing.receive" }),
-  receiptController.receivers,
-);
-
-router.get(
-  "/receipts/queue",
-  requireUser,
-  requirePermission({ key: "purchasing.receive" }),
-  receiptController.queue,
-);
-
-router.get(
-  "/receipts/plan/:orderId",
-  requireUser,
-  requirePermission({ key: "purchasing.receive" }),
-  receiptController.plan,
-);
-
-router.get(
-  "/receipts",
-  requireUser,
-  requirePermission({ key: "purchasing.viewAll" }),
-  receiptController.list,
-);
-
-router.post(
-  "/receipts",
-  requireUser,
-  requirePermission({ key: "purchasing.receive" }),
-  receiptController.create,
-);
-
-router.get(
-  "/receipts/:id",
-  requireUser,
-  requirePermission({ key: "purchasing.viewAll" }),
-  receiptController.get,
-);
-
-router.post(
-  "/receipts/:id/void",
-  requireUser,
-  requirePermission({ key: "purchasing.manage" }),
-  receiptController.void,
 );
 
 export default router;

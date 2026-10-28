@@ -11,7 +11,7 @@ import type {
   PurchaseRequestSummaryOutDto,
   PurchasingMaterialOutDto,
   PurchasingProjectContextOutDto,
-  PurchasingProjectOutDto,
+  PurchasingSpkOutDto,
   UpdatePurchaseRequestInDto,
 } from "../../dto/purchasing.dto";
 import type { ProjectRabUserRefOutDto } from "../../dto/projectRab.dto";
@@ -39,8 +39,7 @@ import { itemUomService } from "../itemMaster/itemUom.service";
 import { projectNumberParts } from "../project/projectNumber";
 import { shopDrawingItemLabel } from "../project/projectShared";
 import { liveOrderLines, type LiveOrderLine } from "./purchaseOrderLines";
-import { receivedByRequestLine } from "./goodsReceiptLines";
-import { addFlow, type MaterialFlowRow } from "./goodsReceipt.planner";
+import { arrivedByRequestLine } from "./realizationLines";
 import { realizationStatus } from "./purchaseRealization.planner";
 import {
   requestLineOrderStatus,
@@ -48,11 +47,13 @@ import {
   sumOrdered,
 } from "./purchaseOrder.planner";
 import {
+  addFlow,
   checkRequestLines,
   materialKey,
   requestPlan,
   sumRequested,
   type CheckedRequestLine,
+  type MaterialFlowRow,
   type SpkMaterialRow,
 } from "./purchasing.planner";
 
@@ -242,18 +243,47 @@ export class PurchasingService {
   }
 
   /** Projects released to production, newest first. */
-  async listProjects(): Promise<PurchasingProjectOutDto[]> {
-    const projects = await ProjectRepo.model
-      .find({ productionReleasedAt: { $ne: null } })
-      .select({ name: 1, projectNumber: 1 })
-      .sort({ productionReleasedAt: -1 })
+  /** SPKs the user is PIC of that can still take a request (project released). */
+  async listMySpks(userId: string): Promise<PurchasingSpkOutDto[]> {
+    const orders = await ProductionOrderRepo.model
+      .find({ picUserId: new Types.ObjectId(userId), status: { $in: SPK_REQUESTABLE } })
+      .select({ number: 1, projectId: 1, shopDrawingItemId: 1 })
+      .sort({ number: 1 })
       .lean()
       .exec();
-    return projects.map((p) => ({
-      id: String(p._id),
-      projectNumber: p.projectNumber,
-      name: p.name,
-    }));
+    if (orders.length === 0) return [];
+    const [projects, items] = await Promise.all([
+      ProjectRepo.model
+        .find({
+          _id: { $in: orders.map((o) => o.projectId) },
+          productionReleasedAt: { $ne: null },
+        })
+        .select({ name: 1, projectNumber: 1 })
+        .lean()
+        .exec(),
+      ProjectShopDrawingItemRepo.model
+        .find({ _id: { $in: orders.map((o) => o.shopDrawingItemId) } })
+        .select({ code: 1, name: 1 })
+        .lean()
+        .exec(),
+    ]);
+    const projectById = new Map(projects.map((p) => [String(p._id), p]));
+    const itemById = new Map(items.map((i) => [String(i._id), i]));
+    return orders.flatMap((o) => {
+      const project = projectById.get(String(o.projectId));
+      if (!project) return [];
+      const item = itemById.get(String(o.shopDrawingItemId));
+      return [
+        {
+          id: String(o._id),
+          number: o.number,
+          itemLabel: item ? shopDrawingItemLabel(item) : "Deleted item",
+          projectId: String(o.projectId),
+          projectNumber: project.projectNumber,
+          projectName: project.name,
+        },
+      ];
+    });
   }
 
   async projectContext(projectId: string): Promise<PurchasingProjectContextOutDto> {
@@ -308,7 +338,7 @@ export class PurchasingService {
     ]);
     const rows = requestPlan(spkMaterials(order), requested);
     const { items, uoms } = await loadItemMeta(rows.map((r) => r.materialItemId));
-    // Ordered / received for this SPK, from its live SPPs.
+    // Ordered / arrived for this SPK, from its live SPPs.
     const sppDocs = (await PurchaseRequestRepo.model
       .find({ productionOrderId: order._id, status: { $nin: ["cancelled", "declined"] } })
       .select({ lines: 1 })
@@ -317,7 +347,7 @@ export class PurchasingService {
     const sppIds = sppDocs.map((d) => String(d._id));
     const [poLines, received] = await Promise.all([
       liveOrderLines(sppIds),
-      receivedByRequestLine(sppIds),
+      arrivedByRequestLine(sppIds),
     ]);
     const orderedByLine = sumOrdered(poLines);
     const flow = new Map<string, MaterialFlowRow>();
@@ -398,9 +428,11 @@ export class PurchasingService {
     const { items, uoms } = await loadItemMeta(doc.lines.map((l) => String(l.materialItemId)));
     const poLines = await liveOrderLines([doc._id]);
     const ordered = sumOrdered(poLines);
-    const receivedLine = await receivedByRequestLine([String(doc._id)]);
+    const receivedLine = await arrivedByRequestLine([String(doc._id)]);
     const [names, pos] = await Promise.all([
-      userEmailsById([doc.submittedBy, doc.cancelledBy, doc.declinedBy].filter(Boolean).map(String)),
+      userEmailsById(
+        [doc.submittedBy, doc.cancelledBy, doc.declinedBy, doc.receivedBy].filter(Boolean).map(String),
+      ),
       PurchaseOrderRepo.model
         .find({ requestId: doc._id })
         .select({ number: 1, status: 1, vendorId: 1, total: 1 })
@@ -449,6 +481,12 @@ export class PurchasingService {
       declinedAt: iso(doc.declinedAt),
       declinedBy: ref(doc.declinedBy),
       declineReason: doc.declineReason ?? "",
+      receivedBy: ref(doc.receivedBy),
+      canConfirmReceived:
+        String(doc.createdBy) === viewer.userId &&
+        doc.status === "submitted" &&
+        !doc.receivedAt &&
+        summary!.receiptStatus === "full",
       orders: pos.map((p) => ({
         id: String(p._id),
         number: p.number,
@@ -589,6 +627,27 @@ export class PurchasingService {
     return this.get(id, viewer);
   }
 
+  /** The requester confirms they got everything, once it has all arrived. */
+  async confirmReceived(id: string, viewer: PurchasingViewer): Promise<PurchaseRequestOutDto> {
+    const doc = await requireRequest(id);
+    if (String(doc.createdBy) !== viewer.userId) {
+      throw new Error("Only the person who made this SPP can confirm it was received");
+    }
+    if (doc.status !== "submitted") throw new Error("Only a submitted SPP can be confirmed as received");
+    if (doc.receivedAt) throw new Error("This SPP was already confirmed as received");
+    const arrived = await arrivedByRequestLine([String(doc._id)]);
+    const status = realizationStatus(
+      doc.lines.map((l) => ({ qty: l.qty, realized: arrived.get(String(l._id)) })),
+    );
+    if (status !== "full") throw new Error("Not everything has arrived yet");
+    const updated = await PurchaseRequestRepo.findOneAndUpdate(
+      { _id: doc._id, status: "submitted", receivedAt: null },
+      { $set: { receivedAt: new Date(), receivedBy: new Types.ObjectId(viewer.userId) } },
+    );
+    if (!updated) throw new Error("Failed to confirm SPP");
+    return this.get(id, viewer);
+  }
+
   /** Purchasing turns the request down; only while nothing is on a live PO. */
   async decline(id: string, reason: string, viewer: PurchasingViewer): Promise<PurchaseRequestOutDto> {
     const doc = await requireRequest(id);
@@ -633,7 +692,7 @@ export class PurchasingService {
       userEmailsById(docs.flatMap((d) => (d.createdBy ? [String(d.createdBy)] : []))),
       liveOrderLines(docs.filter((d) => d.status === "submitted").map((d) => d._id)),
     ]);
-    const receivedLine = await receivedByRequestLine(
+    const receivedLine = await arrivedByRequestLine(
       docs.filter((d) => d.status === "submitted").map((d) => String(d._id)),
     );
     const ordered = sumOrdered(poLines as LiveOrderLine[]);
@@ -672,6 +731,7 @@ export class PurchasingService {
         requestedBy: createdBy
           ? { id: createdBy, name: names.get(createdBy) ?? createdBy }
           : null,
+        receivedAt: iso(d.receivedAt),
         createdAt: iso(d.createdAt),
         submittedAt: iso(d.submittedAt),
       };

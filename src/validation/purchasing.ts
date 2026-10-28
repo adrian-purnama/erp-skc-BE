@@ -1,20 +1,18 @@
 import { Types } from "mongoose";
 import type {
   CancelPurchaseRequestInDto,
-  CreateGoodsReceiptInDto,
   CreatePurchaseRequestInDto,
-  GoodsReceiptStatusDto,
   PurchaseOrderLineInDto,
   PurchaseOrderStatusDto,
   PurchaseRequestLineInDto,
   PurchaseRequestStatusDto,
   PurchaseRealizationStatusDto,
   ReasonInDto,
+  RealizationChargeInDto,
   SavePurchaseOrderInDto,
   SaveRealizationInDto,
   UpdatePurchaseRequestInDto,
 } from "../dto/purchasing.dto";
-import { GOODS_RECEIPT_STATUSES } from "../models/goodsReceipt/goodsReceipt.model";
 import { PURCHASE_ORDER_STATUSES } from "../models/purchaseOrder/purchaseOrder.model";
 import { PURCHASE_REALIZATION_STATUSES } from "../models/purchaseRealization/purchaseRealization.model";
 import { PURCHASE_REQUEST_STATUSES } from "../models/purchaseRequest/purchaseRequest.model";
@@ -26,6 +24,7 @@ const NOTES_MAX = 2000;
 const LINE_NOTE_MAX = 300;
 const REASON_MAX = 500;
 const LINES_MAX = 200;
+const CHARGES_MAX = 20;
 
 function parseObjectId(raw: unknown, field: string): string {
   if (typeof raw !== "string" || !Types.ObjectId.isValid(raw)) {
@@ -186,6 +185,9 @@ export function parseSaveRealizationDto(body: unknown): SaveRealizationInDto {
   if (row.method === "staff" && !buyerUserId) {
     throw new Error("Choose who bought it");
   }
+  const charges = row.charges ?? [];
+  if (!Array.isArray(charges)) throw new Error("charges must be a list");
+  if (charges.length > CHARGES_MAX) throw new Error(`At most ${CHARGES_MAX} charges`);
   return {
     purchaseOrderId: parseObjectId(row.purchaseOrderId, "purchaseOrderId"),
     method: row.method,
@@ -193,6 +195,11 @@ export function parseSaveRealizationDto(body: unknown): SaveRealizationInDto {
     purchaseDate: parseYmd(row.purchaseDate, "purchaseDate"),
     place: parseText(row.place, "place", 200),
     notaNumber: parseText(row.notaNumber, "notaNumber", 100),
+    receivedByUserId:
+      row.receivedByUserId === undefined || row.receivedByUserId === null || row.receivedByUserId === ""
+        ? null
+        : parseObjectId(row.receivedByUserId, "receivedByUserId"),
+    deliveryNoteNumber: parseText(row.deliveryNoteNumber, "deliveryNoteNumber", 100),
     comments: parseText(row.comments, "comments", NOTES_MAX),
     lines: row.lines.map((raw, i) => {
       const line = asRecord(raw);
@@ -204,7 +211,24 @@ export function parseSaveRealizationDto(body: unknown): SaveRealizationInDto {
         note: parseText(line.note, `${at}.note`, LINE_NOTE_MAX),
       };
     }),
+    charges: charges.map(parseRealizationCharge),
   };
+}
+
+function parseRealizationCharge(raw: unknown, index: number): RealizationChargeInDto {
+  const row = asRecord(raw);
+  const at = `charges[${index}]`;
+  const label = parseText(row.label, `${at}.label`, 100);
+  if (!label) throw new Error(`${at}.label is required`);
+  if (row.kind === "percent") {
+    const rate = parseProductionQty(row.rate, `${at}.rate`);
+    if (Number(rate) > 100) throw new Error(`${at}.rate must be at most 100`);
+    return { label, kind: "percent", rate, amount: "0" };
+  }
+  if (row.kind === "fixed") {
+    return { label, kind: "fixed", rate: null, amount: parseRupiah(row.amount, `${at}.amount`) };
+  }
+  throw new Error(`${at}.kind must be percent or fixed`);
 }
 
 export function parseRealizationStatusFilter(
@@ -215,46 +239,4 @@ export function parseRealizationStatusFilter(
     throw new Error(`status must be one of: ${PURCHASE_REALIZATION_STATUSES.join(", ")}`);
   }
   return raw as PurchaseRealizationStatusDto;
-}
-
-export function parseCreateGoodsReceiptDto(body: unknown): CreateGoodsReceiptInDto {
-  const row = asRecord(body);
-  if (!Array.isArray(row.lines)) throw new Error("lines must be a list");
-  if (row.lines.length > LINES_MAX) throw new Error(`At most ${LINES_MAX} lines`);
-  return {
-    purchaseOrderId: parseObjectId(row.purchaseOrderId, "purchaseOrderId"),
-    receivedDate: parseYmd(row.receivedDate, "receivedDate"),
-    receivedByUserId:
-      row.receivedByUserId === undefined || row.receivedByUserId === null || row.receivedByUserId === ""
-        ? null
-        : parseObjectId(row.receivedByUserId, "receivedByUserId"),
-    deliveryNoteNumber: parseText(row.deliveryNoteNumber, "deliveryNoteNumber", 100),
-    notes: parseText(row.notes, "notes", NOTES_MAX),
-    lines: row.lines.map((raw, i) => {
-      const line = asRecord(raw);
-      const at = `lines[${i}]`;
-      const qtyRaw = typeof line.qty === "number" ? String(line.qty) : line.qty;
-      const qty =
-        typeof qtyRaw === "string" && qtyRaw.trim() === "0"
-          ? "0"
-          : qtyRaw === undefined || qtyRaw === null || qtyRaw === ""
-            ? "0"
-            : parseProductionQty(qtyRaw, `${at}.qty`);
-      return {
-        poLineId: parseObjectId(line.poLineId, `${at}.poLineId`),
-        qty,
-        note: parseText(line.note, `${at}.note`, LINE_NOTE_MAX),
-      };
-    }),
-  };
-}
-
-export function parseGoodsReceiptStatusFilter(
-  raw: string | undefined,
-): GoodsReceiptStatusDto | undefined {
-  if (!raw) return undefined;
-  if (!(GOODS_RECEIPT_STATUSES as readonly string[]).includes(raw)) {
-    throw new Error(`status must be one of: ${GOODS_RECEIPT_STATUSES.join(", ")}`);
-  }
-  return raw as GoodsReceiptStatusDto;
 }

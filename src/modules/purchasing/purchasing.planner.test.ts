@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import Decimal from "decimal.js";
 import {
+  addFlow,
   checkRequestLines,
   materialKey,
   requestPlan,
   sumRequested,
+  type MaterialFlowRow,
   type RequestLineInput,
   type SpkMaterialRow,
 } from "./purchasing.planner";
@@ -101,5 +103,17 @@ describe("checkRequestLines", () => {
     assert.throws(() => check([line()], { spk: null }), /outside the SPK/);
     const [out] = check([line({ note: "stock" })], { spk: null });
     assert.equal(out!.source, "extra");
+  });
+});
+
+describe("addFlow", () => {
+  it("sums requested, ordered and received per material", () => {
+    const rows = new Map<string, MaterialFlowRow>();
+    addFlow(rows, "m1:u1", { requested: "10", ordered: new Decimal(6) });
+    addFlow(rows, "m1:u1", { requested: "2", received: new Decimal(4) });
+    const row = rows.get("m1:u1")!;
+    assert.equal(row.requested.toString(), "12");
+    assert.equal(row.ordered.toString(), "6");
+    assert.equal(row.received.toString(), "4");
   });
 });

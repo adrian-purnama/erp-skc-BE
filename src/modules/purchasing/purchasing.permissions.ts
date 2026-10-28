@@ -19,12 +19,7 @@ export const PURCHASING_PERMS = [
   },
   {
     key: "purchasing.realize",
-    label: "Record purchase realization (nota)",
-    implies: ["purchasing.view", "purchasing.viewAll"],
-  },
-  {
-    key: "purchasing.receive",
-    label: "Receive goods (penerimaan barang)",
+    label: "Record realizations (Penerimaan from vendor / Nota Realisasi by staff)",
     implies: ["purchasing.view", "purchasing.viewAll"],
   },
   {
