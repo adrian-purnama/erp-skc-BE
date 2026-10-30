@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   buildExportFilename,
   buildSections,
+  exportChargeRows,
   lineAmount,
   missingPriceLines,
   sanitizeExcelText,
@@ -134,5 +135,22 @@ describe("buildExportFilename", () => {
       date: new Date(Date.UTC(2026, 0, 5)),
     });
     assert.match(name, /_Rev2_DATA_20260105\.xlsx$/);
+  });
+});
+
+describe("exportChargeRows", () => {
+  it("prices percent charges on the subtotal and keeps fixed amounts", () => {
+    const rows = exportChargeRows(1_000_005, [
+      { label: "PPN", kind: "percent", rate: "11", amount: "0" },
+      { label: "Ongkir", kind: "fixed", rate: null, amount: "250000" },
+    ]);
+    assert.deepEqual(rows, [
+      { label: "PPN (11%)", rate: 11, amount: 110001 },
+      { label: "Ongkir", rate: null, amount: 250000 },
+    ]);
+  });
+
+  it("returns nothing without charges", () => {
+    assert.deepEqual(exportChargeRows(5000, []), []);
   });
 });

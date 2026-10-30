@@ -5,11 +5,15 @@ import type {
   CompleteProductionOrderInDto,
   CreateProductionOrderInDto,
   CreateProductionReportInDto,
+  ProductionHandoverCheckDto,
   ProductionOrderStatusDto,
+  SaveMaterialDispatchInDto,
+  SaveProductionHandoverInDto,
   UpdateProductionOrderInDto,
+  VoidProductionHandoverInDto,
   VoidProductionReportInDto,
 } from "../dto/production.dto";
-import { PRODUCTION_ORDER_STATUSES } from "../models/productionOrder/productionOrder.model";
+import { PRODUCTION_ORDER_STATUSES } from "../models/productionOrder.model";
 import { formatDecimal } from "../modules/itemMaster/itemUomConvert";
 import { asRecord } from "./asRecord";
 
@@ -155,10 +159,24 @@ export function parseCreateProductionReportDto(
   body: unknown,
 ): CreateProductionReportInDto {
   const row = asRecord(body);
+  let stageSequence: number | undefined;
+  if (row.stageSequence !== undefined && row.stageSequence !== null) {
+    const n =
+      typeof row.stageSequence === "number"
+        ? row.stageSequence
+        : typeof row.stageSequence === "string"
+          ? Number(row.stageSequence.trim())
+          : NaN;
+    if (!Number.isInteger(n) || n < 1) {
+      throw new Error("stageSequence must be a positive integer");
+    }
+    stageSequence = n;
+  }
   return {
     qtyDone: parseProductionQty(row.qtyDone, "qtyDone"),
     reportDate: parseRequiredYmd(row.reportDate, "reportDate"),
     notes: parseText(row.notes, "notes", NOTES_MAX),
+    ...(stageSequence !== undefined ? { stageSequence } : {}),
   };
 }
 
@@ -178,4 +196,93 @@ export function parseProductionOrderStatusFilter(
     );
   }
   return raw as ProductionOrderStatusDto;
+}
+
+const CHECKLIST_MAX = 30;
+const LABEL_MAX = 120;
+
+function parseChecklist(raw: unknown): ProductionHandoverCheckDto[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new Error("checklist must be a list");
+  if (raw.length > CHECKLIST_MAX) {
+    throw new Error(`checklist can have at most ${CHECKLIST_MAX} rows`);
+  }
+  return raw.map((entry, i) => {
+    const row = asRecord(entry);
+    const label = parseText(row.label, `checklist[${i}].label`, LABEL_MAX);
+    if (!label) throw new Error(`checklist[${i}].label is required`);
+    const result = row.result;
+    if (result !== null && result !== undefined && result !== "ok" && result !== "not_ok") {
+      throw new Error(`checklist[${i}].result must be ok, not_ok or null`);
+    }
+    return {
+      label,
+      result: result ?? null,
+      note: parseText(row.note, `checklist[${i}].note`, REASON_MAX),
+    };
+  });
+}
+
+export function parseSaveProductionHandoverDto(
+  body: unknown,
+): SaveProductionHandoverInDto {
+  const row = asRecord(body);
+  return {
+    handoverDate: parseRequiredYmd(row.handoverDate, "handoverDate"),
+    qty: parseProductionQty(row.qty),
+    deliveryNoteNumber: parseText(row.deliveryNoteNumber, "deliveryNoteNumber", 100),
+    receivedByUserId: parseOptionalUserId(row.receivedByUserId, "receivedByUserId"),
+    notes: parseText(row.notes, "notes", NOTES_MAX),
+    checklist: parseChecklist(row.checklist),
+  };
+}
+
+export function parseVoidProductionHandoverDto(
+  body: unknown,
+): VoidProductionHandoverInDto {
+  return { reason: parseReason(asRecord(body).reason, "reason") };
+}
+
+const DISPATCH_LINES_MAX = 100;
+
+/** Qty ≥ 0 (zero lines are dropped by the dispatch rules). */
+function parseDispatchQty(raw: unknown, field: string): string {
+  const text = typeof raw === "number" ? String(raw) : raw;
+  if (text === undefined || text === null || text === "") return "0";
+  if (typeof text !== "string") throw new Error(`${field} must be a number`);
+  let d: Decimal;
+  try {
+    d = new Decimal(text.trim());
+  } catch {
+    throw new Error(`${field} must be a number`);
+  }
+  if (!d.isFinite() || d.lt(0)) throw new Error(`${field} cannot be negative`);
+  return formatDecimal(d);
+}
+
+export function parseSaveMaterialDispatchDto(body: unknown): SaveMaterialDispatchInDto {
+  const row = asRecord(body);
+  if (!Array.isArray(row.lines)) throw new Error("lines must be a list");
+  if (row.lines.length > DISPATCH_LINES_MAX) throw new Error(`At most ${DISPATCH_LINES_MAX} lines`);
+  return {
+    dispatchDate: parseRequiredYmd(row.dispatchDate, "dispatchDate"),
+    lines: row.lines.map((raw, i) => {
+      const line = asRecord(raw);
+      return {
+        materialItemId: parseObjectId(line.materialItemId, `lines[${i}].materialItemId`),
+        itemUomId: parseObjectId(line.itemUomId, `lines[${i}].itemUomId`),
+        qty: parseDispatchQty(line.qty, `lines[${i}].qty`),
+      };
+    }),
+    notes: parseText(row.notes, "notes", NOTES_MAX),
+    receivedByName: parseText(row.receivedByName, "receivedByName", 120),
+  };
+}
+
+export function parseSendMaterialDispatchDto(body: unknown): { dispatchDate: string; receivedByName: string } {
+  const row = asRecord(body);
+  return {
+    dispatchDate: parseRequiredYmd(row.dispatchDate, "dispatchDate"),
+    receivedByName: parseText(row.receivedByName, "receivedByName", 120),
+  };
 }

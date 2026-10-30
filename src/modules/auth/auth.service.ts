@@ -1,5 +1,12 @@
 import * as bcrypt from "bcrypt";
-import type { ProfileOutDto, UpdateProfileInDto } from "../../dto/profile.dto";
+import type { Types } from "mongoose";
+import { deleteFileIfExists, uploadFile } from "../../core/gridfs";
+import type {
+  ProfileOutDto,
+  UpdateProfileInDto,
+  UploadProfilePictureInDto,
+  UploadProfilePictureOutDto,
+} from "../../dto/profile.dto";
 import { registerInDto, RegisterOutDto } from "../../dto/register.dto";
 import { LoginInDto, LoginOutDto } from "../../dto/login.dto";
 import {
@@ -7,14 +14,41 @@ import {
   ResetPasswordOutDto,
 } from "../../dto/resetPassword.dto";
 import { SendOtpInDto } from "../../dto/sendOtp.dto";
-import { env } from "../../environment/env";
-import { logger } from "../../logger/logger";
-import { UserModel } from "../../models/user/user.model";
+import { env } from "../../core/env";
+import { logger } from "../../core/logger";
+import { UserModel } from "../../models/user.model";
+import { assertUploadFile } from "../../validation/uploadFile";
 import { signAccessToken } from "../../utils/jwt";
-import { encodeResetToken } from "../../utils/resetToken";
 import { appConfigService } from "../appConfig/AppConfig.service";
 import { mailer } from "../mail/mail.service";
 import { OtpService } from "../otp/otp.service";
+
+const PROFILE_PICTURE_MAX_BYTES = 2 * 1024 * 1024;
+const PROFILE_PICTURE_MIME = new Set(["image/png", "image/jpeg"]);
+
+function profilePictureUrl(
+  id: Types.ObjectId | null | undefined,
+): string | null {
+  return id ? `/media/${id.toString()}` : null;
+}
+
+function encodeResetToken(email: string, otp: string): string {
+  return Buffer.from(JSON.stringify({ email, otp }), "utf8").toString(
+    "base64url",
+  );
+}
+
+function toProfileOut(user: {
+  email?: string;
+  fullName?: string;
+  profilePicture?: Types.ObjectId | null;
+}): ProfileOutDto {
+  return {
+    email: user.email ?? "",
+    fullName: user.fullName?.trim() ?? "",
+    profilePicture: profilePictureUrl(user.profilePicture),
+  };
+}
 
 export class AuthService {
   private readonly source = "auth/auth.service.ts";
@@ -189,10 +223,7 @@ export class AuthService {
     if (!user) {
       throw new Error("User not found");
     }
-    return {
-      email: user.email ?? "",
-      fullName: user.fullName?.trim() ?? "",
-    };
+    return toProfileOut(user);
   }
 
   async updateProfile(
@@ -209,9 +240,63 @@ export class AuthService {
     await user.save();
     logger.debug(`Profile updated for ${user.email}`, this.source, method);
 
+    return toProfileOut(user);
+  }
+
+  async uploadProfilePicture(
+    userId: string,
+    input: UploadProfilePictureInDto,
+  ): Promise<UploadProfilePictureOutDto> {
+    const method = "uploadProfilePicture";
+
+    assertUploadFile(
+      {
+        originalname: input.filename,
+        mimetype: input.contentType,
+        size: input.size,
+      },
+      PROFILE_PICTURE_MAX_BYTES,
+    );
+
+    if (!PROFILE_PICTURE_MIME.has(input.contentType)) {
+      throw new Error("Profile picture must be a PNG or JPG");
+    }
+
+    const user = await UserModel.findById(userId);
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    const oldId = user.profilePicture ?? null;
+
+    const uploaded = await uploadFile("public", {
+      buffer: input.buffer,
+      filename: input.filename,
+      contentType: input.contentType,
+      metadata: { kind: "profilePicture", userId },
+    });
+
+    try {
+      user.profilePicture = uploaded.id;
+      await user.save();
+    } catch (error) {
+      await deleteFileIfExists("public", uploaded.id);
+      throw error;
+    }
+
+    if (oldId) {
+      await deleteFileIfExists("public", oldId);
+    }
+
+    logger.debug(
+      `Profile picture updated for ${user.email}`,
+      this.source,
+      method,
+    );
+
     return {
-      email: user.email ?? "",
-      fullName: user.fullName?.trim() ?? "",
+      id: uploaded.id.toString(),
+      url: `/media/${uploaded.id.toString()}`,
     };
   }
 }

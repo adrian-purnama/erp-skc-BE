@@ -55,3 +55,11 @@ export type ProjectRabChangeDetailOutDto = ProjectRabChangeSummaryOutDto & {
   /** Draft/committed line snapshot (priced display optional). */
   lines: ProjectRabLineOutDto[];
 };
+
+/** First lock of the RAB: who locked it and the lines that existed then. */
+export type ProjectRabLockOriginOutDto = {
+  lockedAt: string;
+  lockedBy: ProjectRabUserRefOutDto;
+  grandTotal: string | null;
+  lines: ProjectRabChangeLineDiffOutDto[];
+};

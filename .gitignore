@@ -148,6 +148,5 @@ vite.config.ts.timestamp-*
 # Turbo Repo
 .turbo
 
-
-.env
+# graphify knowledge graph
 graphify-out

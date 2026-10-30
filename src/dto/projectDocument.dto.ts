@@ -1,4 +1,4 @@
-import type { ProjectDocumentKind } from "../models/projectDocument/projectDocument.model";
+import type { ProjectDocumentKind } from "../models/projectDocument.model";
 
 export type ProjectDocumentOutDto = {
   id: string;

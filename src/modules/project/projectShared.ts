@@ -3,8 +3,8 @@ import {
   findFile,
   openDownload,
   uploadFile,
-} from "../../buckets/gridfs";
-import { ProjectRepo } from "../../models/project/project.model";
+} from "../../core/gridfs";
+import { ProjectRepo } from "../../models/project.model";
 
 const BUCKET = "project";
 
@@ -34,6 +34,8 @@ export type UploadDedupedBlobOpts = {
   metadata: Record<string, unknown>;
   /** Candidates newest-first; first with a live GridFS blob wins. */
   findExistingIds: () => Promise<Types.ObjectId[]>;
+  /** GridFS bucket; project files by default. */
+  bucket?: string;
 };
 
 export type UploadDedupedBlobResult = {
@@ -46,10 +48,11 @@ export type UploadDedupedBlobResult = {
 export async function uploadDedupedBlob(
   opts: UploadDedupedBlobOpts,
 ): Promise<UploadDedupedBlobResult> {
+  const bucket = opts.bucket ?? BUCKET;
   let linkedGridFsId: Types.ObjectId | null = null;
   if (opts.force !== true) {
     for (const id of await opts.findExistingIds()) {
-      if (await findFile(BUCKET, id)) {
+      if (await findFile(bucket, id)) {
         linkedGridFsId = id;
         break;
       }
@@ -64,7 +67,7 @@ export async function uploadDedupedBlob(
     };
   }
 
-  const uploaded = await uploadFile(BUCKET, {
+  const uploaded = await uploadFile(bucket, {
     buffer: opts.buffer,
     filename: opts.filename,
     contentType: opts.contentType,

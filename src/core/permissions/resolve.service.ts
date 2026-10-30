@@ -1,6 +1,6 @@
 import type { HydratedDocument } from "mongoose";
-import type { UserInterface } from "../../models/user/user.model";
-import { RoleModel } from "../../modules/admin/roles/role.model";
+import type { UserInterface } from "../../models/user.model";
+import { RoleModel } from "../../models/role.model";
 
 // Multi-instance deployments need a shared cache (e.g. Redis) with the same interface.
 const CACHE_TTL_MS = 60_000;
@@ -47,5 +47,3 @@ export async function getUserPermissions(
   cache.set(userId, { permissions, cachedAt: now });
   return new Set(permissions);
 }
-
-export const CACHE_TTL_MS_FOR_TESTS = CACHE_TTL_MS;

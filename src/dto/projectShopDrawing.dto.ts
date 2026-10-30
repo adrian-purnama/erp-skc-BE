@@ -1,3 +1,5 @@
+import type { ShopDrawingMakeType } from "../models/projectShopDrawingItem.model";
+
 export type ProjectShopDrawingFileOutDto = {
   id: string;
   itemId: string;
@@ -23,10 +25,13 @@ export type ProjectShopDrawingItemOutDto = {
   name: string;
   /** `{code}-{name}`. */
   label: string;
+  /** Keterangan, built from the current BOQ's materials (read-only). */
   descriptions: string[];
   dimension: string;
   category: string | null;
   mockupApproveDate: string | null;
+  /** Who makes it; outsource needs no File Produksi. */
+  makeType: ShopDrawingMakeType;
   current: ProjectShopDrawingFileOutDto | null;
   versions: ProjectShopDrawingFileOutDto[];
   /** File Produksi (CNC / cutting files); `hasBoq` is always false here. */

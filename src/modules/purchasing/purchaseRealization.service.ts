@@ -1,6 +1,6 @@
 import Decimal from "decimal.js";
 import { Types } from "mongoose";
-import { deleteFileIfExists, findFile, openDownload, uploadFile } from "../../buckets/gridfs";
+import { deleteFileIfExists, findFile, openDownload, uploadFile } from "../../core/gridfs";
 import { withTx } from "../../core/audit/context";
 import type { ProjectRabUserRefOutDto } from "../../dto/projectRab.dto";
 import type {
@@ -13,30 +13,35 @@ import type {
   RealizationSummaryOutDto,
   SaveRealizationInDto,
 } from "../../dto/purchasing.dto";
-import { logger } from "../../logger/logger";
-import { PurchaseOrderRepo } from "../../models/purchaseOrder/purchaseOrder.model";
+import { logger } from "../../core/logger";
+import { PurchaseOrderRepo } from "../../models/purchaseOrder.model";
 import {
   PurchaseRealizationRepo,
   type PurchaseRealizationInterface,
-} from "../../models/purchaseRealization/purchaseRealization.model";
-import { PurchasingSeqCounterModel } from "../../models/seqCounter/seqCounter.model";
-import { UserModel } from "../../models/user/user.model";
+} from "../../models/purchaseRealization.model";
+import { PurchasingSeqCounterModel } from "../../models/seqCounter.model";
+import { UserModel } from "../../models/user.model";
 import { userEmailsById } from "../../utils/shared";
 import { formatDecimal } from "../itemMaster/itemUomConvert";
 import { projectNumberParts } from "../project/projectNumber";
 import { lineAmount } from "./purchaseOrder.planner";
-import { purchaseOrderService, type PoActor } from "./purchaseOrder.service";
+import { PURCHASING_BUCKET, purchaseOrderService, type PoActor } from "./purchaseOrder.service";
 import {
   checkRealizationCharges,
+  inferChargeCategory,
   checkRealizationLines,
   realizationStatus,
   remainingToRealize,
   sumRealized,
   type PoLineRef,
 } from "./purchaseRealization.planner";
+import { notifyPurchaseOrderEvent } from "./purchasingNotify";
+import { assertRealizationFeeWithinHandover, directToVendorTargets } from "../production/vendorWork";
+import { assertRealizationNotPaid } from "./purchasePayment.service";
+import { PURCHASE_PAYMENT_LIVE_STATUSES, PurchasePaymentRepo } from "../../models/purchasePayment.model";
 
 /** Nota files live apart from project files (Shrink DB only cleans `project`). */
-export const PURCHASING_BUCKET = "purchasing";
+
 const PHOTO_MAX = 12;
 const PHOTO_MAX_BYTES = 15 * 1024 * 1024;
 const PHOTO_TYPES = /^(image\/(jpeg|png|webp|heic|heif)|application\/pdf)$/;
@@ -121,11 +126,13 @@ export class PurchaseRealizationService {
       .lean()
       .exec();
     if (orders.length === 0) return [];
-    const notas = await PurchaseRealizationRepo.model
-      .find({ purchaseOrderId: { $in: orders.map((o) => o._id) }, status: "posted" })
-      .select({ purchaseOrderId: 1, lines: 1, total: 1 })
+    const live = await PurchaseRealizationRepo.model
+      .find({ purchaseOrderId: { $in: orders.map((o) => o._id) }, status: { $in: ["draft", "posted"] } })
+      .select({ purchaseOrderId: 1, number: 1, status: 1, lines: 1, total: 1 })
+      .sort({ createdAt: 1 })
       .lean()
       .exec();
+    const notas = live.filter((n) => n.status === "posted");
     const summaries = await purchaseOrderService.list({ status: "approved" });
     const summaryById = new Map(summaries.map((s) => [s.id, s]));
     const rows: RealizationQueueRowOutDto[] = [];
@@ -139,10 +146,18 @@ export class PurchaseRealizationService {
       );
       const summary = summaryById.get(String(o._id));
       if (status === "full" || !summary) continue;
+      const drafts = live.filter((n) => n.status === "draft" && String(n.purchaseOrderId) === String(o._id));
+      const held = sumRealized(
+        [...mine, ...drafts].flatMap((n) => n.lines.map((l) => ({ poLineId: String(l.poLineId), qty: l.qty }))),
+      );
       rows.push({
         ...summary,
         realizationStatus: status,
         realizedTotal: mine.reduce((sum, n) => sum.plus(n.total), new Decimal(0)).toFixed(0),
+        drafts: drafts.map((d) => ({ id: String(d._id), number: d.number })),
+        heldByDrafts:
+          drafts.length > 0 &&
+          realizationStatus(o.lines.map((l) => ({ qty: l.qty, realized: held.get(String(l._id)) }))) === "full",
       });
     }
     return rows;
@@ -153,7 +168,17 @@ export class PurchaseRealizationService {
     const order = await purchaseOrderService.get(orderId);
     if (order.status !== "approved") throw new Error("Only an approved PO can be realized");
     const realized = await realizedOnOrder(orderId, exceptId);
+    const draftQuery: Record<string, unknown> = { purchaseOrderId: new Types.ObjectId(orderId), status: "draft" };
+    if (exceptId) draftQuery._id = { $ne: new Types.ObjectId(exceptId) };
+    const drafts = await PurchaseRealizationRepo.model
+      .find(draftQuery)
+      .select({ number: 1 })
+      .sort({ createdAt: 1 })
+      .lean()
+      .exec();
     return {
+      drafts: drafts.map((d) => ({ id: String(d._id), number: d.number })),
+      directToVendor: await directToVendorTargets(orderId),
       purchaseOrderId: order.id,
       poNumber: order.number,
       vendorName: order.vendorName,
@@ -162,6 +187,7 @@ export class PurchaseRealizationService {
       projectNumber: order.projectNumber,
       projectName: order.projectName,
       approvedTotal: order.total,
+      estimates: order.estimates,
       lines: order.lines.map((l) => {
         const done = realized.get(l.id) ?? new Decimal(0);
         return {
@@ -248,6 +274,7 @@ export class PurchaseRealizationService {
       }),
       charges: (doc.charges ?? []).map((c) => ({
         id: String(c._id),
+        category: c.category ?? inferChargeCategory(c.label),
         label: c.label,
         kind: c.kind,
         rate: c.rate ?? null,
@@ -402,6 +429,7 @@ export class PurchaseRealizationService {
           notaNumber: doc.notaNumber,
           receivedByUserId: doc.receivedByUserId ? String(doc.receivedByUserId) : null,
           deliveryNoteNumber: doc.deliveryNoteNumber ?? "",
+          deliveredTo: doc.deliveredTo ?? "us",
           comments: doc.comments,
           lines: doc.lines.map((l) => ({
             poLineId: String(l.poLineId),
@@ -410,6 +438,7 @@ export class PurchaseRealizationService {
             note: l.note,
           })),
           charges: (doc.charges ?? []).map((c) => ({
+            category: c.category ?? inferChargeCategory(c.label),
             label: c.label,
             kind: c.kind,
             rate: c.rate ?? null,
@@ -424,12 +453,27 @@ export class PurchaseRealizationService {
       );
       if (!updated) throw new Error("Realization is no longer a draft");
     });
+    await notifyPurchaseOrderEvent({
+      kind: "goods_received",
+      orderId: String(doc.purchaseOrderId),
+      actorUserId: actor.userId,
+      realizationNumber: doc.number,
+    });
     return this.get(id, actor);
   }
 
   async void(id: string, reason: string, actor: PoActor): Promise<RealizationOutDto> {
     const doc = await requireRealization(id);
     if (doc.status !== "posted") throw new Error("Only a posted realization can be voided");
+    const order = await PurchaseOrderRepo.model
+      .findById(doc.purchaseOrderId)
+      .select({ status: 1 })
+      .lean()
+      .exec();
+    if (order?.status === "cancelled") {
+      throw new Error("Its PO was cancelled with this part kept as received, so it cannot be voided");
+    }
+    await assertRealizationNotPaid(doc);
     const updated = await PurchaseRealizationRepo.findOneAndUpdate(
       { _id: doc._id, status: "posted" },
       {
@@ -464,6 +508,20 @@ export class PurchaseRealizationService {
       poLines,
       realizedElsewhere: await realizedOnOrder(input.purchaseOrderId, exceptId),
     });
+    if (input.deliveredTo === "vendor") {
+      if (input.method !== "vendor") throw new Error("Only a supplier delivery can go straight to the subcon vendor");
+      if (!(await directToVendorTargets(input.purchaseOrderId))) {
+        throw new Error(
+          "Straight to the vendor is only for material of a subcon SPK whose vendor fee PO is approved",
+        );
+      }
+    }
+    // A subcon / outsource vendor fee is received only for the units handed over.
+    await assertRealizationFeeWithinHandover({
+      purchaseOrderId: order.id,
+      lines: checked.lines.map((l) => ({ poLineId: l.poLineId, qty: l.qty })),
+      exceptRealizationId: exceptId,
+    });
     const priced = checkRealizationCharges(checked.total, input.charges);
     return {
       purchaseOrderId: new Types.ObjectId(order.id),
@@ -477,6 +535,7 @@ export class PurchaseRealizationService {
       receivedByUserId: input.receivedByUserId ? new Types.ObjectId(input.receivedByUserId) : null,
       receivedByName,
       deliveryNoteNumber: input.deliveryNoteNumber,
+      deliveredTo: input.deliveredTo,
       comments: input.comments,
       subtotal: checked.total,
       chargesTotal: priced.chargesTotal,
@@ -504,6 +563,24 @@ export class PurchaseRealizationService {
     );
     const orderById = new Map(orders.map((o) => [String(o._id), o]));
     const names = await userEmailsById(docs.flatMap((d) => (d.createdBy ? [String(d.createdBy)] : [])));
+    // Staff notas: the live reimbursement paying each back (a rejected nota is free again).
+    const reimbursements = await PurchasePaymentRepo.model
+      .find({
+        kind: "reimburse",
+        status: { $in: PURCHASE_PAYMENT_LIVE_STATUSES },
+        "items.realizationId": { $in: docs.filter((d) => d.method === "staff").map((d) => d._id) },
+      })
+      .select({ number: 1, status: 1, items: 1 })
+      .lean()
+      .exec();
+    const reimbursementOf = new Map<string, { id: string; number: string; status: (typeof reimbursements)[number]["status"] }>();
+    for (const p of reimbursements) {
+      for (const i of p.items) {
+        if (i.status !== "rejected") {
+          reimbursementOf.set(String(i.realizationId), { id: String(p._id), number: p.number, status: p.status });
+        }
+      }
+    }
     return docs.map((d) => {
       const order = orderById.get(String(d.purchaseOrderId));
       const po = summaries.get(String(d.purchaseOrderId));
@@ -532,6 +609,8 @@ export class PurchaseRealizationService {
         purchaseDate: d.purchaseDate,
         place: d.place ?? "",
         deliveryNoteNumber: d.deliveryNoteNumber ?? "",
+        deliveredTo: d.deliveredTo ?? "us",
+        reimbursement: reimbursementOf.get(String(d._id)) ?? null,
         subtotal: d.subtotal ?? d.total,
         chargesTotal: d.chargesTotal ?? "0",
         total: d.total,

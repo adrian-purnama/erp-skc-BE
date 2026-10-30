@@ -3,7 +3,7 @@ import type {
   ShrinkRunResult,
   ShrinkRunStatus,
   ShrinkSection,
-} from "../models/shrinkRun/shrinkRun.model";
+} from "../models/shrinkRun.model";
 
 export type { ShrinkSection };
 

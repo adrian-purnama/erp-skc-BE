@@ -1,4 +1,4 @@
-import type { ProjectLooseFileKind } from "../models/projectLooseFile/projectLooseFile.model";
+import type { ProjectLooseFileKind } from "../models/projectLooseFile.model";
 
 export type ProjectLooseFileOutDto = {
   id: string;

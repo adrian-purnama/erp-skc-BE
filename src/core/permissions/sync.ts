@@ -1,11 +1,11 @@
-import { logger } from "../../logger/logger";
-import { RoleModel } from "../../modules/admin/roles/role.model";
+import { logger } from "../logger";
+import { RoleModel } from "../../models/role.model";
 import { computeEffective } from "../../modules/admin/roles/role.service";
 import {
   PermissionModel,
   type PermissionInterface,
   type PermissionStatus,
-} from "./permission.model";
+} from "../../models/permission.model";
 import { all, get, has, requireLabels } from "./registry";
 import { invalidateAll } from "./resolve.service";
 import type { ScanResult, ScanViolation, ScannedRoute } from "./scan";
@@ -260,7 +260,9 @@ export function planPermissionSync(
   return { upserts, summary, categoryWarnings };
 }
 
-export async function syncPermissions(scan: ScanResult): Promise<void> {
+export async function syncPermissions(
+  scan: ScanResult,
+): Promise<PermissionSyncPlan> {
   const existing = await PermissionModel.find().exec();
   const plan = planPermissionSync(scan.routes, existing);
 
@@ -301,6 +303,8 @@ export async function syncPermissions(scan: ScanResult): Promise<void> {
     logSource,
     "syncPermissions",
   );
+
+  return plan;
 }
 
 export async function recomputeAllRoles(): Promise<void> {

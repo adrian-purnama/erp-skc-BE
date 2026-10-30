@@ -14,7 +14,12 @@ import type {
   UpdateItemCategoryDto,
   UpdateItemDto,
 } from "../dto/itemMaster.dto";
-import { ITEM_TYPES } from "../models/item/item.model";
+import { ITEM_TYPES } from "../models/item.model";
+import {
+  ITEM_UOM_ROUNDING_MODES,
+  type ItemUomRoundingMode,
+} from "../models/itemUom.model";
+import { UOM_MAX_DECIMALS } from "../models/uom.model";
 import {
   formatDecimal,
   parsePositiveDecimal,
@@ -212,10 +217,40 @@ function parseUomRow(raw: unknown, index: number): ItemUomInDto {
     throw new Error(`uoms[${index}].conversionFactor is invalid`);
   }
 
+  let decimals: number | null = null;
+  if (row.decimals !== undefined && row.decimals !== null) {
+    if (
+      typeof row.decimals !== "number" ||
+      !Number.isInteger(row.decimals) ||
+      row.decimals < 0 ||
+      row.decimals > UOM_MAX_DECIMALS
+    ) {
+      throw new Error(
+        `uoms[${index}].decimals must be an integer from 0 to ${UOM_MAX_DECIMALS}`,
+      );
+    }
+    decimals = row.decimals;
+  }
+
+  let rounding: ItemUomRoundingMode = "up";
+  if (row.rounding !== undefined) {
+    if (
+      typeof row.rounding !== "string" ||
+      !(ITEM_UOM_ROUNDING_MODES as readonly string[]).includes(row.rounding)
+    ) {
+      throw new Error(
+        `uoms[${index}].rounding must be one of: ${ITEM_UOM_ROUNDING_MODES.join(", ")}`,
+      );
+    }
+    rounding = row.rounding as ItemUomRoundingMode;
+  }
+
   const result: ItemUomInDto = {
     uomId: row.uomId,
     isBase: row.isBase,
     conversionFactor,
+    decimals,
+    rounding,
   };
   if (row.id !== undefined) {
     if (typeof row.id !== "string" || !Types.ObjectId.isValid(row.id)) {

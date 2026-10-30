@@ -1,5 +1,5 @@
-import { logger } from "../../logger/logger";
-import { UomRepo, type UomInterface } from "../../models/uom/uom.model";
+import { logger } from "../../core/logger";
+import { UomRepo, type UomInterface } from "../../models/uom.model";
 
 const logSource = "modules/uom/uom.seed.ts";
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { PermissionInterface } from "./permission.model";
+import type { PermissionInterface } from "../../models/permission.model";
 import type { ScannedRoute } from "./scan";
 import { planPermissionSync } from "./sync";
 

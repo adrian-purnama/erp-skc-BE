@@ -1,8 +1,8 @@
 import { Types } from "mongoose";
 import type { ItemUomInDto, ItemUomOutDto } from "../../dto/itemMaster.dto";
-import { ItemRepo } from "../../models/item/item.model";
-import { ItemUomRepo, type ItemUomInterface } from "../../models/itemUom/itemUom.model";
-import { UomRepo } from "../../models/uom/uom.model";
+import { ItemRepo } from "../../models/item.model";
+import { ItemUomRepo, type ItemUomInterface } from "../../models/itemUom.model";
+import { UOM_DEFAULT_DECIMALS, UomRepo } from "../../models/uom.model";
 import { defaultFormulasOr } from "../uom/uomFormula";
 import {
   parsePositiveDecimal,
@@ -16,6 +16,7 @@ type UomMeta = {
   symbol: string;
   name: string;
   formulas: string[];
+  decimals?: number;
 };
 
 function toOut(doc: ItemUomLean, uomMeta?: UomMeta): ItemUomOutDto {
@@ -25,10 +26,13 @@ function toOut(doc: ItemUomLean, uomMeta?: UomMeta): ItemUomOutDto {
     uomId: String(doc.uomId),
     isBase: doc.isBase,
     conversionFactor: doc.conversionFactor,
+    decimals: doc.decimals ?? null,
+    rounding: doc.rounding ?? "up",
     sortOrder: doc.sortOrder,
     symbol: uomMeta?.symbol ?? "",
     name: uomMeta?.name ?? "",
     formulas: defaultFormulasOr(uomMeta?.formulas),
+    uomDecimals: uomMeta?.decimals ?? UOM_DEFAULT_DECIMALS,
   };
 }
 
@@ -55,6 +59,14 @@ function validateRowShape(rows: ItemUomInDto[]): void {
     if (row.isBase) continue;
     if (row.conversionFactor == null) continue;
     parsePositiveDecimal(row.conversionFactor, "conversionFactor");
+  }
+
+  // Base + related rows share one RAB line, so only one of them may set decimals.
+  const groupDecimals = rows.filter(
+    (r) => r.decimals != null && (r.isBase || r.conversionFactor != null),
+  );
+  if (groupDecimals.length > 1) {
+    throw new Error("Only one of the base and related units can set decimals");
   }
 }
 
@@ -138,6 +150,7 @@ export class ItemUomService {
           symbol: u.symbol,
           name: u.name,
           formulas: defaultFormulasOr(u.formulas),
+          decimals: u.decimals,
         },
       ]),
     );
@@ -238,6 +251,8 @@ export class ItemUomService {
         uomId: new Types.ObjectId(row.uomId),
         isBase: row.isBase,
         conversionFactor: row.isBase ? "1" : row.conversionFactor,
+        decimals: row.decimals ?? null,
+        rounding: row.rounding ?? "up",
         sortOrder: row.sortOrder ?? 0,
       };
 
@@ -271,6 +286,7 @@ export class ItemUomService {
           symbol: u.symbol,
           name: u.name,
           formulas: defaultFormulasOr(u.formulas),
+          decimals: u.decimals,
         },
       ]),
     );

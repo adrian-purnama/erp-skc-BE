@@ -6,7 +6,7 @@ import type {
 import {
   ItemTarifRepo,
   type ItemTarifInterface,
-} from "../../models/itemTarif/itemTarif.model";
+} from "../../models/itemTarif.model";
 type ItemTarifLean = ItemTarifInterface & { _id: Types.ObjectId };
 
 function toOut(doc: ItemTarifLean): ItemTarifOutDto {

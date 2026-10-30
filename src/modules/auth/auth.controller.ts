@@ -82,9 +82,11 @@ export class AuthController {
 
   validateUser = async (req: Request, res: Response) => {
     const permissions = await getUserPermissions(req.user!);
+    const pictureId = req.user!.profilePicture;
     return ok(res, "Token is valid", {
       email: req.user!.email!,
       fullName: req.user!.fullName?.trim() ?? "",
+      profilePicture: pictureId ? `/media/${pictureId.toString()}` : null,
       roles: req.user!.roles ?? [],
       permissions: [...permissions],
     });
@@ -109,6 +111,27 @@ export class AuthController {
       return ok(res, "Profile updated", data);
     } catch (error) {
       return fail(res, error, "Failed to update profile");
+    }
+  };
+
+  uploadProfilePicture = async (req: Request, res: Response) => {
+    try {
+      if (!req.file) {
+        return fail(res, null, "file required");
+      }
+
+      const data = await this.authService.uploadProfilePicture(
+        String(req.user!._id),
+        {
+          buffer: req.file.buffer,
+          filename: req.file.originalname,
+          contentType: req.file.mimetype,
+          size: req.file.size,
+        },
+      );
+      return ok(res, "Profile picture updated", data);
+    } catch (error) {
+      return fail(res, error, "Failed to update profile picture");
     }
   };
 

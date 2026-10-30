@@ -5,18 +5,20 @@ import type {
   ProjectCustomerContactDto,
   ProjectDetailOutDto,
   ProjectListItemOutDto,
+  ProjectListRowOutDto,
   UpdateProjectDto,
 } from "../../dto/project.dto";
-import { CustomerRepo } from "../../models/customer/customer.model";
+import { CustomerRepo } from "../../models/customer.model";
 import {
   ProjectRepo,
   type ProjectCloseReason,
   type ProjectLoseReason,
   type ProjectStatus,
-} from "../../models/project/project.model";
+} from "../../models/project.model";
 import { escapeRegex } from "../../utils/shared";
 import { allocateProjectNumber } from "./projectNumber";
 import { assertProjectExists } from "./projectShared";
+import { summarizeProjects } from "./projectSummary.service";
 
 function contactToRecord(
   contact: Map<string, string> | Record<string, string> | undefined | null,
@@ -55,6 +57,7 @@ type LeanProject = {
   closeReason?: ProjectCloseReason | null;
   isActive?: boolean;
   productionReleasedAt?: Date | null;
+  createdAt?: Date;
 };
 
 function normalizeStatus(doc: LeanProject): {
@@ -133,7 +136,7 @@ export class ProjectService {
     };
   }
 
-  async list(q?: string): Promise<ProjectListItemOutDto[]> {
+  async list(q?: string): Promise<ProjectListRowOutDto[]> {
     const filter: Record<string, unknown> = {};
     if (q && q.trim()) {
       const rx = escapeRegex(q.trim());
@@ -161,9 +164,13 @@ export class ProjectService {
       customers.map((c) => [String(c._id), c.name] as const),
     );
 
-    return docs.map((doc) =>
-      this.toListItem(doc, nameById.get(String(doc.customerId)) ?? null),
-    );
+    const summaries = await summarizeProjects(docs.map((d) => String(d._id)));
+
+    return docs.map((doc) => ({
+      ...this.toListItem(doc, nameById.get(String(doc.customerId)) ?? null),
+      createdAt: doc.createdAt ? doc.createdAt.toISOString() : null,
+      summary: summaries.get(String(doc._id))!,
+    }));
   }
 
   async getById(id: string): Promise<ProjectDetailOutDto | null> {

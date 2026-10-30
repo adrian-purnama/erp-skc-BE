@@ -78,6 +78,51 @@ describe("buildSeedLines", () => {
     assert.equal(labour.unitPrice, "660");
   });
 
+  it("spreads RAB charges over item and labour cost", () => {
+    const lines = buildSeedLines({
+      boqs: [
+        boq("f1", "i1", "Sign A", "2", [["m1", "u1", "3"], ["m2", "u2", "2"]]),
+      ],
+      rabLines,
+      markupPercent: "0",
+      chargeFactor: "1.1",
+    });
+    assert.equal(lines[0]!.costUnitPrice, "440");
+    assert.equal(lines[1]!.costUnitPrice, "660");
+  });
+
+  it("spreads shop drawing labour over that drawing's units", () => {
+    const lines = buildSeedLines({
+      boqs: [
+        boq("f1", "i1", "Sign A", "2", [["m1", "u1", "3"], ["m2", "u2", "2"]]),
+      ],
+      rabLines: [
+        ...rabLines.slice(0, 2),
+        {
+          key: "i1:l1:u",
+          totalQty: "2",
+          unitPrice: "300",
+          origin: "labour",
+          shopDrawingItemId: "i1",
+        },
+        {
+          key: "i9:l1:u",
+          totalQty: "1",
+          unitPrice: "50",
+          origin: "labour",
+          shopDrawingItemId: "i9",
+        },
+      ],
+      markupPercent: "0",
+    });
+    assert.equal(lines.length, 2);
+    // 400 materials + 600 labour / 2 units
+    assert.equal(lines[0]!.costUnitPrice, "700");
+    // Drawing i9 is not quoted, so its labour stays a lump sum.
+    assert.equal(lines[1]!.key, LABOUR_LINE_KEY);
+    assert.equal(lines[1]!.costUnitPrice, "50");
+  });
+
   it("orders drawing lines by kode (SA2 before SA10), then name", () => {
     const lines = buildSeedLines({
       boqs: [

@@ -17,11 +17,11 @@ import type {
   UpdateFolderDto,
   UpdateItemDto,
 } from "../../dto/itemMaster.dto";
-import { env } from "../../environment/env";
-import { FolderRepo, type FolderInterface } from "../../models/folder/folder.model";
-import { ItemRepo, type ItemInterface } from "../../models/item/item.model";
-import { ItemSeqCounterModel } from "../../models/seqCounter/seqCounter.model";
-import { VendorRepo } from "../../models/vendor/vendor.model";
+import { env } from "../../core/env";
+import { FolderRepo, type FolderInterface } from "../../models/folder.model";
+import { ItemRepo, type ItemInterface } from "../../models/item.model";
+import { ItemSeqCounterModel } from "../../models/seqCounter.model";
+import { VendorRepo } from "../../models/vendor.model";
 import {
   allocateUniqueFolderCode,
   buildItemId,

@@ -1,5 +1,5 @@
 import { Types } from "mongoose";
-import { ItemRepo } from "../../models/item/item.model";
+import { ItemRepo } from "../../models/item.model";
 import { itemUomService } from "./itemUom.service";
 
 export type ItemMeta = {
@@ -42,4 +42,16 @@ export async function loadItemMeta(ids: string[]): Promise<{
     }
   }
   return { items, uoms };
+}
+
+/** Which of these items are labour (e.g. a vendor fee on a subcon / outsource SPK). */
+export async function labourItemIds(ids: string[]): Promise<Set<string>> {
+  const unique = [...new Set(ids)].filter((id) => Types.ObjectId.isValid(id));
+  if (unique.length === 0) return new Set();
+  const docs = await ItemRepo.model
+    .find({ _id: { $in: unique.map((id) => new Types.ObjectId(id)) }, itemType: "labour" })
+    .select({ _id: 1 })
+    .lean()
+    .exec();
+  return new Set(docs.map((d) => String(d._id)));
 }

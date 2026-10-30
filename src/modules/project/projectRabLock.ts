@@ -1,5 +1,5 @@
 import { Types } from "mongoose";
-import { ProjectRabRepo } from "../../models/projectRab/projectRab.model";
+import { ProjectRabRepo } from "../../models/projectRab.model";
 import {
   projectRabChangeService,
   type LeanRabChange,

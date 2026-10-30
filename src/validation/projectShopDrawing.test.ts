@@ -3,31 +3,28 @@ import { describe, it } from "node:test";
 import { parseCreateShopDrawingItemDto } from "./projectShopDrawing";
 
 describe("parseCreateShopDrawingItemDto", () => {
-  it("parses kode, name, keterangan lines and ukuran", () => {
+  it("parses kode, name and ukuran, ignoring keterangan", () => {
     const dto = parseCreateShopDrawingItemDto({
       code: " sa3 ",
       name: "Hotel Logo",
       category: "",
-      descriptions: "Aluminium box-up\r\n\r\n  LED Modules (4000K) \nPin mount",
+      descriptions: "Aluminium box-up",
       dimension: "±  810 x 60 x 730",
     });
     assert.deepEqual(dto, {
       code: "SA3",
       name: "HOTEL LOGO",
       category: null,
-      descriptions: ["Aluminium box-up", "LED Modules (4000K)", "Pin mount"],
       dimension: "± 810 x 60 x 730",
       mockupApproveDate: null,
     });
   });
 
-  it("accepts keterangan as an array and defaults the optional fields", () => {
+  it("defaults the optional fields", () => {
     const dto = parseCreateShopDrawingItemDto({
       code: "SD1",
       name: "Sign",
-      descriptions: ["a", " ", "b"],
     });
-    assert.deepEqual(dto.descriptions, ["a", "b"]);
     assert.equal(dto.dimension, "");
     assert.equal(dto.mockupApproveDate, null);
   });

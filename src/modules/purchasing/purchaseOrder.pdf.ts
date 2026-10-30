@@ -49,7 +49,8 @@ export type PoPdfData = {
   approvalLink: { url: string; qrPng: Buffer } | null;
   signDate: string;
   /** [role, name] left and right, e.g. ["Diajukan oleh,", "Budi"]. */
-  signatures: [[string, string | null], [string, string | null]];
+  /** [role, signer name or null, approval date or null], spread across the page. */
+  signatures: Array<[string, string | null, string | null]>;
 };
 
 type Align = "left" | "center" | "right";
@@ -247,19 +248,24 @@ export function buildPoPdf(data: PoPdfData, logo: QuotationLogo | null): Promise
   pdf.font(FONT).fontSize(10).text(data.signDate, left, pdf.y, { width, align: "right" });
   pdf.moveDown(0.5);
   const blockTop = pdf.y;
-  const boxW = 180;
-  const signature = (x: number, role: string, name: string | null) => {
+  const count = Math.max(1, data.signatures.length);
+  const boxW = Math.min(180, width / count);
+  const spacing = count > 1 ? (width - boxW * count) / (count - 1) : 0;
+  data.signatures.forEach(([role, name, date], i) => {
+    const x = left + i * (boxW + spacing);
     pdf.font(FONT).fontSize(10).text(role, x, blockTop, { width: boxW, align: "center" });
     pdf
       .font(name ? FONT_BOLD : FONT)
-      .text(name ?? "(....................................)", x, blockTop + 70, {
+      .text(name ?? "(..............................)", x, blockTop + 70, {
         width: boxW,
         align: "center",
         underline: Boolean(name),
       });
-  };
-  signature(left, data.signatures[0][0], data.signatures[0][1]);
-  signature(left + width - boxW, data.signatures[1][0], data.signatures[1][1]);
+    if (date) {
+      pdf.font(FONT).fontSize(8).text(date, x, pdf.y + 2, { width: boxW, align: "center" });
+      pdf.fontSize(10);
+    }
+  });
 
   pdf.end();
   return done;

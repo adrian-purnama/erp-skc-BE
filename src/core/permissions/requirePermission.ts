@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { ApiResponseDto } from "../../dto/apiResponse.dto";
+import { ApiResponseDto } from "../../dto/httpResponse";
 import { getUserPermissions } from "./resolve.service";
 
 export type HandlerMeta =

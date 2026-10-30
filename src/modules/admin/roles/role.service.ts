@@ -1,6 +1,6 @@
-import { UserModel } from "../../../models/user/user.model";
+import { UserModel } from "../../../models/user.model";
 import { get, has, implied } from "../../../core/permissions/registry";
-import { PermissionModel } from "../../../core/permissions/permission.model";
+import { PermissionModel } from "../../../models/permission.model";
 import {
   invalidateAll,
   invalidateUser,
@@ -13,7 +13,7 @@ import {
   isRoleSlug,
   RoleValidationError,
 } from "../../../validation/role";
-import { RoleModel, type RoleInterface } from "./role.model";
+import { RoleModel, type RoleInterface } from "../../../models/role.model";
 
 export { RoleValidationError };
 

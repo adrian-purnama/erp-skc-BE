@@ -1,5 +1,5 @@
-import type { EmailType } from "../models/email/email.model";
-import type { PhoneType } from "../models/phone/phone.model";
+import type { EmailType } from "../models/email.model";
+import type { PhoneType } from "../models/phone.model";
 
 export type VendorEmailInDto = {
   id?: string;

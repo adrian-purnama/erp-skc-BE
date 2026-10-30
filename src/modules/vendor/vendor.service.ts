@@ -5,9 +5,9 @@ import type {
   VendorListItemOutDto,
   UpdateVendorDto,
 } from "../../dto/vendor.dto";
-import { VendorRepo } from "../../models/vendor/vendor.model";
+import { VendorRepo } from "../../models/vendor.model";
 import { escapeRegex } from "../../utils/shared";
-import { emailService } from "../email/email.service";
+import { emailContactService } from "../email/emailContact.service";
 import { phoneService } from "../phone/phone.service";
 
 export class VendorService {
@@ -48,7 +48,7 @@ export class VendorService {
     const doc = await VendorRepo.model.findById(id).lean().exec();
     if (!doc) return null;
     const [emails, phones] = await Promise.all([
-      emailService.listByOwner(id),
+      emailContactService.listByOwner(id),
       phoneService.listByOwner(id),
     ]);
     return {
@@ -80,7 +80,7 @@ export class VendorService {
       isActive: true,
     });
     const id = String(created._id);
-    await emailService.replaceForOwner(id, input.emails ?? []);
+    await emailContactService.replaceForOwner(id, input.emails ?? []);
     await phoneService.replaceForOwner(id, input.phones ?? []);
     const detail = await this.getById(id);
     if (!detail) throw new Error("Vendor created but not found");
@@ -122,7 +122,7 @@ export class VendorService {
     }
 
     if (patch.emails !== undefined) {
-      await emailService.replaceForOwner(id, patch.emails);
+      await emailContactService.replaceForOwner(id, patch.emails);
     }
     if (patch.phones !== undefined) {
       await phoneService.replaceForOwner(id, patch.phones);
@@ -137,7 +137,7 @@ export class VendorService {
     if (!Types.ObjectId.isValid(id)) throw new Error("Invalid vendor id");
     const deleted = await VendorRepo.deleteOne({ _id: id });
     if (!deleted) throw new Error("Vendor not found");
-    await emailService.deleteByOwner(id);
+    await emailContactService.deleteByOwner(id);
     await phoneService.deleteByOwner(id);
   }
 }

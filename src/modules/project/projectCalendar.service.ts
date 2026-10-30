@@ -8,7 +8,7 @@ import type {
 import {
   ProjectCalendarEventRepo,
   type ProjectCalendarEventType,
-} from "../../models/projectCalendarEvent/projectCalendarEvent.model";
+} from "../../models/projectCalendarEvent.model";
 import {
   addJakartaDays,
   jakartaYmdString,

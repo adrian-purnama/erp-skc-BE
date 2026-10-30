@@ -1,7 +1,7 @@
 import {
   PROJECT_DOCUMENT_KINDS,
   type ProjectDocumentKind,
-} from "../models/projectDocument/projectDocument.model";
+} from "../models/projectDocument.model";
 import { assertUploadFile, parseFileKind } from "./uploadFile";
 
 export const PROJECT_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024;

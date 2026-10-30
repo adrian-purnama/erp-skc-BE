@@ -1,3 +1,7 @@
+import {
+  SHOP_DRAWING_MAKE_TYPES,
+  type ShopDrawingMakeType,
+} from "../models/projectShopDrawingItem.model";
 import { assertUploadFile } from "./uploadFile";
 
 const NAME_MAX = 120;
@@ -5,8 +9,6 @@ const YMD = /^\d{4}-\d{2}-\d{2}$/;
 const CATEGORY_MAX = 80;
 const CODE_MAX = 30;
 const DIMENSION_MAX = 120;
-const DESCRIPTION_LINE_MAX = 300;
-const DESCRIPTION_LINES_MAX = 40;
 
 export function parseShopDrawingItemName(raw: unknown): string {
   if (typeof raw !== "string") {
@@ -46,36 +48,6 @@ export function parseShopDrawingItemCode(raw: unknown): string {
   return code;
 }
 
-/** Keterangan: an array of lines, or one string split on new lines. Blank lines dropped. */
-export function parseShopDrawingItemDescriptions(raw: unknown): string[] {
-  if (raw === undefined || raw === null) return [];
-  const lines =
-    typeof raw === "string"
-      ? raw.split(/\r?\n/)
-      : Array.isArray(raw)
-        ? raw
-        : null;
-  if (!lines) throw new Error("descriptions must be a list of lines");
-  const out: string[] = [];
-  for (const line of lines) {
-    if (typeof line !== "string") {
-      throw new Error("descriptions must be a list of lines");
-    }
-    const text = line.trim();
-    if (!text) continue;
-    if (text.length > DESCRIPTION_LINE_MAX) {
-      throw new Error(
-        `each description line must be at most ${DESCRIPTION_LINE_MAX} characters`,
-      );
-    }
-    out.push(text);
-  }
-  if (out.length > DESCRIPTION_LINES_MAX) {
-    throw new Error(`at most ${DESCRIPTION_LINES_MAX} description lines`);
-  }
-  return out;
-}
-
 /** Ukuran, free text (e.g. "± 810 x 60 x 730"); empty allowed. */
 export function parseShopDrawingItemDimension(raw: unknown): string {
   if (raw === undefined || raw === null) return "";
@@ -91,10 +63,19 @@ export type ShopDrawingItemInDto = {
   code: string;
   name: string;
   category: string | null;
-  descriptions: string[];
   dimension: string;
   mockupApproveDate: string | null;
+  /** Absent on update = keep the current one. */
+  makeType?: ShopDrawingMakeType;
 };
+
+export function parseShopDrawingMakeType(raw: unknown): ShopDrawingMakeType | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (!SHOP_DRAWING_MAKE_TYPES.includes(raw as ShopDrawingMakeType)) {
+    throw new Error(`makeType must be one of ${SHOP_DRAWING_MAKE_TYPES.join(", ")}`);
+  }
+  return raw as ShopDrawingMakeType;
+}
 
 /** Empty / missing / null → null; otherwise YYYY-MM-DD. */
 export function parseShopDrawingItemMockupApproveDate(
@@ -120,15 +101,16 @@ export function parseCreateShopDrawingItemDto(body: unknown): ShopDrawingItemInD
     code?: unknown;
     name?: unknown;
     category?: unknown;
-    descriptions?: unknown;
     dimension?: unknown;
     mockupApproveDate?: unknown;
+    makeType?: unknown;
   };
+  const makeType = parseShopDrawingMakeType(b.makeType);
   return {
+    ...(makeType ? { makeType } : {}),
     code: parseShopDrawingItemCode(b.code),
     name: parseShopDrawingItemName(b.name),
     category: parseShopDrawingItemCategory(b.category),
-    descriptions: parseShopDrawingItemDescriptions(b.descriptions),
     dimension: parseShopDrawingItemDimension(b.dimension),
     mockupApproveDate: parseShopDrawingItemMockupApproveDate(
       b.mockupApproveDate,

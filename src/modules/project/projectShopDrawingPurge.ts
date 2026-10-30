@@ -1,10 +1,10 @@
 import type { Types } from "mongoose";
-import { deleteFileIfExists } from "../../buckets/gridfs";
+import { deleteFileIfExists } from "../../core/gridfs";
 import { withTx } from "../../core/audit/context";
-import { ProjectProductionFileRepo } from "../../models/projectProductionFile/projectProductionFile.model";
-import { ProjectShopDrawingBoqRepo } from "../../models/projectShopDrawingBoq/projectShopDrawingBoq.model";
-import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument/projectShopDrawingDocument.model";
-import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem/projectShopDrawingItem.model";
+import { ProjectProductionFileRepo } from "../../models/projectProductionFile.model";
+import { ProjectShopDrawingBoqRepo } from "../../models/projectShopDrawingBoq.model";
+import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument.model";
+import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
 
 /**
  * Delete a shop drawing item with its BOQs, SD files and File Produksi.

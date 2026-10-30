@@ -46,6 +46,8 @@ export type SeedRabLine = {
   exactQty?: string | null;
   unitPrice?: string | null;
   origin?: string | null;
+  /** Labour costed to one shop drawing item; absent = project-wide labour. */
+  shopDrawingItemId?: string | null;
 };
 
 export type QuotationTotals = {
@@ -116,7 +118,9 @@ function costPerNeededUnit(line: SeedRabLine, unitPrice: string): string {
 
 /**
  * Build quotation lines from live BOQs + locked RAB prices. Descriptions, UOM
- * and user-typed prices carry over from `previous` by key.
+ * and user-typed prices carry over from `previous` by key. Labour on a shop
+ * drawing item is spread over that item's units; the rest (project-wide, or an
+ * item with no quoted drawing) becomes one labour line.
  */
 export function buildSeedLines(input: {
   boqs: SeedBoq[];
@@ -124,30 +128,63 @@ export function buildSeedLines(input: {
   markupPercent: string;
   previous?: PlannerLine[];
   plan?: RabUomPlan;
+  /** RAB charges spread over every cost: (subtotal + charges) / subtotal. */
+  chargeFactor?: string;
 }): PlannerLine[] {
+  const factor = parseQtyDecimal(input.chargeFactor ?? "1");
   const priceByKey = new Map<string, string>();
-  let labourCost = new Decimal(0);
-  let hasLabour = false;
+  const labourByItem = new Map<string, Decimal>();
   for (const line of input.rabLines) {
     if (!line.unitPrice) continue;
     if (line.origin === "labour") {
-      hasLabour = true;
-      labourCost = labourCost.add(
-        parseQtyDecimal(line.totalQty).mul(parseQtyDecimal(line.unitPrice)),
+      const itemId = line.shopDrawingItemId ?? "";
+      labourByItem.set(
+        itemId,
+        (labourByItem.get(itemId) ?? new Decimal(0)).add(
+          parseQtyDecimal(line.totalQty)
+            .mul(parseQtyDecimal(line.unitPrice))
+            .mul(factor),
+        ),
       );
       continue;
     }
-    priceByKey.set(line.key, costPerNeededUnit(line, line.unitPrice));
+    priceByKey.set(
+      line.key,
+      formatDecimal(
+        parseQtyDecimal(costPerNeededUnit(line, line.unitPrice)).mul(factor),
+      ),
+    );
   }
 
   const prevByKey = new Map((input.previous ?? []).map((l) => [l.key, l]));
   const boqsPerItem = new Map<string, number>();
+  const unitsPerItem = new Map<string, Decimal>();
   for (const boq of input.boqs) {
     boqsPerItem.set(
       boq.shopDrawingItemId,
       (boqsPerItem.get(boq.shopDrawingItemId) ?? 0) + 1,
     );
+    unitsPerItem.set(
+      boq.shopDrawingItemId,
+      (unitsPerItem.get(boq.shopDrawingItemId) ?? new Decimal(0)).add(
+        parseQtyDecimal(boq.makeQty),
+      ),
+    );
   }
+  let labourCost = new Decimal(0);
+  let hasLabour = false;
+  for (const [itemId, cost] of labourByItem) {
+    const units = unitsPerItem.get(itemId);
+    if (itemId && units && !units.isZero()) continue;
+    hasLabour = true;
+    labourCost = labourCost.add(cost);
+  }
+  const labourPerUnit = (itemId: string): Decimal => {
+    const cost = labourByItem.get(itemId);
+    const units = unitsPerItem.get(itemId);
+    if (!cost || !units || units.isZero()) return new Decimal(0);
+    return cost.div(units);
+  };
 
   const sorted = [...input.boqs].sort((a, b) => {
     const byCode = (a.itemCode ?? "").localeCompare(b.itemCode ?? "", undefined, {
@@ -174,7 +211,11 @@ export function buildSeedLines(input: {
   };
 
   for (const boq of sorted) {
-    const costUnitPrice = boqUnitCost(boq, priceByKey, input.plan);
+    const costUnitPrice = formatDecimal(
+      parseQtyDecimal(boqUnitCost(boq, priceByKey, input.plan)).add(
+        labourPerUnit(boq.shopDrawingItemId),
+      ),
+    );
     const description =
       (boqsPerItem.get(boq.shopDrawingItemId) ?? 0) > 1
         ? `${boq.itemName} (v${boq.fileVersion})`

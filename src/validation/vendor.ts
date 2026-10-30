@@ -1,11 +1,11 @@
 import {
   EMAIL_TYPES,
   type EmailType,
-} from "../models/email/email.model";
+} from "../models/email.model";
 import {
   PHONE_TYPES,
   type PhoneType,
-} from "../models/phone/phone.model";
+} from "../models/phone.model";
 import type {
   CreateVendorDto,
   VendorEmailInDto,

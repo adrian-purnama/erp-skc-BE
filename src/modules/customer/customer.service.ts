@@ -5,9 +5,9 @@ import type {
   CustomerListItemOutDto,
   UpdateCustomerDto,
 } from "../../dto/customer.dto";
-import { CustomerRepo } from "../../models/customer/customer.model";
+import { CustomerRepo } from "../../models/customer.model";
 import { escapeRegex } from "../../utils/shared";
-import { emailService } from "../email/email.service";
+import { emailContactService } from "../email/emailContact.service";
 import { phoneService } from "../phone/phone.service";
 
 export class CustomerService {
@@ -48,7 +48,7 @@ export class CustomerService {
     const doc = await CustomerRepo.model.findById(id).lean().exec();
     if (!doc) return null;
     const [emails, phones] = await Promise.all([
-      emailService.listByOwner(id),
+      emailContactService.listByOwner(id),
       phoneService.listByOwner(id),
     ]);
     return {
@@ -80,7 +80,7 @@ export class CustomerService {
       isActive: true,
     });
     const id = String(created._id);
-    await emailService.replaceForOwner(id, input.emails ?? []);
+    await emailContactService.replaceForOwner(id, input.emails ?? []);
     await phoneService.replaceForOwner(id, input.phones ?? []);
     const detail = await this.getById(id);
     if (!detail) throw new Error("Customer created but not found");
@@ -122,7 +122,7 @@ export class CustomerService {
     }
 
     if (patch.emails !== undefined) {
-      await emailService.replaceForOwner(id, patch.emails);
+      await emailContactService.replaceForOwner(id, patch.emails);
     }
     if (patch.phones !== undefined) {
       await phoneService.replaceForOwner(id, patch.phones);
@@ -137,7 +137,7 @@ export class CustomerService {
     if (!Types.ObjectId.isValid(id)) throw new Error("Invalid customer id");
     const deleted = await CustomerRepo.deleteOne({ _id: id });
     if (!deleted) throw new Error("Customer not found");
-    await emailService.deleteByOwner(id);
+    await emailContactService.deleteByOwner(id);
     await phoneService.deleteByOwner(id);
   }
 }

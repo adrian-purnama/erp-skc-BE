@@ -15,28 +15,30 @@ import type {
   UpdatePurchaseRequestInDto,
 } from "../../dto/purchasing.dto";
 import type { ProjectRabUserRefOutDto } from "../../dto/projectRab.dto";
-import { ItemUomRepo } from "../../models/itemUom/itemUom.model";
+import { ItemUomRepo } from "../../models/itemUom.model";
 import {
   ProductionOrderRepo,
   type ProductionOrderInterface,
   type ProductionOrderStatus,
-} from "../../models/productionOrder/productionOrder.model";
-import { ProjectRepo } from "../../models/project/project.model";
-import { ProjectRabRepo } from "../../models/projectRab/projectRab.model";
-import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem/projectShopDrawingItem.model";
+} from "../../models/productionOrder.model";
+import { ProjectRepo } from "../../models/project.model";
+import { ProjectRabRepo } from "../../models/projectRab.model";
+import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
+import { PurchaseRabRepo, type PurchaseRabInterface } from "../../models/purchaseRab.model";
 import {
   PurchaseRequestRepo,
   type PurchaseRequestInterface,
-} from "../../models/purchaseRequest/purchaseRequest.model";
-import { PurchaseOrderRepo } from "../../models/purchaseOrder/purchaseOrder.model";
-import { PurchasingSeqCounterModel } from "../../models/seqCounter/seqCounter.model";
-import { VendorRepo } from "../../models/vendor/vendor.model";
+} from "../../models/purchaseRequest.model";
+import { PurchaseOrderRepo } from "../../models/purchaseOrder.model";
+import { PurchasingSeqCounterModel } from "../../models/seqCounter.model";
+import { VendorRepo } from "../../models/vendor.model";
 import { userEmailsById } from "../../utils/shared";
 import { itemMasterService } from "../itemMaster/itemMaster.service";
 import { loadItemMeta } from "../itemMaster/itemMeta";
 import { formatDecimal } from "../itemMaster/itemUomConvert";
 import { itemUomService } from "../itemMaster/itemUom.service";
 import { projectNumberParts } from "../project/projectNumber";
+import { rabRowsForPurchasing } from "../project/projectRab.planner";
 import { shopDrawingItemLabel } from "../project/projectShared";
 import { liveOrderLines, type LiveOrderLine } from "./purchaseOrderLines";
 import { arrivedByRequestLine } from "./realizationLines";
@@ -59,6 +61,10 @@ import {
 
 type LeanRequest = PurchaseRequestInterface & { _id: Types.ObjectId };
 type LeanOrder = ProductionOrderInterface & { _id: Types.ObjectId };
+type LeanRab = PurchaseRabInterface & { _id: Types.ObjectId };
+
+/** What an SPP is made for: one SPK, one Purchasing RAB, or (older SPPs) neither. */
+type RequestBasisDoc = { order: LeanOrder | null; rab: LeanRab | null };
 
 /** Who is asking: list scope and who may change a request. */
 export type PurchasingViewer = {
@@ -127,6 +133,28 @@ async function requireOrder(id: string): Promise<LeanOrder> {
   return order;
 }
 
+async function requireRab(id: string): Promise<LeanRab> {
+  if (!Types.ObjectId.isValid(id)) throw new Error("Invalid RAB id");
+  const rab = (await PurchaseRabRepo.model.findById(id).lean().exec()) as LeanRab | null;
+  if (!rab) throw new Error("RAB not found");
+  return rab;
+}
+
+async function basisOf(doc: LeanRequest): Promise<RequestBasisDoc> {
+  return {
+    order: doc.productionOrderId ? await requireOrder(String(doc.productionOrderId)) : null,
+    rab: doc.purchaseRabId ? await requireRab(String(doc.purchaseRabId)) : null,
+  };
+}
+
+function rabMaterials(rab: LeanRab): SpkMaterialRow[] {
+  return rab.lines.map((l) => ({
+    materialItemId: String(l.materialItemId),
+    itemUomId: String(l.itemUomId),
+    qty: l.qty,
+  }));
+}
+
 function spkMaterials(order: LeanOrder): SpkMaterialRow[] {
   return (order.snapshot?.materials ?? []).map((m) => ({
     materialItemId: String(m.materialItemId),
@@ -135,10 +163,13 @@ function spkMaterials(order: LeanOrder): SpkMaterialRow[] {
   }));
 }
 
-/** SPK-line qty already asked for on other live (draft / submitted) SPPs. */
-async function requestedForOrder(orderId: Types.ObjectId, exceptRequestId?: string) {
+/** SPK / RAB-line qty already asked for on other live (draft / submitted) SPPs. */
+async function requestedFor(
+  basis: { productionOrderId: Types.ObjectId } | { purchaseRabId: Types.ObjectId },
+  exceptRequestId?: string,
+) {
   const query: Record<string, unknown> = {
-    productionOrderId: orderId,
+    ...basis,
     status: { $nin: ["cancelled", "declined"] },
   };
   if (exceptRequestId) query._id = { $ne: new Types.ObjectId(exceptRequestId) };
@@ -165,11 +196,14 @@ async function rabKeysFor(projectId: string): Promise<Set<string>> {
     .select({ lines: 1 })
     .lean()
     .exec();
-  return new Set((rab?.lines ?? []).map((l) => l.key));
+  // By material×UOM: labour (e.g. an outsource fee) is keyed per drawing in the RAB.
+  return new Set(rabRowsForPurchasing(rab?.lines ?? []).map((r) => r.key));
 }
 
 /** Every line's UOM must belong to its material. */
-async function assertUomsMatch(lines: PurchaseRequestLineInDto[]): Promise<void> {
+export async function assertUomsMatch(
+  lines: Array<Pick<PurchaseRequestLineInDto, "materialItemId" | "itemUomId">>,
+): Promise<void> {
   const uoms = await ItemUomRepo.model
     .find({ _id: { $in: lines.map((l) => new Types.ObjectId(l.itemUomId)) } })
     .select({ itemId: 1 })
@@ -183,19 +217,26 @@ async function assertUomsMatch(lines: PurchaseRequestLineInDto[]): Promise<void>
   }
 }
 
-/** Validate lines against the SPK plan and the RAB; returns flagged lines. */
-async function checkLines(input: {
-  projectId: string;
-  order: LeanOrder | null;
+/** Keys "on the RAB": the Purchasing RAB's own lines, else the project RAB. */
+async function basisRabKeys(projectId: string | null, rab: LeanRab | null): Promise<Set<string>> {
+  if (rab) return new Set(rab.lines.map((l) => l.key));
+  return projectId ? rabKeysFor(projectId) : new Set();
+}
+
+/** Validate lines against the SPK plan / Purchasing RAB and the RAB; returns flagged lines. */
+async function checkLines(input: RequestBasisDoc & {
+  projectId: string | null;
   lines: PurchaseRequestLineInDto[];
   exceptRequestId?: string;
 }): Promise<CheckedRequestLine[]> {
   await assertUomsMatch(input.lines);
   const [requested, rabKeys, meta] = await Promise.all([
     input.order
-      ? requestedForOrder(input.order._id, input.exceptRequestId)
-      : Promise.resolve(new Map()),
-    rabKeysFor(input.projectId),
+      ? requestedFor({ productionOrderId: input.order._id }, input.exceptRequestId)
+      : input.rab
+        ? requestedFor({ purchaseRabId: input.rab._id }, input.exceptRequestId)
+        : Promise.resolve(new Map<string, Decimal>()),
+    basisRabKeys(input.projectId, input.rab),
     loadItemMeta(input.lines.map((l) => l.materialItemId)),
   ]);
   const nameByKey = new Map(
@@ -203,7 +244,12 @@ async function checkLines(input: {
   );
   return checkRequestLines({
     lines: input.lines,
-    spkMaterials: input.order ? spkMaterials(input.order) : null,
+    basis: input.rab ? "rab" : "spk",
+    planMaterials: input.order
+      ? spkMaterials(input.order)
+      : input.rab
+        ? rabMaterials(input.rab)
+        : null,
     requested,
     rabKeys,
     label: (key) => nameByKey.get(key) ?? "Material",
@@ -227,9 +273,12 @@ function isFlagged(l: { source: string; inRab: boolean; overPlan: boolean }): bo
 }
 
 export class PurchasingService {
-  /** Active Item Master materials with their UOMs (extra-item picker). */
+  /**
+   * Active Item Master items with their UOMs (SPP item picker). Labour items
+   * are included: an outsource SPK requests its vendor fee as a labour item.
+   */
   async listMaterials(): Promise<PurchasingMaterialOutDto[]> {
-    const items = await itemMasterService.listActiveItems("material");
+    const items = await itemMasterService.listActiveItems();
     const uomsByItem = await itemUomService.listByItems(items.map((i) => i.id));
     return items.map((item) => ({
       id: item.id,
@@ -242,7 +291,6 @@ export class PurchasingService {
     }));
   }
 
-  /** Projects released to production, newest first. */
   /** SPKs the user is PIC of that can still take a request (project released). */
   async listMySpks(userId: string): Promise<PurchasingSpkOutDto[]> {
     const orders = await ProductionOrderRepo.model
@@ -333,14 +381,68 @@ export class PurchasingService {
         .select({ code: 1, name: 1 })
         .lean()
         .exec(),
-      requestedForOrder(order._id, exceptRequestId),
+      requestedFor({ productionOrderId: order._id }, exceptRequestId),
       rabKeysFor(String(order.projectId)),
     ]);
-    const rows = requestPlan(spkMaterials(order), requested);
+    const rows = await this.planRows(
+      { productionOrderId: order._id },
+      requestPlan(spkMaterials(order), requested),
+      rabKeys,
+      new Map(),
+    );
+    return {
+      basis: "spk",
+      productionOrderId: String(order._id),
+      productionOrderNumber: order.number,
+      purchaseRabId: null,
+      purchaseRabNumber: null,
+      projectId: String(order.projectId),
+      projectNumber: project?.projectNumber ?? "—",
+      projectName: project?.name ?? "Unknown project",
+      itemLabel: item ? shopDrawingItemLabel(item) : "Deleted item",
+      plannedStart: order.plannedStart ?? null,
+      rabKeys: [...rabKeys],
+      rows,
+    };
+  }
+
+  /** Purchasing RAB lines with what other SPPs already asked for. */
+  async rabPlan(purchaseRabId: string, exceptRequestId?: string): Promise<PurchaseRequestPlanOutDto> {
+    const rab = await requireRab(purchaseRabId);
+    const requested = await requestedFor({ purchaseRabId: rab._id }, exceptRequestId);
+    const rabKeys = new Set(rab.lines.map((l) => l.key));
+    const rows = await this.planRows(
+      { purchaseRabId: rab._id },
+      requestPlan(rabMaterials(rab), requested),
+      rabKeys,
+      new Map(rab.lines.map((l) => [l.key, l.unitPrice])),
+    );
+    return {
+      basis: "rab",
+      productionOrderId: null,
+      productionOrderNumber: null,
+      purchaseRabId: String(rab._id),
+      purchaseRabNumber: rab.number,
+      projectId: null,
+      projectNumber: null,
+      projectName: null,
+      itemLabel: rab.title,
+      plannedStart: null,
+      rabKeys: [...rabKeys],
+      rows,
+    };
+  }
+
+  /** Plan rows with labels and what is ordered / arrived on the basis's live SPPs. */
+  private async planRows(
+    basis: { productionOrderId: Types.ObjectId } | { purchaseRabId: Types.ObjectId },
+    rows: ReturnType<typeof requestPlan>,
+    rabKeys: Set<string>,
+    unitPrices: Map<string, string>,
+  ): Promise<PurchaseRequestPlanOutDto["rows"]> {
     const { items, uoms } = await loadItemMeta(rows.map((r) => r.materialItemId));
-    // Ordered / arrived for this SPK, from its live SPPs.
     const sppDocs = (await PurchaseRequestRepo.model
-      .find({ productionOrderId: order._id, status: { $nin: ["cancelled", "declined"] } })
+      .find({ ...basis, status: { $nin: ["cancelled", "declined"] } })
       .select({ lines: 1 })
       .lean()
       .exec()) as Array<Pick<LeanRequest, "_id" | "lines">>;
@@ -359,15 +461,7 @@ export class PurchasingService {
         });
       }
     }
-    return {
-      productionOrderId: String(order._id),
-      productionOrderNumber: order.number,
-      projectId: String(order.projectId),
-      projectNumber: project?.projectNumber ?? "—",
-      projectName: project?.name ?? "Unknown project",
-      itemLabel: item ? shopDrawingItemLabel(item) : "Deleted item",
-      plannedStart: order.plannedStart ?? null,
-      rows: rows
+    return rows
         .map((r) => ({
           materialItemId: r.materialItemId,
           materialCode: items.get(r.materialItemId)?.code ?? "—",
@@ -378,11 +472,11 @@ export class PurchasingService {
           requestedQty: r.requestedQty,
           remainingQty: r.remainingQty,
           inRab: rabKeys.has(materialKey(r)),
+          unitPrice: unitPrices.get(materialKey(r)) ?? null,
           orderedQty: formatDecimal(flow.get(materialKey(r))?.ordered ?? new Decimal(0)),
           receivedQty: formatDecimal(flow.get(materialKey(r))?.received ?? new Decimal(0)),
         }))
-        .sort((a, b) => a.materialName.localeCompare(b.materialName)),
-    };
+        .sort((a, b) => a.materialName.localeCompare(b.materialName));
   }
 
   /**
@@ -393,6 +487,7 @@ export class PurchasingService {
     filter: {
       projectId?: string;
       productionOrderId?: string;
+      purchaseRabId?: string;
       status?: PurchaseRequestStatusDto;
       q?: string;
     },
@@ -403,8 +498,9 @@ export class PurchasingService {
     if (filter.productionOrderId) {
       query.productionOrderId = new Types.ObjectId(filter.productionOrderId);
     }
+    if (filter.purchaseRabId) query.purchaseRabId = new Types.ObjectId(filter.purchaseRabId);
     if (filter.status) query.status = filter.status;
-    if (!filter.projectId && !filter.productionOrderId && !viewer.viewAll) {
+    if (!filter.projectId && !filter.productionOrderId && !filter.purchaseRabId && !viewer.viewAll) {
       query.createdBy = new Types.ObjectId(viewer.userId);
     }
     const docs = (await PurchaseRequestRepo.model
@@ -417,7 +513,15 @@ export class PurchasingService {
     const q = filter.q?.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter((r) =>
-      [r.number, r.projectNumber, r.projectName, r.productionOrderNumber ?? "", r.itemLabel ?? ""]
+      [
+        r.number,
+        r.projectNumber,
+        r.projectName,
+        r.productionOrderNumber ?? "",
+        r.itemLabel ?? "",
+        r.purchaseRabNumber ?? "",
+        r.purchaseRabTitle ?? "",
+      ]
         .some((v) => v.toLowerCase().includes(q)),
     );
   }
@@ -502,23 +606,29 @@ export class PurchasingService {
     input: CreatePurchaseRequestInDto,
     viewer: PurchasingViewer,
   ): Promise<PurchaseRequestOutDto> {
-    await requireReleasedProject(input.projectId);
     let order: LeanOrder | null = null;
+    let rab: LeanRab | null = null;
+    let projectId: string | null = null;
     if (input.productionOrderId) {
       order = await requireOrder(input.productionOrderId);
-      if (String(order.projectId) !== input.projectId) {
-        throw new Error("SPK belongs to another project");
-      }
+      projectId = String(order.projectId);
+      await requireReleasedProject(projectId);
       if (!SPK_REQUESTABLE.includes(order.status)) {
         throw new Error("Materials can only be requested for a released or in-progress SPK");
       }
+    } else if (input.purchaseRabId) {
+      rab = await requireRab(input.purchaseRabId);
+      if (rab.status !== "locked") throw new Error("Only a locked RAB can be requested from");
+    } else {
+      throw new Error("Choose either an SPK or a RAB");
     }
     const created = await withTx(async () => {
-      const lines = await checkLines({ projectId: input.projectId, order, lines: input.lines });
+      const lines = await checkLines({ projectId, order, rab, lines: input.lines });
       return PurchaseRequestRepo.create({
         number: await allocateRequestNumber(),
-        projectId: new Types.ObjectId(input.projectId),
+        projectId: projectId ? new Types.ObjectId(projectId) : null,
         productionOrderId: order ? order._id : null,
+        purchaseRabId: rab ? rab._id : null,
         status: "draft",
         neededDate: input.neededDate,
         notes: input.notes,
@@ -537,11 +647,11 @@ export class PurchasingService {
     const doc = await requireRequest(id);
     assertCanChange(doc, viewer);
     if (doc.status !== "draft") throw new Error("Only a draft SPP can be edited");
-    const order = doc.productionOrderId ? await requireOrder(String(doc.productionOrderId)) : null;
+    const basis = await basisOf(doc);
     await withTx(async () => {
       const lines = await checkLines({
-        projectId: String(doc.projectId),
-        order,
+        ...basis,
+        projectId: doc.projectId ? String(doc.projectId) : null,
         lines: input.lines,
         exceptRequestId: id,
       });
@@ -569,14 +679,17 @@ export class PurchasingService {
     const doc = await requireRequest(id);
     assertCanChange(doc, viewer);
     if (doc.status !== "draft") throw new Error("Only a draft SPP can be submitted");
-    const order = doc.productionOrderId ? await requireOrder(String(doc.productionOrderId)) : null;
-    if (order && !SPK_REQUESTABLE.includes(order.status)) {
+    const basis = await basisOf(doc);
+    if (basis.order && !SPK_REQUESTABLE.includes(basis.order.status)) {
       throw new Error("The SPK is no longer released or in progress");
+    }
+    if (basis.rab && basis.rab.status !== "locked") {
+      throw new Error("The RAB is no longer locked");
     }
     await withTx(async () => {
       const lines = await checkLines({
-        projectId: String(doc.projectId),
-        order,
+        ...basis,
+        projectId: doc.projectId ? String(doc.projectId) : null,
         lines: doc.lines.map((l) => ({
           materialItemId: String(l.materialItemId),
           itemUomId: String(l.itemUomId),
@@ -674,11 +787,12 @@ export class PurchasingService {
 
   private async summaries(docs: LeanRequest[]): Promise<PurchaseRequestSummaryOutDto[]> {
     if (docs.length === 0) return [];
-    const projectIds = [...new Set(docs.map((d) => String(d.projectId)))];
+    const projectIds = [...new Set(docs.flatMap((d) => (d.projectId ? [String(d.projectId)] : [])))];
     const orderIds = [
       ...new Set(docs.flatMap((d) => (d.productionOrderId ? [String(d.productionOrderId)] : []))),
     ];
-    const [projects, orders, names, poLines] = await Promise.all([
+    const rabIds = [...new Set(docs.flatMap((d) => (d.purchaseRabId ? [String(d.purchaseRabId)] : [])))];
+    const [projects, orders, rabs, names, poLines] = await Promise.all([
       ProjectRepo.model
         .find({ _id: { $in: projectIds.map((id) => new Types.ObjectId(id)) } })
         .select({ name: 1, projectNumber: 1 })
@@ -687,6 +801,11 @@ export class PurchasingService {
       ProductionOrderRepo.model
         .find({ _id: { $in: orderIds.map((id) => new Types.ObjectId(id)) } })
         .select({ number: 1, shopDrawingItemId: 1 })
+        .lean()
+        .exec(),
+      PurchaseRabRepo.model
+        .find({ _id: { $in: rabIds.map((id) => new Types.ObjectId(id)) } })
+        .select({ number: 1, title: 1 })
         .lean()
         .exec(),
       userEmailsById(docs.flatMap((d) => (d.createdBy ? [String(d.createdBy)] : []))),
@@ -703,9 +822,11 @@ export class PurchasingService {
       .exec();
     const projectById = new Map(projects.map((p) => [String(p._id), p]));
     const orderById = new Map(orders.map((o) => [String(o._id), o]));
+    const rabById = new Map(rabs.map((r) => [String(r._id), r]));
     const itemById = new Map(items.map((i) => [String(i._id), i]));
     return docs.map((d) => {
-      const project = projectById.get(String(d.projectId));
+      const project = d.projectId ? projectById.get(String(d.projectId)) : undefined;
+      const rab = d.purchaseRabId ? rabById.get(String(d.purchaseRabId)) : undefined;
       const order = d.productionOrderId ? orderById.get(String(d.productionOrderId)) : undefined;
       const item = order ? itemById.get(String(order.shopDrawingItemId)) : undefined;
       const createdBy = d.createdBy ? String(d.createdBy) : null;
@@ -713,11 +834,14 @@ export class PurchasingService {
         id: String(d._id),
         number: d.number,
         status: d.status,
-        projectId: String(d.projectId),
-        projectNumber: project?.projectNumber ?? "—",
-        projectName: project?.name ?? "Unknown project",
+        projectId: d.projectId ? String(d.projectId) : null,
+        projectNumber: d.projectId ? (project?.projectNumber ?? "—") : "—",
+        projectName: d.projectId ? (project?.name ?? "Unknown project") : "No project",
         productionOrderId: d.productionOrderId ? String(d.productionOrderId) : null,
         productionOrderNumber: order?.number ?? null,
+        purchaseRabId: d.purchaseRabId ? String(d.purchaseRabId) : null,
+        purchaseRabNumber: rab?.number ?? null,
+        purchaseRabTitle: rab?.title ?? null,
         itemLabel: item ? shopDrawingItemLabel(item) : null,
         neededDate: d.neededDate,
         lineCount: d.lines.length,

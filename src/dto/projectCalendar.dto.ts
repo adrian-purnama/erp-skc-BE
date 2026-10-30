@@ -1,4 +1,4 @@
-import type { ProjectCalendarEventType } from "../models/projectCalendarEvent/projectCalendarEvent.model";
+import type { ProjectCalendarEventType } from "../models/projectCalendarEvent.model";
 
 export type ProjectCalendarEventOutDto = {
   id: string;

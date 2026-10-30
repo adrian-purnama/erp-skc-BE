@@ -3,7 +3,7 @@ import type {
   PurgeOrphanBlobsInDto,
   StartShrinkDbInDto,
 } from "../dto/shrinkDb.dto";
-import { SHRINK_SECTIONS } from "../models/shrinkRun/shrinkRun.model";
+import { SHRINK_SECTIONS } from "../models/shrinkRun.model";
 
 export function parseStartShrinkDbDto(body: unknown): StartShrinkDbInDto {
   if (!body || typeof body !== "object") {

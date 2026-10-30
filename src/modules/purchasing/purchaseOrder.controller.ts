@@ -2,12 +2,16 @@ import type { Request, Response } from "express";
 import { fail, handle } from "../../dto/httpResponse";
 import { parseRouteId } from "../../validation/parseParam";
 import {
+  parseApprovalLevel,
   parseOptionalQueryId,
+  parseChargeList,
   parsePurchaseOrderStatusFilter,
   parseReasonDto,
-  parseSavePurchaseOrderDto,
+  parseSavePurchaseOrdersDto,
 } from "../../validation/purchasing";
 import { queryString } from "../../validation/query";
+import { parseRenameProjectFileDto } from "../../validation/projectDocument";
+import { asRecord } from "../../validation/asRecord";
 import { getUserPermissions } from "../../core/permissions/resolve.service";
 import {
   exportPurchaseOrderPdf,
@@ -55,11 +59,91 @@ export class PurchaseOrderController {
     );
   };
 
-  /** Every PO waiting for approval. */
+  /** POs waiting on the signed-in user's approval (level 1 or 2). */
   approvals = async (req: Request, res: Response) => {
     return handle(res, "Failed to list PO", "PO retrieved", async () =>
-      purchaseOrderService.list({ status: "pending_approval", q: queryString(req.query.q) }),
+      purchaseOrderService.list({
+        waitingOn: (await actor(req)).userId,
+        q: queryString(req.query.q),
+      }),
     );
+  };
+
+  approvers = async (req: Request, res: Response) => {
+    return handle(res, "Failed to load approvers", "Approvers retrieved", () =>
+      purchaseOrderService.approverOptions(parseApprovalLevel(queryString(req.query.level))),
+    );
+  };
+
+  setEstimates = async (req: Request, res: Response) => {
+    return handle(res, "Failed to save estimates", "Estimates saved", async () =>
+      purchaseOrderService.setEstimates(
+        parseRouteId(req.params.id),
+        parseChargeList(asRecord(req.body).charges),
+        await actor(req),
+      ),
+    );
+  };
+
+  /** `?force=true` stores a separate copy even when the content already exists. */
+  uploadQuotation = async (req: Request, res: Response) => {
+    return handle(res, "Failed to upload quotation", "Quotation uploaded", async () =>
+      purchaseOrderService.uploadQuotation(
+        parseRouteId(req.params.id),
+        req.file,
+        queryString(req.query.force) === "true",
+        await actor(req),
+      ),
+    );
+  };
+
+  setCurrentQuotation = async (req: Request, res: Response) => {
+    return handle(res, "Failed to use this version", "Quotation version in use", async () =>
+      purchaseOrderService.setCurrentQuotation(
+        parseRouteId(req.params.id),
+        parseRouteId(req.params.fileId),
+        await actor(req),
+      ),
+    );
+  };
+
+  renameQuotation = async (req: Request, res: Response) => {
+    return handle(res, "Failed to rename quotation", "Quotation renamed", async () =>
+      purchaseOrderService.renameQuotation(
+        parseRouteId(req.params.id),
+        parseRouteId(req.params.fileId),
+        parseRenameProjectFileDto(req.body).originalFilename,
+        await actor(req),
+      ),
+    );
+  };
+
+  removeQuotation = async (req: Request, res: Response) => {
+    return handle(res, "Failed to remove quotation", "Quotation removed", async () =>
+      purchaseOrderService.removeQuotation(
+        parseRouteId(req.params.id),
+        parseRouteId(req.params.fileId),
+        await actor(req),
+      ),
+    );
+  };
+
+  quotation = async (req: Request, res: Response) => {
+    try {
+      const { stream, filename, contentType } = await purchaseOrderService.openQuotation(
+        parseRouteId(req.params.id),
+        parseRouteId(req.params.fileId),
+      );
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Disposition", `inline; filename="${filename.replace(/"/g, "")}"`);
+      stream.on("error", () => {
+        if (!res.headersSent) fail(res, null, "Failed to open file");
+        else res.end();
+      });
+      stream.pipe(res);
+    } catch (error) {
+      fail(res, error, "Failed to open file");
+    }
   };
 
   get = async (req: Request, res: Response) => {
@@ -68,21 +152,27 @@ export class PurchaseOrderController {
     );
   };
 
+  rabCompare = async (req: Request, res: Response) => {
+    return handle(res, "Failed to compare PO with RAB", "RAB comparison retrieved", () =>
+      purchaseOrderService.rabCompare(parseRouteId(req.params.id)),
+    );
+  };
+
   create = async (req: Request, res: Response) => {
     return handle(
       res,
       "Failed to create PO",
       "PO created",
-      async () => purchaseOrderService.create(parseSavePurchaseOrderDto(req.body), await actor(req)),
+      async () => purchaseOrderService.save(null, parseSavePurchaseOrdersDto(req.body), await actor(req)),
       201,
     );
   };
 
   update = async (req: Request, res: Response) => {
     return handle(res, "Failed to save PO", "PO saved", async () =>
-      purchaseOrderService.update(
+      purchaseOrderService.save(
         parseRouteId(req.params.id),
-        parseSavePurchaseOrderDto(req.body),
+        parseSavePurchaseOrdersDto(req.body),
         await actor(req),
       ),
     );

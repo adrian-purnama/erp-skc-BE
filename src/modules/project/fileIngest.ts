@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { Types } from "mongoose";
-import { deleteFileIfExists } from "../../buckets/gridfs";
+import { deleteFileIfExists } from "../../core/gridfs";
 import { als } from "../../core/audit/context";
 import { uploadDedupedBlob } from "./projectShared";
 

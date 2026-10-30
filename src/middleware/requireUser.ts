@@ -1,8 +1,8 @@
 import type { NextFunction, Request, Response } from "express";
 import { als } from "../core/audit/context";
 import type { HandlerMeta } from "../core/permissions/requirePermission";
-import { ApiResponseDto } from "../dto/apiResponse.dto";
-import { logger } from "../logger/logger";
+import { ApiResponseDto } from "../dto/httpResponse";
+import { logger } from "../core/logger";
 import { AuthError, authenticateByToken } from "./authenticate";
 
 type MetaHandler = {

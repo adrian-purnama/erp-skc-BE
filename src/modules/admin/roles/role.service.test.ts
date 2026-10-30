@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it, mock, beforeEach } from "node:test";
 import { RoleValidationError, roleService } from "./role.service";
-import { RoleModel } from "./role.model";
-import { UserModel } from "../../../models/user/user.model";
-import { PermissionModel } from "../../../core/permissions/permission.model";
+import { RoleModel } from "../../../models/role.model";
+import { UserModel } from "../../../models/user.model";
+import { PermissionModel } from "../../../models/permission.model";
 
 describe("role service guards", () => {
   beforeEach(() => {

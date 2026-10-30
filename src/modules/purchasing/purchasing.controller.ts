@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { purchaseFlow } from "./purchaseFlow.service";
 import { getUserPermissions } from "../../core/permissions/resolve.service";
 import { handle } from "../../dto/httpResponse";
 import { parseRouteId } from "../../validation/parseParam";
@@ -42,6 +43,15 @@ export class PurchasingController {
     );
   };
 
+  rabPlan = async (req: Request, res: Response) => {
+    return handle(res, "Failed to load RAB items", "RAB items retrieved", () =>
+      purchasingService.rabPlan(
+        parseRouteId(req.params.purchaseRabId),
+        parseOptionalQueryId(queryString(req.query.exceptRequestId), "exceptRequestId"),
+      ),
+    );
+  };
+
   plan = async (req: Request, res: Response) => {
     return handle(res, "Failed to load SPK materials", "SPK materials retrieved", () =>
       purchasingService.plan(
@@ -60,6 +70,7 @@ export class PurchasingController {
             queryString(req.query.productionOrderId),
             "productionOrderId",
           ),
+          purchaseRabId: parseOptionalQueryId(queryString(req.query.purchaseRabId), "purchaseRabId"),
           status: parsePurchaseRequestStatusFilter(queryString(req.query.status)),
           q: queryString(req.query.q),
         },
@@ -131,5 +142,16 @@ export class PurchasingController {
         await viewer(req),
       ),
     );
+  };
+
+  /** SPP → PO → receipts → payments around one document (related documents only). */
+  flow = async (req: Request, res: Response) => {
+    return handle(res, "Failed to load the purchase flow", "Purchase flow retrieved", () => {
+      const kind = queryString(req.query.kind);
+      if (kind !== "request" && kind !== "order" && kind !== "realization" && kind !== "payment" && kind !== "spk") {
+        throw new Error("kind must be request, order, realization, payment or spk");
+      }
+      return purchaseFlow(kind, parseRouteId(queryString(req.query.id)));
+    });
   };
 }

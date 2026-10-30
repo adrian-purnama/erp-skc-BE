@@ -9,7 +9,7 @@ import type {
   AuditEventOutDto,
   AuditListOutDto,
 } from "../../../dto/audit.dto";
-import { UserModel } from "../../../models/user/user.model";
+import { UserModel } from "../../../models/user.model";
 import { escapeRegex, userEmailsById } from "../../../utils/shared";
 import type { AuditListQuery } from "../../../validation/audit";
 

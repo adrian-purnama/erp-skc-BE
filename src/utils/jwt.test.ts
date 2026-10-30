@@ -17,7 +17,7 @@ describe("jwt payload", () => {
 
   it("still verifies legacy tokens that include isAdmin", () => {
     const jwt = require("jsonwebtoken");
-    const { env } = require("../environment/env");
+    const { env } = require("../core/env");
     const token = jwt.sign(
       { userId: "abc", email: "a@b.com", isAdmin: true },
       env.jwtSecret,

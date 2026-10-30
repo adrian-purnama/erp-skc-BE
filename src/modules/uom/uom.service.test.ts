@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it, mock } from "node:test";
 import { parseCreateUomDto } from "../../validation/uom";
-import { UomRepo } from "../../models/uom/uom.model";
+import { UomRepo } from "../../models/uom.model";
 import { uomService } from "./uom.service";
 
 describe("uom validation", () => {
@@ -32,7 +32,6 @@ describe("uom validation", () => {
       name: "Centimeter",
       formulas: ["v1"],
       decimals: 4,
-      rounding: "up",
     });
   });
 
@@ -104,7 +103,6 @@ describe("uomService.create", () => {
           name: "Centimeter",
           formulas: ["v1"],
           decimals: 4,
-          rounding: "up",
         }),
       /already exists/,
     );

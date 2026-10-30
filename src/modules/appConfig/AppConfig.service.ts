@@ -1,8 +1,8 @@
 import mongoose, { Types } from "mongoose";
-import { logger } from "../../logger/logger";
-import { AppConfigModel } from "../../models/appconfig/appconfig.model";
-import { UserModel } from "../../models/user/user.model";
-import { deleteFileIfExists, uploadFile } from "../../buckets/gridfs";
+import { logger } from "../../core/logger";
+import { AppConfigModel } from "../../models/appconfig.model";
+import { UserModel } from "../../models/user.model";
+import { deleteFileIfExists, uploadFile } from "../../core/gridfs";
 
 const logSource: string = "modules/appConfig/AppConfig.service.ts";
 

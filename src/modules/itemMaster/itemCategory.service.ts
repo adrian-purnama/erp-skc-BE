@@ -7,8 +7,8 @@ import type {
 import {
   ItemCategoryRepo,
   type ItemCategoryInterface,
-} from "../../models/itemCategory/itemCategory.model";
-import { ItemRepo } from "../../models/item/item.model";
+} from "../../models/itemCategory.model";
+import { ItemRepo } from "../../models/item.model";
 
 type ItemCategoryLean = ItemCategoryInterface & { _id: Types.ObjectId };
 

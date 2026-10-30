@@ -5,16 +5,17 @@ import express, {
   type Request,
   type Response,
 } from "express";
-import { connectDatabase } from "./database/database";
-import { env } from "./environment/env";
+import { connectDatabase } from "./core/database";
+import { env } from "./core/env";
 import { appConfigService } from "./modules/appConfig/AppConfig.service";
-import { logger } from "./logger/logger";
+import { logger } from "./core/logger";
 import adminRoutes from "./modules/admin/admin.route";
 import appConfigRoutes from "./modules/appConfig/AppConfig.route";
 import authRoutes from "./modules/auth/auth.route";
 import customerRoutes from "./modules/customer/customer.route";
 import mediaRoutes from "./modules/media/media.route";
 import itemMasterRoutes from "./modules/itemMaster/itemMaster.route";
+import notificationRoutes from "./modules/notification/notification.route";
 import projectRoutes from "./modules/project/project.route";
 import quotationRoutes from "./modules/quotation/quotation.route";
 import productionRoutes from "./modules/production/production.route";
@@ -76,6 +77,12 @@ function createApp(): Express {
     "/media",
     mediaRoutes,
     require.resolve("./modules/media/media.route"),
+  );
+  mountRouter(
+    app,
+    "/notifications",
+    notificationRoutes,
+    require.resolve("./modules/notification/notification.route"),
   );
   mountRouter(
     app,

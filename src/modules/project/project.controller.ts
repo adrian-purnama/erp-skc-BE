@@ -24,6 +24,8 @@ import {
   parseAddProjectRabLabourLineDto,
   parsePatchProjectRabLineDto,
   parseRabLineKey,
+  parseSaveProjectRabChargesDto,
+  parseSaveProjectRabLabourProcessDto,
 } from "../../validation/projectRab";
 import { parseOpenProjectRabChangeDto } from "../../validation/projectRabChange";
 import { parseProjectLooseFileKind } from "../../validation/projectLooseFile";
@@ -590,11 +592,28 @@ export class ProjectController {
   patchRabLine = async (req: Request, res: Response) => {
     return handle(res, "Failed to update RAB line", "RAB line updated", () => {
       const dto = parsePatchProjectRabLineDto(req.body);
+      const projectId = parseRouteId(req.params.id);
+      const lineKey = parseRabLineKey(req.params.lineKey);
+      if (dto.priceByTotal !== undefined) {
+        return projectRabService.setLinePriceMode(
+          projectId,
+          lineKey,
+          dto.priceByTotal,
+        );
+      }
       return projectRabService.patchLinePrice(
-        parseRouteId(req.params.id),
-        parseRabLineKey(req.params.lineKey),
+        projectId,
+        lineKey,
         dto.unitPrice,
+        dto.lineTotal,
       );
+    });
+  };
+
+  saveRabCharges = async (req: Request, res: Response) => {
+    return handle(res, "Failed to save RAB charges", "RAB charges saved", () => {
+      const dto = parseSaveProjectRabChargesDto(req.body);
+      return projectRabService.saveCharges(parseRouteId(req.params.id), dto.charges);
     });
   };
 
@@ -634,12 +653,34 @@ export class ProjectController {
     );
   };
 
+  saveRabLabourProcess = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to save labour process",
+      "Labour process saved",
+      () =>
+        projectRabService.saveLabourProcess(
+          parseRouteId(req.params.id),
+          parseSaveProjectRabLabourProcessDto(req.body),
+        ),
+    );
+  };
+
   listRabChanges = async (req: Request, res: Response) => {
     return handle(
       res,
       "Failed to list RAB changes",
       "RAB changes retrieved",
       () => projectRabChangeService.list(parseRouteId(req.params.id)),
+    );
+  };
+
+  getRabLockOrigin = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to load RAB lock origin",
+      (data: unknown) => (data ? "RAB lock origin retrieved" : "RAB is not locked"),
+      () => projectRabChangeService.lockOrigin(parseRouteId(req.params.id)),
     );
   };
 

@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { Types } from "mongoose";
 import { fail } from "../../dto/httpResponse";
-import { findFile, openDownload } from "../../buckets/gridfs";
+import { findFile, openDownload } from "../../core/gridfs";
 import { createRouter } from "../../core/permissions/routing";
 import { publicRoute } from "../../core/permissions/requirePermission";
 

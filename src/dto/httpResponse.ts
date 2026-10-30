@@ -1,5 +1,10 @@
 import type { Response } from "express";
-import type { ApiResponseDto } from "./apiResponse.dto";
+
+export interface ApiResponseDto<T = null> {
+  success: boolean;
+  message: string;
+  data: T;
+}
 
 export function ok<T>(
   res: Response,

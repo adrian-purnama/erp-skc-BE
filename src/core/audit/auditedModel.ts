@@ -5,8 +5,8 @@ import mongoose, {
   type Types,
   type UpdateQuery,
 } from "mongoose";
-import { env } from "../../environment/env";
-import { logger } from "../../logger/logger";
+import { env } from "../env";
+import { logger } from "../logger";
 import { als, withTx } from "./context";
 
 export type AuditAction = "A" | "U" | "D";

@@ -1,7 +1,8 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
+import { productionConflicts } from "./projectRabChange.planner";
 import { describe, it } from "node:test";
 import { Types } from "mongoose";
-import type { ProjectRabLine } from "../../models/projectRab/projectRab.model";
+import type { ProjectRabLine } from "../../models/projectRab.model";
 import {
   diffBoqFiles,
   diffBoqMaterialContributions,
@@ -364,5 +365,27 @@ describe("change continuity", () => {
         toFileId: String(v2),
       },
     ]);
+  });
+});
+
+describe("productionConflicts", () => {
+  it("allows changes that leave live SPKs their qty", () => {
+    assert.deepEqual(
+      productionConflicts([
+        { label: "SA1-PYLON", heldQty: "4", nextMakeQty: "10" },
+        { label: "SA2-SIGN", heldQty: "0", nextMakeQty: null },
+      ]),
+      [],
+    );
+  });
+
+  it("refuses removing an item with SPKs", () => {
+    const out = productionConflicts([{ label: "SA1-PYLON", heldQty: "4", nextMakeQty: null }]);
+    assert.match(out[0]!, /SA1-PYLON has SPKs/);
+  });
+
+  it("refuses a make qty below what SPKs hold", () => {
+    const out = productionConflicts([{ label: "SA1-PYLON", heldQty: "6", nextMakeQty: "5" }]);
+    assert.match(out[0]!, /make qty 5 is below the 6/);
   });
 });

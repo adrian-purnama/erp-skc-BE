@@ -1,5 +1,5 @@
 import { HydratedDocument } from "mongoose";
-import { UserInterface, UserModel } from "../models/user/user.model";
+import { UserInterface, UserModel } from "../models/user.model";
 import { verifyAccessToken } from "../utils/jwt";
 
 export class AuthError extends Error {

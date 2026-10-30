@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import Decimal from "decimal.js";
 import {
+  chargesByCategory,
   checkRealizationCharges,
+  inferChargeCategory,
+  priceStoredCharges,
   checkRealizationLines,
   realizationStatus,
   remainingToRealize,
@@ -77,12 +80,12 @@ describe("checkRealizationLines", () => {
 describe("checkRealizationCharges", () => {
   it("adds PPN as a percent of the subtotal and fixed charges as entered", () => {
     const out = checkRealizationCharges("7500000", [
-      { label: " PPN 11% ", kind: "percent", rate: "11", amount: "0" },
-      { label: "Ongkir", kind: "fixed", rate: null, amount: "150000" },
+      { category: "tax", label: " PPN 11% ", kind: "percent", rate: "11", amount: "0" },
+      { category: "delivery", label: "Ongkir", kind: "fixed", rate: null, amount: "150000" },
     ]);
     assert.deepEqual(out.charges, [
-      { label: "PPN 11%", kind: "percent", rate: "11", amount: "825000" },
-      { label: "Ongkir", kind: "fixed", rate: null, amount: "150000" },
+      { category: "tax", label: "PPN 11%", kind: "percent", rate: "11", amount: "825000" },
+      { category: "delivery", label: "Ongkir", kind: "fixed", rate: null, amount: "150000" },
     ]);
     assert.equal(out.chargesTotal, "975000");
     assert.equal(out.total, "8475000");
@@ -90,7 +93,7 @@ describe("checkRealizationCharges", () => {
 
   it("recomputes a percent amount from the subtotal, rounding half up", () => {
     const out = checkRealizationCharges("12345", [
-      { label: "PPN", kind: "percent", rate: "11", amount: "999999" },
+      { category: "tax", label: "PPN", kind: "percent", rate: "11", amount: "999999" },
     ]);
     // 12345 × 11% = 1357.95
     assert.equal(out.charges[0]!.amount, "1358");
@@ -105,16 +108,50 @@ describe("checkRealizationCharges", () => {
 
   it("rejects bad charges", () => {
     assert.throws(
-      () => checkRealizationCharges("100", [{ label: " ", kind: "fixed", rate: null, amount: "5" }]),
+      () => checkRealizationCharges("100", [{ category: "other", label: " ", kind: "fixed", rate: null, amount: "5" }]),
       /needs a name/,
     );
     assert.throws(
-      () => checkRealizationCharges("100", [{ label: "Ongkir", kind: "fixed", rate: null, amount: "0" }]),
+      () => checkRealizationCharges("100", [{ category: "delivery", label: "Ongkir", kind: "fixed", rate: null, amount: "0" }]),
       /above 0/,
     );
     assert.throws(
-      () => checkRealizationCharges("100", [{ label: "PPN", kind: "percent", rate: "150", amount: "0" }]),
+      () => checkRealizationCharges("100", [{ category: "tax", label: "PPN", kind: "percent", rate: "150", amount: "0" }]),
       /between 0 and 100/,
     );
+  });
+});
+
+describe("charge categories", () => {
+  it("infers a category from older charge names", () => {
+    assert.equal(inferChargeCategory("PPN 11%"), "tax");
+    assert.equal(inferChargeCategory("PPh 23"), "tax");
+    assert.equal(inferChargeCategory("Ongkir JNE"), "delivery");
+    assert.equal(inferChargeCategory("Biaya pengiriman"), "delivery");
+    assert.equal(inferChargeCategory("Biaya admin"), "other");
+  });
+
+  it("sums charges per category, inferring missing ones", () => {
+    assert.deepEqual(
+      chargesByCategory([
+        { category: "tax", label: "PPN", amount: "1100" },
+        { label: "Ongkir", amount: "500" },
+        { category: "other", label: "Packing", amount: "200" },
+        { category: "delivery", label: "Kurir", amount: "300" },
+      ]),
+      { tax: "1100", delivery: "800", other: "200" },
+    );
+  });
+});
+describe("priceStoredCharges", () => {
+  it("follows the current subtotal for percents and infers missing categories", () => {
+    const out = priceStoredCharges("2000000", [
+      { _id: "a", category: "tax", label: "PPN 11%", kind: "percent", rate: "11", amount: "1" },
+      { _id: "b", label: "Ongkir", kind: "fixed", rate: null, amount: "50000" },
+    ]);
+    assert.equal(out.charges[0]!.amount, "220000");
+    assert.equal(out.charges[1]!.category, "delivery");
+    assert.deepEqual(out.byCategory, { tax: "220000", delivery: "50000", other: "0" });
+    assert.equal(out.total, "2270000");
   });
 });

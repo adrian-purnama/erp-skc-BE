@@ -2,7 +2,7 @@ import type { ItemUomOutDto } from "./itemMaster.dto";
 import type {
   ShopDrawingBoqFinishPlacement,
   ShopDrawingBoqMountingType,
-} from "../models/projectShopDrawingBoq/projectShopDrawingBoq.model";
+} from "../models/projectShopDrawingBoq.model";
 
 export type ShopDrawingBoqLineInputsIn = {
   v1: string;

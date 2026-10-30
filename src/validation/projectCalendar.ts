@@ -5,7 +5,7 @@ import type {
 import {
   PROJECT_CALENDAR_EVENT_TYPES,
   type ProjectCalendarEventType,
-} from "../models/projectCalendarEvent/projectCalendarEvent.model";
+} from "../models/projectCalendarEvent.model";
 import { asRecord } from "./asRecord";
 
 function parseType(raw: unknown): ProjectCalendarEventType {

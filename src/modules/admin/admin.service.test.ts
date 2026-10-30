@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it, mock } from "node:test";
 import { AdminService } from "./admin.service";
-import { UserModel } from "../../models/user/user.model";
+import { UserModel } from "../../models/user.model";
 
 describe("AdminService last super_admin block guard", () => {
   it("rejects blocking the only unblocked super_admin when another is blocked", async () => {

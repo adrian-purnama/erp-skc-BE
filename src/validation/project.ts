@@ -13,7 +13,7 @@ import {
   type ProjectGender,
   type ProjectLoseReason,
   type ProjectStatus,
-} from "../models/project/project.model";
+} from "../models/project.model";
 import { asRecord } from "./asRecord";
 
 function parseContactMap(raw: unknown): Record<string, string> {

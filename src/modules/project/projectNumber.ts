@@ -1,5 +1,5 @@
 import type { ClientSession } from "mongoose";
-import { ProjectSeqCounterModel } from "../../models/seqCounter/seqCounter.model";
+import { ProjectSeqCounterModel } from "../../models/seqCounter.model";
 import { jakartaYmdParts } from "../../utils/shared";
 
 const ROMAN_MONTHS = [

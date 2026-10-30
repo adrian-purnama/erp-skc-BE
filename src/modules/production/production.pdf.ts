@@ -62,30 +62,14 @@ const ITEM_ALIGN: Array<"left" | "center" | "right"> = [
 
 type Cell = string | { title: string; lines: string[] };
 
-export function buildSpkPdf(
-  data: SpkPdfData,
+/** Logo + company name and address, a rule, then the centred title; leaves pdf.y below it. */
+export function drawLetterhead(
+  pdf: PDFKit.PDFDocument,
+  data: { companyName: string; letterhead: string[]; title: string },
   logo: QuotationLogo | null,
-): Promise<Buffer> {
-  const pdf = new PDFDocument({
-    size: "A4",
-    margin: MARGIN,
-    info: { Title: data.meta.right.find(([k]) => k === "No. SPK")?.[1] ?? "SPK" },
-  });
-  const chunks: Buffer[] = [];
-  const done = new Promise<Buffer>((resolve, reject) => {
-    pdf.on("data", (c: Buffer) => chunks.push(c));
-    pdf.on("end", () => resolve(Buffer.concat(chunks)));
-    pdf.on("error", reject);
-  });
-
+): void {
   const left = MARGIN;
   const width = pdf.page.width - MARGIN * 2;
-  const bottom = () => pdf.page.height - MARGIN;
-  const ensure = (h: number) => {
-    if (pdf.y + h > bottom()) pdf.addPage();
-  };
-
-  // Letterhead
   const top = pdf.y;
   let textLeft = left;
   let info = logo ? readLogoImageInfo(logo.buffer) : null;
@@ -118,6 +102,32 @@ export function buildSpkPdf(
     align: "center",
   });
   pdf.moveDown(1);
+}
+
+export function buildSpkPdf(
+  data: SpkPdfData,
+  logo: QuotationLogo | null,
+): Promise<Buffer> {
+  const pdf = new PDFDocument({
+    size: "A4",
+    margin: MARGIN,
+    info: { Title: data.meta.right.find(([k]) => k === "No. SPK")?.[1] ?? "SPK" },
+  });
+  const chunks: Buffer[] = [];
+  const done = new Promise<Buffer>((resolve, reject) => {
+    pdf.on("data", (c: Buffer) => chunks.push(c));
+    pdf.on("end", () => resolve(Buffer.concat(chunks)));
+    pdf.on("error", reject);
+  });
+
+  const left = MARGIN;
+  const width = pdf.page.width - MARGIN * 2;
+  const bottom = () => pdf.page.height - MARGIN;
+  const ensure = (h: number) => {
+    if (pdf.y + h > bottom()) pdf.addPage();
+  };
+
+  drawLetterhead(pdf, data, logo);
 
   // Meta: project left, SPK reference right.
   pdf.fontSize(10);

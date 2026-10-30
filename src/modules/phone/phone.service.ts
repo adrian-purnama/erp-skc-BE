@@ -1,4 +1,4 @@
-import { PHONE_TYPES, PhoneModel } from "../../models/phone/phone.model";
+import { PHONE_TYPES, PhoneModel } from "../../models/phone.model";
 import { createOwnerContactService } from "../ownerContact/ownerContact.service";
 
 export const phoneService = createOwnerContactService({

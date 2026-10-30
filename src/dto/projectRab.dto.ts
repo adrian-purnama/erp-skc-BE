@@ -1,16 +1,28 @@
 import type { ItemUomOutDto } from "./itemMaster.dto";
-import type { UomRoundingMode } from "../models/uom/uom.model";
+import type { ProjectRabLineRounding } from "../models/projectRab.model";
+import type { RealizationChargeInDto, RealizationChargeOutDto } from "./purchasing.dto";
 
 export type PatchProjectRabLineInDto = {
   /** Null or empty clears the line price (and tarif ref). */
   unitPrice: string | null;
+  /** Set instead of unitPrice: unit price becomes lineTotal ÷ line qty. */
+  lineTotal?: string;
+  /** Sent alone: only switch how the price is entered; the price is kept. */
+  priceByTotal?: boolean;
 };
 
 export type AddProjectRabLabourLineInDto = {
+  shopDrawingItemId: string;
   itemId: string;
   itemUomId: string;
   totalQty: string;
   unitPrice?: string | null;
+};
+
+/** Rewrite process order + weights for one drawing's labour lines (array order = sequence). */
+export type SaveProjectRabLabourProcessInDto = {
+  shopDrawingItemId: string;
+  lines: Array<{ key: string; weightPercent: number }>;
 };
 
 export type ProjectRabLabourItemOutDto = {
@@ -25,6 +37,8 @@ export type ProjectRabLabourItemOutDto = {
 export type ProjectRabUserRefOutDto = {
   id: string;
   name: string;
+  /** `/media/<id>` when loaded; omit/null when unknown. */
+  profilePicture?: string | null;
 };
 
 export type ProjectRabLineOutDto = {
@@ -41,16 +55,25 @@ export type ProjectRabLineOutDto = {
   exactQty: string | null;
   /** totalQty − exactQty; negative when rounded down below need. */
   wasteQty: string | null;
-  rounding: { decimals: number; mode: UomRoundingMode } | null;
+  rounding: ProjectRabLineRounding | null;
   unitPrice: string | null;
   tarifId: string | null;
   lineTotal: string | null;
+  /** Price was typed as the line total; the UI reopens it in total mode. */
+  priceByTotal: boolean;
   hasTarif: boolean;
   origin: "lock" | "append" | "labour" | null;
   addedAt: string | null;
   addedBy: ProjectRabUserRefOutDto | null;
   addReason: string | null;
   priceEditable: boolean;
+  /** Labour: shop drawing item it is costed to (null = project-wide). */
+  shopDrawingItemId: string | null;
+  shopDrawingItemName: string | null;
+  /** Inhouse process order within the drawing (null if unset). */
+  sequence: number | null;
+  /** Inhouse process weight percent (null if unset). */
+  weightPercent: number | null;
 };
 
 export type ProjectRabItemGroupOutDto = {
@@ -151,7 +174,17 @@ export type ProjectRabOutDto = {
   /** Locked RAB: shop drawing material changes per change, newest first. */
   materialChanges: ProjectRabMaterialChangeGroupOutDto[];
   groups: ProjectRabItemGroupOutDto[];
+  /** Σ priced line totals; null while no line is priced. */
+  subtotal: string | null;
+  /** Extra costs on the whole RAB; percent rows priced on `subtotal`. */
+  charges: RealizationChargeOutDto[];
+  chargesTotal: string;
+  /** subtotal + chargesTotal. */
   grandTotal: string | null;
+};
+
+export type SaveProjectRabChargesInDto = {
+  charges: RealizationChargeInDto[];
 };
 
 export type ProjectRabElaborationLineOutDto = {

@@ -1,6 +1,6 @@
 import type Decimal from "decimal.js";
 import { Types } from "mongoose";
-import { PurchaseRealizationRepo } from "../../models/purchaseRealization/purchaseRealization.model";
+import { PurchaseRealizationRepo } from "../../models/purchaseRealization.model";
 import { sumRealized } from "./purchaseRealization.planner";
 
 /** Qty arrived per SPP line on posted realizations (Penerimaan / Nota Realisasi). */

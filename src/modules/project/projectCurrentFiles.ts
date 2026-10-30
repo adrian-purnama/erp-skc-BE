@@ -1,7 +1,7 @@
 import { Types } from "mongoose";
-import type { ProjectRabChangeCurrentFile } from "../../models/projectRabChange/projectRabChange.model";
-import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument/projectShopDrawingDocument.model";
-import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem/projectShopDrawingItem.model";
+import type { ProjectRabChangeCurrentFile } from "../../models/projectRabChange.model";
+import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument.model";
+import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
 
 /**
  * The current (live, non-deleted) file of every live shop drawing item.

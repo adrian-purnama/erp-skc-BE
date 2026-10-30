@@ -1,18 +1,20 @@
 import ExcelJS from "exceljs";
 import { Types } from "mongoose";
-import { FolderRepo } from "../../models/folder/folder.model";
-import { ItemRepo } from "../../models/item/item.model";
-import { VendorRepo } from "../../models/vendor/vendor.model";
-import type { ProjectRabLine } from "../../models/projectRab/projectRab.model";
-import { ProjectRabRepo } from "../../models/projectRab/projectRab.model";
-import { ProjectRepo } from "../../models/project/project.model";
-import { logger } from "../../logger/logger";
+import { FolderRepo } from "../../models/folder.model";
+import { ItemRepo } from "../../models/item.model";
+import { VendorRepo } from "../../models/vendor.model";
+import type { PurchaseCharge } from "../../models/purchaseCharge.model";
+import type { ProjectRabLine } from "../../models/projectRab.model";
+import { ProjectRabRepo } from "../../models/projectRab.model";
+import { ProjectRepo } from "../../models/project.model";
+import { logger } from "../../core/logger";
 import { userEmailsById } from "../../utils/shared";
 import { folderPathUp } from "../itemMaster/folderPath";
 import { loadItemMeta } from "../itemMaster/itemMeta";
 import {
   buildExportFilename,
   buildSections,
+  exportChargeRows,
   lineAmount,
   missingPriceLines,
   sanitizeExcelText,
@@ -25,7 +27,7 @@ import {
 import { rabLineKey } from "./projectRab.planner";
 import { projectRabChangeService } from "./projectRabChange.service";
 import { assertProjectExists } from "./projectShared";
-import { projectRabService } from "./projectRab.service";
+import { projectRabService, shopDrawingItemNames } from "./projectRab.service";
 
 export type RabExportKind = "formal" | "data";
 
@@ -146,7 +148,7 @@ export class ProjectRabExportService {
       .exec()) as { name: string; projectNumber: string } | null;
     if (!project) throw new Error("Project not found");
 
-    const { lines, meta } = await this.resolveLines(projectId, userId, revisionParam);
+    const { lines, charges, meta } = await this.resolveLines(projectId, userId, revisionParam);
     const isDraft = meta.status === "draft";
     const revisionLabel = meta.revision;
 
@@ -180,6 +182,7 @@ export class ProjectRabExportService {
             project,
             meta,
             lines,
+            charges,
             sections,
             exportDate,
           })
@@ -187,6 +190,7 @@ export class ProjectRabExportService {
             project,
             meta,
             lines,
+            charges,
             sections,
             exportDate,
             projectId,
@@ -209,6 +213,7 @@ export class ProjectRabExportService {
     revisionParam: string,
   ): Promise<{
     lines: ExportLineIn[];
+    charges: PurchaseCharge[];
     meta: {
       status: "draft" | "locked";
       revision: number;
@@ -247,18 +252,28 @@ export class ProjectRabExportService {
       addReason: string | null;
     }> = [];
     let revision = 0;
+    let charges: PurchaseCharge[] = [];
 
     if (revisionParam === "current" || revisionParam === "") {
       const live = await projectRabService.get(projectId, userId);
       if (!live) throw new Error("RAB not found");
       revision = live.currentRevision;
+      charges = live.charges.map((c) => ({
+        category: c.category,
+        label: c.label,
+        kind: c.kind,
+        rate: c.rate,
+        amount: c.amount,
+      }));
       for (const g of live.groups) {
         for (const l of g.lines) {
           rawLines.push({
             key: l.key,
             materialItemId: l.materialItemId,
             materialCode: l.materialCode,
-            materialName: l.materialName,
+            materialName: l.shopDrawingItemName
+              ? `${l.materialName} · ${l.shopDrawingItemName}`
+              : l.materialName,
             uomSymbol: l.uomSymbol,
             totalQty: l.totalQty,
             unitPrice: l.unitPrice,
@@ -294,6 +309,7 @@ export class ProjectRabExportService {
       );
       if (!change) throw new Error(`Revision ${rev} not found`);
       revision = rev;
+      charges = change.charges ?? [];
       rawLines = await this.enrichSnapshotLines(change.rabLines);
       for (const l of rawLines) {
         if (l.origin === "append" || l.addReason) {
@@ -326,6 +342,7 @@ export class ProjectRabExportService {
 
     return {
       lines,
+      charges,
       meta: {
         status,
         revision: status === "draft" ? 0 : revision,
@@ -350,15 +367,25 @@ export class ProjectRabExportService {
     }>
   > {
     const itemIds = [...new Set(lines.map((l) => String(l.materialItemId)))];
-    const { items: meta, uoms: uomMeta } = await loadItemMeta(itemIds);
+    const [{ items: meta, uoms: uomMeta }, drawingNames] = await Promise.all([
+      loadItemMeta(itemIds),
+      shopDrawingItemNames(
+        lines.flatMap((l) =>
+          l.shopDrawingItemId ? [String(l.shopDrawingItemId)] : [],
+        ),
+      ),
+    ]);
     return lines.map((l) => {
       const mid = String(l.materialItemId);
       const m = meta.get(mid) ?? { code: "—", name: "Unknown" };
+      const drawing = l.shopDrawingItemId
+        ? drawingNames.get(String(l.shopDrawingItemId))
+        : undefined;
       return {
         key: l.key,
         materialItemId: mid,
         materialCode: m.code,
-        materialName: m.name,
+        materialName: drawing ? `${m.name} · ${drawing}` : m.name,
         uomSymbol: uomMeta.get(String(l.itemUomId))?.symbol ?? "—",
         totalQty: l.totalQty,
         unitPrice: l.unitPrice ?? null,
@@ -414,6 +441,7 @@ export class ProjectRabExportService {
       lockedByName: string | null;
     };
     lines: ExportLineIn[];
+    charges: PurchaseCharge[];
     sections: ExportSection[];
     exportDate: Date;
   }): ExcelJS.Workbook {
@@ -495,6 +523,31 @@ export class ProjectRabExportService {
       }
     }
 
+    const chargeRows = exportChargeRows(
+      sumLineAmounts(opts.lines),
+      opts.charges,
+    );
+    for (const charge of chargeRows) {
+      const r = row;
+      sheet.getCell(r, 1).value = sanitizeExcelText(opts.project.projectNumber);
+      sheet.getCell(r, 2).value = sanitizeExcelText(opts.project.name);
+      sheet.getCell(r, 3).value = draft
+        ? `Rev ${opts.meta.revision} DRAFT`
+        : `Rev ${opts.meta.revision}`;
+      sheet.getCell(r, 4).value = "Additional costs";
+      sheet.getCell(r, 5).value = sanitizeExcelText(charge.label);
+      sheet.getCell(r, 6).value = "Additional cost";
+      sheet.getCell(r, 7).value = "—";
+      sheet.getCell(r, 11).value = charge.amount;
+      sheet.getCell(r, 12).value = "—";
+      for (let c = 1; c <= 12; c += 1) {
+        sheet.getCell(r, c).font = { name: FONT, size: 10 };
+        sheet.getCell(r, c).border = THIN_BORDER;
+      }
+      sheet.getCell(r, 11).numFmt = "#,##0";
+      row += 1;
+    }
+
     sheet.autoFilter = {
       from: { row: headerRow, column: 1 },
       to: { row: Math.max(headerRow, row - 1), column: 12 },
@@ -515,6 +568,7 @@ export class ProjectRabExportService {
       lockedByName: string | null;
     };
     lines: ExportLineIn[];
+    charges: PurchaseCharge[];
     sections: ExportSection[];
     exportDate: Date;
     projectId: string;
@@ -722,13 +776,36 @@ export class ProjectRabExportService {
     }
     rek.getCell(rr, 3).numFmt = "#,##0";
     rek.getCell(rr, 3).font = { name: FONT, size: 10, bold: true };
+    const subtotal = sumLineAmounts(opts.lines);
+    const chargeRows = exportChargeRows(subtotal, opts.charges);
+    if (chargeRows.length > 0) {
+      const totalRefs = [`C${jumlahRow}`];
+      for (const charge of chargeRows) {
+        rr += 1;
+        rek.getCell(rr, 2).value = sanitizeExcelText(charge.label);
+        rek.getCell(rr, 3).value =
+          charge.rate === null
+            ? charge.amount
+            : { formula: `ROUND(C${jumlahRow}*${charge.rate}/100,0)` };
+        rek.getCell(rr, 3).numFmt = "#,##0";
+        rek.getCell(rr, 2).font = { name: FONT, size: 10 };
+        rek.getCell(rr, 3).font = { name: FONT, size: 10 };
+        totalRefs.push(`C${rr}`);
+      }
+      rr += 1;
+      rek.getCell(rr, 2).value = "TOTAL";
+      rek.getCell(rr, 2).font = { name: FONT, size: 10, bold: true };
+      rek.getCell(rr, 3).value = { formula: `SUM(${totalRefs.join(",")})` };
+      rek.getCell(rr, 3).numFmt = "#,##0";
+      rek.getCell(rr, 3).font = { name: FONT, size: 10, bold: true };
+    }
     rr += 2;
-    // Before PPN (no tax rows on this sheet)
-    const beforePpnTotal = sumLineAmounts(opts.lines);
+    const grandTotal =
+      subtotal + chargeRows.reduce((sum, charge) => sum + charge.amount, 0);
     rek.getCell(rr, 1).value = "Terbilang";
     rek.mergeCells(`B${rr}:C${rr}`);
     rek.getCell(rr, 2).value = sanitizeExcelText(
-      terbilangRupiah(beforePpnTotal),
+      terbilangRupiah(grandTotal),
     );
     rek.getCell(rr, 2).font = { name: FONT, size: 10, italic: true };
     // TODO: signature block later (Tempat/Tanggal, Dibuat / Diperiksa / Disetujui)
@@ -779,7 +856,7 @@ export class ProjectRabExportService {
           opts.projectId,
           c.revision!,
         );
-        const total = snap
+        const linesTotal = snap
           ? sumLineAmounts(
               (
                 await this.enrichSnapshotLines(snap.rabLines)
@@ -795,6 +872,12 @@ export class ProjectRabExportService {
               })),
             )
           : 0;
+        const total =
+          linesTotal +
+          exportChargeRows(linesTotal, snap?.charges ?? []).reduce(
+            (sum, charge) => sum + charge.amount,
+            0,
+          );
         const delta = prevTotal === null ? total : total - prevTotal;
         prevTotal = total;
         hist.getCell(h, 1).value = c.revision;

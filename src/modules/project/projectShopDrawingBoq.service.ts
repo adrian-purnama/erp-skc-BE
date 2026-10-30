@@ -16,10 +16,10 @@ import {
   type ProjectShopDrawingBoqLine,
   type ShopDrawingBoqFinishPlacement,
   type ShopDrawingBoqMountingType,
-} from "../../models/projectShopDrawingBoq/projectShopDrawingBoq.model";
-import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument/projectShopDrawingDocument.model";
-import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem/projectShopDrawingItem.model";
-import { ItemUomRepo } from "../../models/itemUom/itemUom.model";
+} from "../../models/projectShopDrawingBoq.model";
+import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument.model";
+import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
+import { ItemUomRepo } from "../../models/itemUom.model";
 import {
   formatDecimal,
   parsePositiveDecimal,

@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import type { ApiResponseDto } from "../../dto/apiResponse.dto";
+import type { ApiResponseDto } from "../../dto/httpResponse";
 import type { ProjectQuotationOutDto } from "../../dto/projectQuotation.dto";
 import { fail, handle, ok } from "../../dto/httpResponse";
 import { parseRouteId } from "../../validation/parseParam";

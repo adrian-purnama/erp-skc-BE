@@ -94,6 +94,12 @@ router.get(
   requirePermission({ key: "admin.role.view" }),
   permissionController.scanReport,
 );
+router.post(
+  "/permissions/sync",
+  requireUser,
+  requirePermission({ key: "admin.role.manage" }),
+  permissionController.sync,
+);
 
 router.get(
   "/audit/collections",

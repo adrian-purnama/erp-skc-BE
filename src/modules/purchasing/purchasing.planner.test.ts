@@ -21,11 +21,17 @@ function line(overrides: Partial<RequestLineInput> = {}): RequestLineInput {
 
 function check(
   lines: RequestLineInput[],
-  opts: { spk?: SpkMaterialRow[] | null; requested?: Map<string, Decimal>; rab?: string[] } = {},
+  opts: {
+    spk?: SpkMaterialRow[] | null;
+    basis?: "spk" | "rab";
+    requested?: Map<string, Decimal>;
+    rab?: string[];
+  } = {},
 ) {
   return checkRequestLines({
     lines,
-    spkMaterials: opts.spk === undefined ? [PLATE, BOLT] : opts.spk,
+    basis: opts.basis ?? "spk",
+    planMaterials: opts.spk === undefined ? [PLATE, BOLT] : opts.spk,
     requested: opts.requested ?? new Map(),
     rabKeys: new Set(opts.rab ?? [materialKey(PLATE)]),
     label: (key) => key,
@@ -33,10 +39,10 @@ function check(
 }
 
 describe("sumRequested", () => {
-  it("sums only SPK lines per material×UOM", () => {
+  it("sums only SPK / RAB lines per material×UOM", () => {
     const sums = sumRequested([
       { source: "spk", materialItemId: "m1", itemUomId: "u1", qty: "2" },
-      { source: "spk", materialItemId: "m1", itemUomId: "u1", qty: "1.5" },
+      { source: "rab", materialItemId: "m1", itemUomId: "u1", qty: "1.5" },
       { source: "extra", materialItemId: "m1", itemUomId: "u1", qty: "9" },
     ]);
     assert.equal(sums.get(materialKey(PLATE))?.toString(), "3.5");
@@ -102,6 +108,28 @@ describe("checkRequestLines", () => {
   it("treats every line as extra on a request without SPK", () => {
     assert.throws(() => check([line()], { spk: null }), /outside the SPK/);
     const [out] = check([line({ note: "stock" })], { spk: null });
+    assert.equal(out!.source, "extra");
+  });
+});
+
+describe("checkRequestLines on a Purchasing RAB", () => {
+  it("marks RAB items as RAB lines", () => {
+    const [out] = check([line()], { basis: "rab" });
+    assert.equal(out!.source, "rab");
+    assert.equal(out!.overPlan, false);
+  });
+
+  it("needs a reason past the RAB qty", () => {
+    const requested = new Map([[materialKey(PLATE), new Decimal(8)]]);
+    assert.throws(() => check([line({ qty: "3" })], { basis: "rab", requested }), /the RAB budgets/);
+    const [out] = check([line({ qty: "3", note: "breakage" })], { basis: "rab", requested });
+    assert.equal(out!.overPlan, true);
+  });
+
+  it("needs a reason for items outside the RAB", () => {
+    const other = line({ materialItemId: "m9", itemUomId: "u9" });
+    assert.throws(() => check([other], { basis: "rab" }), /outside the RAB/);
+    const [out] = check([{ ...other, note: "urgent" }], { basis: "rab" });
     assert.equal(out!.source, "extra");
   });
 });

@@ -6,7 +6,7 @@ import {
   PROJECT_DOCUMENT_KINDS,
   ProjectDocumentRepo,
   type ProjectDocumentKind,
-} from "../../models/projectDocument/projectDocument.model";
+} from "../../models/projectDocument.model";
 import { assertProjectDocumentFile } from "../../validation/projectDocument";
 import { assertProjectExists } from "./projectShared";
 import {

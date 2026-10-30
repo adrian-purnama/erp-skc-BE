@@ -1,5 +1,5 @@
-import { logger } from "../../logger/logger";
-import { OtpModel } from "../../models/otp/otp.model";
+import { logger } from "../../core/logger";
+import { OtpModel } from "../../models/otp.model";
 
 export class OtpService {
     otp: string;

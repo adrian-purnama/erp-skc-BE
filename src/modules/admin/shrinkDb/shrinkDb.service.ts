@@ -3,7 +3,7 @@ import {
   deleteFileIfExists,
   findFile,
   listFileIds,
-} from "../../../buckets/gridfs";
+} from "../../../core/gridfs";
 import { listAuditedCollections } from "../../../core/audit/auditedModel";
 import type {
   ShrinkDbStatusOutDto,
@@ -13,18 +13,18 @@ import type {
   PurgeOrphanBlobsOutDto,
   StartShrinkDbOutDto,
 } from "../../../dto/shrinkDb.dto";
-import { logger } from "../../../logger/logger";
-import { ProjectRepo } from "../../../models/project/project.model";
-import { ProjectDocumentRepo } from "../../../models/projectDocument/projectDocument.model";
-import { ProjectLooseFileRepo } from "../../../models/projectLooseFile/projectLooseFile.model";
-import { ProjectProductionFileRepo } from "../../../models/projectProductionFile/projectProductionFile.model";
-import { ProjectShopDrawingDocumentRepo } from "../../../models/projectShopDrawingDocument/projectShopDrawingDocument.model";
+import { logger } from "../../../core/logger";
+import { ProjectRepo } from "../../../models/project.model";
+import { ProjectDocumentRepo } from "../../../models/projectDocument.model";
+import { ProjectLooseFileRepo } from "../../../models/projectLooseFile.model";
+import { ProjectProductionFileRepo } from "../../../models/projectProductionFile.model";
+import { ProjectShopDrawingDocumentRepo } from "../../../models/projectShopDrawingDocument.model";
 import {
   ShrinkRunModel,
   type ShrinkOrphanReport,
   type ShrinkRunResult,
   type ShrinkSection,
-} from "../../../models/shrinkRun/shrinkRun.model";
+} from "../../../models/shrinkRun.model";
 
 const logSource = "modules/admin/shrinkDb/shrinkDb.service.ts";
 const BATCH = 500;

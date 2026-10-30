@@ -5,11 +5,15 @@ import type {
   ProjectShopDrawingFileOutDto,
   ProjectShopDrawingItemOutDto,
 } from "../../dto/projectShopDrawing.dto";
-import { ProjectRepo } from "../../models/project/project.model";
-import { ProjectProductionFileRepo } from "../../models/projectProductionFile/projectProductionFile.model";
-import { ProjectShopDrawingBoqRepo } from "../../models/projectShopDrawingBoq/projectShopDrawingBoq.model";
-import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument/projectShopDrawingDocument.model";
-import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem/projectShopDrawingItem.model";
+import { ProjectRepo } from "../../models/project.model";
+import { ProjectProductionFileRepo } from "../../models/projectProductionFile.model";
+import { ProjectShopDrawingBoqRepo } from "../../models/projectShopDrawingBoq.model";
+import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument.model";
+import {
+  ProjectShopDrawingItemRepo,
+  type ShopDrawingMakeType,
+} from "../../models/projectShopDrawingItem.model";
+import { ProductionOrderRepo } from "../../models/productionOrder.model";
 import {
   assertShopDrawingFile,
   type ShopDrawingItemInDto,
@@ -18,6 +22,7 @@ import { projectRabChangeService } from "./projectRabChange.service";
 import { rabLockState } from "./projectRabLock";
 import { purgeShopDrawingItem } from "./projectShopDrawingPurge";
 import { assertProjectExists, shopDrawingItemLabel } from "./projectShared";
+import { loadShopDrawingSpecs } from "./projectShopDrawingSpec";
 import {
   sameAsVersionFor,
   VersionedProjectFileService,
@@ -121,10 +126,10 @@ type LeanItem = {
   projectId: Types.ObjectId;
   code?: string;
   name: string;
-  descriptions?: string[];
   dimension?: string;
   category?: string | null;
   mockupApproveDate?: string | null;
+  makeType?: ShopDrawingMakeType;
   isDeleted?: boolean;
   deletedAt?: Date | null;
   deletedBy?: Types.ObjectId | null;
@@ -155,21 +160,38 @@ type ItemMetaOut = Pick<
   | "dimension"
   | "category"
   | "mockupApproveDate"
+  | "makeType"
 >;
 
-function toItemMeta(item: LeanItem): ItemMetaOut {
+function toItemMeta(item: LeanItem, descriptions: string[] = []): ItemMetaOut {
   return {
     id: String(item._id),
     code: item.code ?? "",
     name: item.name,
     label: shopDrawingItemLabel(item),
-    descriptions: item.descriptions ?? [],
+    descriptions,
     dimension: item.dimension ?? "",
     category: item.category ?? null,
     mockupApproveDate: item.mockupApproveDate?.trim()
       ? item.mockupApproveDate.trim()
       : null,
+    makeType: item.makeType ?? "inhouse",
   };
+}
+
+/** SPKs are typed by the item, so the type is fixed while live ones exist. */
+async function assertMakeTypeChangeable(itemId: string): Promise<void> {
+  const live = await ProductionOrderRepo.model
+    .countDocuments({
+      shopDrawingItemId: new Types.ObjectId(itemId),
+      status: { $ne: "cancelled" },
+    })
+    .exec();
+  if (live > 0) {
+    throw new Error(
+      "This item already has SPKs: cancel or delete them before changing who makes it",
+    );
+  }
 }
 
 /** Kode is the item's identity within a project. */
@@ -304,6 +326,7 @@ export class ProjectShopDrawingService {
       { version: -1 },
     );
     const { change } = await rabLockState(projectId);
+    const specs = await loadShopDrawingSpecs(items.map((i) => i._id));
     const removedInChange = new Set(
       (change?.removedItemIds ?? []).map(String),
     );
@@ -330,7 +353,7 @@ export class ProjectShopDrawingService {
       const current =
         versions.find((v) => v.isCurrent && !v.isDeleted) ?? null;
       return {
-        ...toItemMeta(item),
+        ...toItemMeta(item, specs.get(itemId) ?? []),
         current,
         versions,
         productionCurrent,
@@ -354,10 +377,10 @@ export class ProjectShopDrawingService {
       projectId: new Types.ObjectId(projectId),
       code: input.code,
       name: input.name,
-      descriptions: input.descriptions,
       dimension: input.dimension,
       category: input.category,
       mockupApproveDate: input.mockupApproveDate,
+      makeType: input.makeType ?? "inhouse",
       createdBy: actorId ? new Types.ObjectId(actorId) : undefined,
       isDeleted: false,
       deletedAt: null,
@@ -374,7 +397,7 @@ export class ProjectShopDrawingService {
     };
   }
 
-  /** Edit kode, name, keterangan, ukuran and category; file names follow the label. */
+  /** Edit kode, name, ukuran, category and make type; file names follow the label. */
   async updateItem(
     projectId: string,
     itemId: string,
@@ -383,15 +406,19 @@ export class ProjectShopDrawingService {
     await assertProjectExists(projectId);
     const existing = await assertLiveItem(projectId, itemId);
     await assertCodeFree(projectId, input.code, itemId);
+    const makeTypeChanged =
+      input.makeType !== undefined &&
+      input.makeType !== (existing.makeType ?? "inhouse");
+    if (makeTypeChanged) await assertMakeTypeChangeable(itemId);
 
     const updated = await ProjectShopDrawingItemRepo.findByIdAndUpdate(itemId, {
       $set: {
         code: input.code,
         name: input.name,
-        descriptions: input.descriptions,
         dimension: input.dimension,
         category: input.category,
         mockupApproveDate: input.mockupApproveDate,
+        ...(makeTypeChanged ? { makeType: input.makeType } : {}),
       },
     });
     if (!updated) throw new Error("Item not found");

@@ -1,5 +1,5 @@
 import { Types } from "mongoose";
-import { UserModel } from "../models/user/user.model";
+import { UserModel } from "../models/user.model";
 
 const JAKARTA_TZ = "Asia/Jakarta";
 
@@ -69,5 +69,44 @@ export async function userEmailsById(
     .exec();
   return new Map(
     users.map((u) => [String(u._id), u.email ?? String(u._id)] as const),
+  );
+}
+
+export type UserRefLite = {
+  id: string;
+  name: string;
+  profilePicture: string | null;
+};
+
+/** Display name + optional profile picture URL for RAB / audit user chips. */
+export async function userRefsById(
+  ids: Array<string | Types.ObjectId>,
+): Promise<Map<string, UserRefLite>> {
+  const unique = [
+    ...new Set(
+      ids.map(String).filter((id) => Types.ObjectId.isValid(id)),
+    ),
+  ];
+  if (unique.length === 0) return new Map();
+  const users = await UserModel.find({ _id: { $in: unique } })
+    .select({ email: 1, fullName: 1, profilePicture: 1 })
+    .lean()
+    .exec();
+  return new Map(
+    users.map((u) => {
+      const id = String(u._id);
+      const fullName =
+        typeof u.fullName === "string" ? u.fullName.trim() : "";
+      const email = u.email ?? id;
+      const pictureId = u.profilePicture ? String(u.profilePicture) : null;
+      return [
+        id,
+        {
+          id,
+          name: fullName || email,
+          profilePicture: pictureId ? `/media/${pictureId}` : null,
+        } satisfies UserRefLite,
+      ] as const;
+    }),
   );
 }

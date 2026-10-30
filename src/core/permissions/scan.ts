@@ -1,4 +1,4 @@
-import type { Express, IRouter } from "express";
+import type { Application, IRouter } from "express";
 import {
   getMountRecords,
   isRecordedRouter,
@@ -118,7 +118,7 @@ function scanRecordedRouter(mount: MountRecord): {
   return { routes, violations };
 }
 
-function getAppStack(app: Express): LayerLike[] {
+function getAppStack(app: Application): LayerLike[] {
   const router = (app as unknown as { router?: { stack?: LayerLike[] } }).router;
   return router?.stack ?? [];
 }
@@ -143,7 +143,9 @@ function isRouterHandle(handle: unknown): handle is IRouter {
 
 const HEALTH_ALLOWLIST = new Set(["GET /health"]);
 
-function scanUnregistered(app: Express): Array<{ method: string; path: string }> {
+function scanUnregistered(
+  app: Application,
+): Array<{ method: string; path: string }> {
   const found: Array<{ method: string; path: string }> = [];
   const stack = getAppStack(app);
 
@@ -169,7 +171,7 @@ function scanUnregistered(app: Express): Array<{ method: string; path: string }>
   return found;
 }
 
-export function scanRoutes(app: Express): ScanResult {
+export function scanRoutes(app: Application): ScanResult {
   const routes: ScannedRoute[] = [];
   const violations: ScanViolation[] = [];
 

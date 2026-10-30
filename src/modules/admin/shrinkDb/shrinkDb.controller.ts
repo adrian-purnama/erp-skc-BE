@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import { ApiResponseDto } from "../../../dto/apiResponse.dto";
+import { ApiResponseDto } from "../../../dto/httpResponse";
 import { fail, handle, ok } from "../../../dto/httpResponse";
 import {
   parsePurgeOrphanBlobsDto,

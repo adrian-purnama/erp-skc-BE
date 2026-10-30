@@ -1,5 +1,5 @@
 import { Types } from "mongoose";
-import { deleteFileIfExists, openDownload } from "../../buckets/gridfs";
+import { deleteFileIfExists, openDownload } from "../../core/gridfs";
 import type {
   ProjectLooseFileOutDto,
   ProjectLooseFilesByKindOutDto,
@@ -9,7 +9,7 @@ import {
   ProjectLooseFileRepo,
   type ProjectLooseFileInterface,
   type ProjectLooseFileKind,
-} from "../../models/projectLooseFile/projectLooseFile.model";
+} from "../../models/projectLooseFile.model";
 import { userEmailsById } from "../../utils/shared";
 import { assertProjectLooseFile } from "../../validation/projectLooseFile";
 import {

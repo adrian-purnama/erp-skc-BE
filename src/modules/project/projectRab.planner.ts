@@ -4,7 +4,10 @@ import {
   parsePositiveDecimal,
   parseQtyDecimal,
 } from "../itemMaster/itemUomConvert";
-import type { UomRoundingMode } from "../../models/uom/uom.model";
+import type { ItemUomRoundingMode } from "../../models/itemUom.model";
+import type { ProjectRabLineRounding } from "../../models/projectRab.model";
+import type { PurchaseCharge } from "../../models/purchaseCharge.model";
+import { priceStoredCharges } from "../purchasing/purchaseRealization.planner";
 
 export type RabAggSourceLine = {
   materialItemId: string;
@@ -13,15 +16,12 @@ export type RabAggSourceLine = {
   makeQty: string;
 };
 
-export type RabRounding = {
-  decimals: number;
-  mode: UomRoundingMode;
-};
+export type RabRounding = ProjectRabLineRounding;
 
 /**
  * Where one BOQ material×UOM lands on the RAB: the material's base UOM when
  * convertible (factor = base units per 1 source unit), else itself (factor 1).
- * The rounding rule is the target UOM's.
+ * The rounding step is in the target UOM.
  */
 export type RabUomRule = {
   targetItemUomId: string;
@@ -36,7 +36,7 @@ export type RabAggRow = {
   key: string;
   materialItemId: string;
   itemUomId: string;
-  /** Purchase qty: exactQty rounded by the UOM rule (= exactQty without one). */
+  /** Purchase qty: exactQty rounded by the rule (= exactQty without one). */
   totalQty: string;
   /** Σ qtyPerUnit × makeQty in the target UOM, before rounding. */
   exactQty: string;
@@ -47,11 +47,13 @@ export type RabStoredPricing = {
   key: string;
   unitPrice?: string;
   tarifId?: string;
+  priceByTotal?: boolean;
 };
 
 export type RabMergedLine = RabAggRow & {
   unitPrice?: string;
   tarifId?: string;
+  priceByTotal?: boolean;
 };
 
 export function rabLineKey(materialItemId: string, itemUomId: string): string {
@@ -133,17 +135,25 @@ export function assertAllLinesPriced(
 // Absorbs 8-dp noise from yield division (2/3 × 3 = 2.00000001) before rounding.
 const ROUNDING_NOISE_DP = 6;
 
-const DECIMAL_MODE: Record<UomRoundingMode, Decimal.Rounding> = {
+/** Step for the UOM-decimals fallback: 0 → "1", 2 → "0.01". */
+export function stepFromDecimals(decimals: number): string {
+  return formatDecimal(new Decimal(10).pow(-decimals));
+}
+
+const DECIMAL_MODE: Record<ItemUomRoundingMode, Decimal.Rounding> = {
   up: Decimal.ROUND_UP,
   nearest: Decimal.ROUND_HALF_UP,
   down: Decimal.ROUND_DOWN,
 };
 
-/** Round a purchase qty by a UOM rule. */
+/** Round a purchase qty to a multiple of the rule's step, in the rule's direction. */
 export function roundRabQty(qty: Decimal, rounding: RabRounding): Decimal {
+  const step = parsePositiveDecimal(rounding.step, "rounding.step");
   return qty
+    .div(step)
     .toDecimalPlaces(ROUNDING_NOISE_DP, Decimal.ROUND_HALF_UP)
-    .toDecimalPlaces(rounding.decimals, DECIMAL_MODE[rounding.mode]);
+    .toDecimalPlaces(0, DECIMAL_MODE[rounding.mode])
+    .mul(step);
 }
 
 /** RAB line key + factor for one BOQ source line (identity when not in plan). */
@@ -226,7 +236,7 @@ export function rabQtyWaste(
   return formatDecimal(parseQtyDecimal(totalQty).sub(parseQtyDecimal(exactQty)));
 }
 
-/** Keep unitPrice/tarifId when the same material×UOM key still exists. */
+/** Keep unitPrice/tarifId/priceByTotal when the same material×UOM key still exists. */
 export function mergeRabPricing(
   scaffold: RabAggRow[],
   previous: RabStoredPricing[],
@@ -240,6 +250,7 @@ export function mergeRabPricing(
       next.unitPrice = prev.unitPrice;
     }
     if (prev.tarifId) next.tarifId = prev.tarifId;
+    if (prev.priceByTotal) next.priceByTotal = true;
     return next;
   });
 }
@@ -256,6 +267,18 @@ export function mergeRabPricing(
   return formatDecimal(qty.mul(price));
 }
 
+/** Unit price that makes `totalQty × price` equal the typed line total. */
+export function unitPriceFromLineTotal(
+  totalQty: string,
+  lineTotal: string,
+): string {
+  const qty = parseQtyDecimal(totalQty);
+  if (qty.isZero()) {
+    throw new Error("Line qty is 0: set a unit price instead");
+  }
+  return formatDecimal(parseQtyDecimal(lineTotal).div(qty));
+}
+
 export function sumGrandTotal(lineTotals: Array<string | null>): string | null {
   let sum = new Decimal(0);
   let any = false;
@@ -265,4 +288,99 @@ export function sumGrandTotal(lineTotals: Array<string | null>): string | null {
     any = true;
   }
   return any ? formatDecimal(sum) : null;
+}
+
+/**
+ * RAB totals with its extra charges: percent rows are priced on the line
+ * subtotal; grandTotal is null while no line is priced.
+ */
+export function rabTotalsWithCharges(
+  subtotal: string | null,
+  charges: PurchaseCharge[],
+): {
+  subtotal: string | null;
+  charges: ReturnType<typeof priceStoredCharges>["charges"];
+  chargesTotal: string;
+  grandTotal: string | null;
+} {
+  const priced = priceStoredCharges(subtotal ?? "0", charges);
+  return {
+    subtotal,
+    charges: priced.charges,
+    chargesTotal: priced.chargesTotal,
+    grandTotal:
+      subtotal === null
+        ? null
+        : formatDecimal(parseQtyDecimal(subtotal).add(priced.chargesTotal)),
+  };
+}
+
+/**
+ * Quotation cost multiplier that spreads the RAB charges over every cost:
+ * (subtotal + charges) / subtotal; 1 when there is nothing to spread.
+ */
+export function rabChargeFactor(
+  subtotal: string | null,
+  charges: PurchaseCharge[],
+): string {
+  if (subtotal === null || charges.length === 0) return "1";
+  const base = parseQtyDecimal(subtotal);
+  if (base.lte(0)) return "1";
+  const { chargesTotal } = priceStoredCharges(subtotal, charges);
+  return base.add(chargesTotal).div(base).toString();
+}
+
+export type RabPurchaseRow = {
+  /** `${materialItemId}:${itemUomId}`, as purchasing (SPP / PO) keys lines. */
+  key: string;
+  materialItemId: string;
+  itemUomId: string;
+  qty: string;
+  /** Average over the priced lines; null when none is priced. */
+  unitPrice: string | null;
+};
+
+/**
+ * Project RAB lines as purchasing sees them: one row per material×UOM.
+ * Labour lines are keyed per shop drawing item in the RAB, so the same labour
+ * item on several drawings (e.g. an outsource fee) adds up into one row.
+ */
+export function rabRowsForPurchasing(
+  lines: Array<{
+    materialItemId: unknown;
+    itemUomId: unknown;
+    totalQty: string;
+    unitPrice?: string | null;
+  }>,
+): RabPurchaseRow[] {
+  const rows = new Map<
+    string,
+    { materialItemId: string; itemUomId: string; qty: Decimal; pricedQty: Decimal; amount: Decimal }
+  >();
+  for (const line of lines) {
+    const materialItemId = String(line.materialItemId);
+    const itemUomId = String(line.itemUomId);
+    const key = rabLineKey(materialItemId, itemUomId);
+    const row = rows.get(key) ?? {
+      materialItemId,
+      itemUomId,
+      qty: new Decimal(0),
+      pricedQty: new Decimal(0),
+      amount: new Decimal(0),
+    };
+    const qty = parseQtyDecimal(line.totalQty);
+    row.qty = row.qty.add(qty);
+    if (line.unitPrice !== null && line.unitPrice !== undefined && String(line.unitPrice).trim() !== "") {
+      row.pricedQty = row.pricedQty.add(qty);
+      row.amount = row.amount.add(qty.mul(parseQtyDecimal(line.unitPrice)));
+    }
+    rows.set(key, row);
+  }
+  return [...rows].map(([key, r]) => ({
+    key,
+    materialItemId: r.materialItemId,
+    itemUomId: r.itemUomId,
+    qty: formatDecimal(r.qty),
+    unitPrice: r.pricedQty.gt(0) ? formatDecimal(r.amount.div(r.pricedQty)) : null,
+  }));
 }

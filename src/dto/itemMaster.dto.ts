@@ -1,4 +1,5 @@
-import type { ItemType } from "../models/item/item.model";
+import type { ItemType } from "../models/item.model";
+import type { ItemUomRoundingMode } from "../models/itemUom.model";
 
 export type { ItemType };
 
@@ -21,6 +22,10 @@ export type ItemUomInDto = {
   isBase: boolean;
   /** Related factor vs base, or null if not related. Base is always stored as "1". */
   conversionFactor: string | null;
+  /** RAB decimals in this unit; null = the UOM's decimals. */
+  decimals?: number | null;
+  /** Defaults to "up". */
+  rounding?: ItemUomRoundingMode;
   sortOrder?: number;
 };
 
@@ -88,11 +93,15 @@ export type ItemUomOutDto = {
   uomId: string;
   isBase: boolean;
   conversionFactor: string | null;
+  decimals: number | null;
+  rounding: ItemUomRoundingMode;
   sortOrder: number;
   symbol: string;
   name: string;
   /** Live catalog formulas for UI mode picker only. */
   formulas: string[];
+  /** The UOM's own decimals: the RAB fallback when `decimals` is null. */
+  uomDecimals: number;
 };
 
 export type ItemTarifOutDto = {

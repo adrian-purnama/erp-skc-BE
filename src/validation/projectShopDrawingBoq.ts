@@ -14,7 +14,7 @@ import {
   SHOP_DRAWING_BOQ_MOUNTING_TYPES,
   type ShopDrawingBoqFinishPlacement,
   type ShopDrawingBoqMountingType,
-} from "../models/projectShopDrawingBoq/projectShopDrawingBoq.model";
+} from "../models/projectShopDrawingBoq.model";
 import {
   formatDecimal,
   parsePositiveDecimal,

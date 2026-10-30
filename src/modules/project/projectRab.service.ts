@@ -12,6 +12,7 @@ import type {
   ProjectRabLineOutDto,
   ProjectRabOutDto,
   ProjectRabUserRefOutDto,
+  SaveProjectRabLabourProcessInDto,
 } from "../../dto/projectRab.dto";
 import type { ProjectRabChangeDetailOutDto } from "../../dto/projectRabChange.dto";
 import type {
@@ -22,26 +23,30 @@ import {
   ProjectRabRepo,
   type ProjectRabInterface,
   type ProjectRabLine,
-} from "../../models/projectRab/projectRab.model";
+} from "../../models/projectRab.model";
+import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
+import type { PurchaseCharge } from "../../models/purchaseCharge.model";
+import type { RealizationChargeInDto } from "../../dto/purchasing.dto";
+import { checkRealizationCharges } from "../purchasing/purchaseRealization.planner";
 import {
   ProjectShopDrawingBoqRepo,
   type ProjectShopDrawingBoqLine,
-} from "../../models/projectShopDrawingBoq/projectShopDrawingBoq.model";
+} from "../../models/projectShopDrawingBoq.model";
 import { todayYmdUtc } from "../../validation/itemMaster";
 import { itemMasterService } from "../itemMaster/itemMaster.service";
 import { loadItemMeta } from "../itemMaster/itemMeta";
 import { itemTarifService } from "../itemMaster/itemTarif.service";
 import { itemUomService } from "../itemMaster/itemUom.service";
 import { liveCurrentFiles } from "./projectCurrentFiles";
-import { filterCountedBoqs } from "./projectRabChange.planner";
+import { filterCountedBoqs, sumLineTotals } from "./projectRabChange.planner";
 import {
   projectRabChangeService,
   type LeanRabChange,
 } from "./projectRabChange.service";
-import { assertProjectExists } from "./projectShared";
+import { assertProjectExists, shopDrawingItemLabel } from "./projectShared";
 import { projectShopDrawingBoqService } from "./projectShopDrawingBoq.service";
 import { loadRabUomPlan } from "./projectRabUomPlan";
-import { userEmailsById } from "../../utils/shared";
+import { userEmailsById, userRefsById } from "../../utils/shared";
 import {
   aggregateBoqLinesToRab,
   assertAllLinesPriced,
@@ -50,7 +55,9 @@ import {
   isLabourLine,
   mergeRabPricing,
   rabQtyWaste,
+  rabTotalsWithCharges,
   sumGrandTotal,
+  unitPriceFromLineTotal,
 } from "./projectRab.planner";
 
 type LeanBoq = {
@@ -71,6 +78,11 @@ type LeanBoq = {
 };
 
 type LeanRab = ProjectRabInterface & { _id: Types.ObjectId };
+
+/** The open change's charges while one is open, else the RAB's own. */
+function chargesFor(doc: LeanRab, change: LeanRabChange | null): PurchaseCharge[] {
+  return (change ? change.charges : undefined) ?? doc.charges ?? [];
+}
 
 function linePriceEditable(
   status: ProjectRabInterface["status"],
@@ -176,6 +188,22 @@ function boqToElaborationDoc(
   };
 }
 
+/** `{code}-{name}` per shop drawing item id (deleted items included). */
+export async function shopDrawingItemNames(
+  ids: string[],
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  const unique = [...new Set(ids)].filter((id) => Types.ObjectId.isValid(id));
+  if (unique.length === 0) return names;
+  const items = await ProjectShopDrawingItemRepo.model
+    .find({ _id: { $in: unique.map((id) => new Types.ObjectId(id)) } })
+    .select({ code: 1, name: 1 })
+    .lean()
+    .exec();
+  for (const it of items) names.set(String(it._id), shopDrawingItemLabel(it));
+  return names;
+}
+
 export class ProjectRabService {
   async get(
     projectId: string,
@@ -248,6 +276,7 @@ export class ProjectRabService {
         key: line.key,
         unitPrice: line.unitPrice,
         tarifId: line.tarifId ? String(line.tarifId) : undefined,
+        priceByTotal: line.priceByTotal,
       }));
     const merged = mergeRabPricing(scaffold, previous);
     const boqLines: ProjectRabLine[] = merged.map((row) => {
@@ -263,6 +292,7 @@ export class ProjectRabService {
       if (row.tarifId && Types.ObjectId.isValid(row.tarifId)) {
         line.tarifId = new Types.ObjectId(row.tarifId);
       }
+      if (row.priceByTotal) line.priceByTotal = true;
       return line;
     });
     const lines: ProjectRabLine[] = [...boqLines, ...labourLines];
@@ -389,15 +419,16 @@ export class ProjectRabService {
       throw new Error("No current tarif for this item");
     }
 
-    const lines = working.map((l, i) =>
-      i === idx
-        ? {
-            ...l,
-            unitPrice: tarif.amount,
-            tarifId: new Types.ObjectId(tarif.id),
-          }
-        : l,
-    );
+    const lines = working.map((l, i) => {
+      if (i !== idx) return l;
+      const next: ProjectRabLine = {
+        ...l,
+        unitPrice: tarif.amount,
+        tarifId: new Types.ObjectId(tarif.id),
+      };
+      delete next.priceByTotal;
+      return next;
+    });
 
     return this.persistLines(projectId, doc, change, lines);
   }
@@ -440,8 +471,20 @@ export class ProjectRabService {
       throw new Error("UOM must belong to the selected labour item");
     }
 
-    const key = `${input.itemId}:${input.itemUomId}`;
     const projectOid = new Types.ObjectId(projectId);
+    const drawingItem = await ProjectShopDrawingItemRepo.model
+      .findOne({
+        _id: new Types.ObjectId(input.shopDrawingItemId),
+        projectId: projectOid,
+        isDeleted: { $ne: true },
+      })
+      .select({ _id: 1 })
+      .lean()
+      .exec();
+    if (!drawingItem) {
+      throw new Error("Shop drawing item not found in this project");
+    }
+    const key = `${input.shopDrawingItemId}:${input.itemId}:${input.itemUomId}`;
     let doc = (await ProjectRabRepo.model
       .findOne({ projectId: projectOid })
       .lean()
@@ -472,11 +515,22 @@ export class ProjectRabService {
     }
     const working = change ? change.rabLines : doc.lines;
     if (working.some((l) => l.key === key)) {
-      throw new Error("This labour item and UOM are already on the RAB");
+      throw new Error(
+        "This labour item and UOM are already on this shop drawing",
+      );
     }
 
     const now = new Date();
     const userOid = new Types.ObjectId(userId);
+    const drawingId = input.shopDrawingItemId;
+    const siblings = working.filter(
+      (l) =>
+        isLabourLine(l) &&
+        l.shopDrawingItemId !== undefined &&
+        String(l.shopDrawingItemId) === drawingId,
+    );
+    const nextSeq =
+      siblings.reduce((max, l) => Math.max(max, l.sequence ?? 0), 0) + 1;
     const labourLine: ProjectRabLine = {
       key,
       materialItemId: new Types.ObjectId(input.itemId),
@@ -485,6 +539,8 @@ export class ProjectRabService {
       origin: "labour",
       addedAt: now,
       addedBy: userOid,
+      shopDrawingItemId: new Types.ObjectId(input.shopDrawingItemId),
+      sequence: nextSeq,
     };
     if (input.unitPrice !== undefined && input.unitPrice !== null) {
       labourLine.unitPrice = input.unitPrice;
@@ -494,6 +550,51 @@ export class ProjectRabService {
       ...working,
       labourLine,
     ]);
+  }
+
+  /**
+   * Set process order + weight % for one drawing's labour lines.
+   * Array order becomes sequence 1..n. Does not require weights to sum to 100
+   * (that is checked when releasing an inhouse SPK).
+   */
+  async saveLabourProcess(
+    projectId: string,
+    input: SaveProjectRabLabourProcessInDto,
+  ): Promise<ProjectRabOutDto> {
+    await assertProjectExists(projectId);
+    const { doc, change, lines: working } = await this.requireEditableLines(
+      projectId,
+    );
+    const drawingId = input.shopDrawingItemId;
+    const drawingLabour = working.filter(
+      (l) =>
+        isLabourLine(l) &&
+        l.shopDrawingItemId !== undefined &&
+        String(l.shopDrawingItemId) === drawingId,
+    );
+    if (drawingLabour.length === 0) {
+      throw new Error("No labour lines on this shop drawing");
+    }
+    if (input.lines.length !== drawingLabour.length) {
+      throw new Error(
+        "Process list must include every labour line on this shop drawing",
+      );
+    }
+    const byKey = new Map(drawingLabour.map((l) => [l.key, l]));
+    for (const row of input.lines) {
+      if (!byKey.has(row.key)) {
+        throw new Error(`Labour line not on this shop drawing: ${row.key}`);
+      }
+    }
+    const seqByKey = new Map(
+      input.lines.map((row, i) => [row.key, { sequence: i + 1, weightPercent: row.weightPercent }]),
+    );
+    const lines = working.map((l) => {
+      const meta = seqByKey.get(l.key);
+      if (!meta) return l;
+      return { ...l, sequence: meta.sequence, weightPercent: meta.weightPercent };
+    });
+    return this.persistLines(projectId, doc, change, lines);
   }
 
   async removeLabourLine(
@@ -509,7 +610,51 @@ export class ProjectRabService {
     if (!isLabourLine(line)) {
       throw new Error("Only labour lines can be removed this way");
     }
-    const lines = working.filter((l) => l.key !== lineKey);
+    const drawingId = line.shopDrawingItemId
+      ? String(line.shopDrawingItemId)
+      : null;
+    let lines = working.filter((l) => l.key !== lineKey);
+    if (drawingId) {
+      const remaining = lines
+        .filter(
+          (l) =>
+            isLabourLine(l) &&
+            l.shopDrawingItemId !== undefined &&
+            String(l.shopDrawingItemId) === drawingId,
+        )
+        .sort((a, b) => (a.sequence ?? 9999) - (b.sequence ?? 9999));
+      const seqByKey = new Map(
+        remaining.map((l, i) => [l.key, i + 1]),
+      );
+      lines = lines.map((l) => {
+        const seq = seqByKey.get(l.key);
+        if (seq == null) return l;
+        return { ...l, sequence: seq };
+      });
+    }
+    return this.persistLines(projectId, doc, change, lines);
+  }
+
+  /** Remember whether a line's price is entered as a unit price or total. */
+  async setLinePriceMode(
+    projectId: string,
+    lineKey: string,
+    priceByTotal: boolean,
+  ): Promise<ProjectRabOutDto> {
+    await assertProjectExists(projectId);
+    const { doc, change, lines: working } = await this.requireEditableLines(
+      projectId,
+    );
+    if (!working.some((l) => l.key === lineKey)) {
+      throw new Error("RAB line not found");
+    }
+    const lines = working.map((l) => {
+      if (l.key !== lineKey) return l;
+      const next: ProjectRabLine = { ...l };
+      if (priceByTotal) next.priceByTotal = true;
+      else delete next.priceByTotal;
+      return next;
+    });
     return this.persistLines(projectId, doc, change, lines);
   }
 
@@ -517,6 +662,7 @@ export class ProjectRabService {
     projectId: string,
     lineKey: string,
     unitPrice: string | null,
+    lineTotal?: string,
   ): Promise<ProjectRabOutDto> {
     await assertProjectExists(projectId);
     const { doc, change, lines: working } = await this.requireEditableLines(
@@ -524,6 +670,10 @@ export class ProjectRabService {
     );
     const idx = working.findIndex((l) => l.key === lineKey);
     if (idx < 0) throw new Error("RAB line not found");
+    const price =
+      lineTotal !== undefined
+        ? unitPriceFromLineTotal(working[idx]!.totalQty, lineTotal)
+        : unitPrice;
 
     const lines = working.map((l, i) => {
       if (i !== idx) return l;
@@ -538,14 +688,48 @@ export class ProjectRabService {
         ...(l.addedAt ? { addedAt: l.addedAt } : {}),
         ...(l.addedBy ? { addedBy: l.addedBy } : {}),
         ...(l.addReason ? { addReason: l.addReason } : {}),
+        ...(l.shopDrawingItemId
+          ? { shopDrawingItemId: l.shopDrawingItemId }
+          : {}),
+        ...(l.sequence !== undefined ? { sequence: l.sequence } : {}),
+        ...(l.weightPercent !== undefined
+          ? { weightPercent: l.weightPercent }
+          : {}),
       };
-      if (unitPrice !== null && unitPrice !== "") {
-        next.unitPrice = unitPrice;
+      if (price !== null && price !== "") {
+        next.unitPrice = price;
+        if (lineTotal !== undefined) next.priceByTotal = true;
       }
       return next;
     });
 
     return this.persistLines(projectId, doc, change, lines);
+  }
+
+  /** Replace the RAB's extra charges (in the open change once locked). */
+  async saveCharges(
+    projectId: string,
+    input: RealizationChargeInDto[],
+  ): Promise<ProjectRabOutDto> {
+    await assertProjectExists(projectId);
+    const { doc, change, lines } = await this.requireEditableLines(projectId);
+    const { charges } = checkRealizationCharges(
+      sumLineTotals(lines) ?? "0",
+      input,
+    );
+    if (change) {
+      const updated = await projectRabChangeService.saveChargesInDraft(
+        projectId,
+        charges,
+      );
+      return this.toOut({ ...doc, lines: updated.rabLines }, updated);
+    }
+    const updated = (await ProjectRabRepo.findOneAndUpdate(
+      { _id: doc._id, status: "draft" },
+      { $set: { charges } },
+    )) as LeanRab | null;
+    if (!updated) throw new Error("RAB was locked meanwhile; open a change");
+    return this.toOut(updated, null);
   }
 
   private async requireEditableLines(projectId: string): Promise<{
@@ -612,11 +796,25 @@ export class ProjectRabService {
         ].filter((id): id is string => Boolean(id)),
       ),
     ];
-    const names = await userEmailsById(userIds);
+    const [names, refs] = await Promise.all([
+      userEmailsById(userIds),
+      userRefsById(userIds),
+    ]);
+    const drawingNames = await shopDrawingItemNames(
+      doc.lines.flatMap((l) =>
+        l.shopDrawingItemId ? [String(l.shopDrawingItemId)] : [],
+      ),
+    );
 
     const userRef = (id: string | null): ProjectRabUserRefOutDto | null => {
       if (!id) return null;
-      return { id, name: names.get(id) ?? id };
+      return (
+        refs.get(id) ?? {
+          id,
+          name: names.get(id) ?? id,
+          profilePicture: null,
+        }
+      );
     };
 
     const [{ items: itemMeta, uoms: uomMeta }, withTarif] = await Promise.all([
@@ -638,6 +836,9 @@ export class ProjectRabService {
       const uom = uomMeta.get(itemUomId) ?? { symbol: "—", name: "—" };
       const unitPrice = line.unitPrice ?? null;
       const origin = line.origin ?? null;
+      const drawingId = line.shopDrawingItemId
+        ? String(line.shopDrawingItemId)
+        : null;
       return {
         key: line.key,
         materialItemId,
@@ -650,21 +851,49 @@ export class ProjectRabService {
         exactQty: line.exactQty ?? null,
         wasteQty: rabQtyWaste(line.exactQty, line.totalQty),
         rounding: line.rounding
-          ? { decimals: line.rounding.decimals, mode: line.rounding.mode }
+          ? {
+              step: line.rounding.step,
+              source: line.rounding.source,
+              mode: line.rounding.mode,
+            }
           : null,
         unitPrice,
         tarifId: line.tarifId ? String(line.tarifId) : null,
         lineTotal: computeLineTotal(line.totalQty, unitPrice),
+        priceByTotal: line.priceByTotal === true,
         hasTarif: item.hasTarif === true,
         origin,
         addedAt: line.addedAt ? line.addedAt.toISOString() : null,
         addedBy: userRef(line.addedBy ? String(line.addedBy) : null),
         addReason: line.addReason?.trim() ? line.addReason.trim() : null,
         priceEditable: linePriceEditable(status, changeDraftOpen),
+        shopDrawingItemId: drawingId,
+        shopDrawingItemName: drawingId
+          ? (drawingNames.get(drawingId) ?? "—")
+          : null,
+        sequence:
+          typeof line.sequence === "number" && line.sequence >= 1
+            ? line.sequence
+            : null,
+        weightPercent:
+          typeof line.weightPercent === "number" && line.weightPercent >= 1
+            ? line.weightPercent
+            : null,
       };
     });
 
     lineOuts.sort((a, b) => {
+      // Labour on the same drawing: process order first.
+      if (
+        a.origin === "labour" &&
+        b.origin === "labour" &&
+        a.shopDrawingItemId &&
+        a.shopDrawingItemId === b.shopDrawingItemId
+      ) {
+        const sa = a.sequence ?? 9999;
+        const sb = b.sequence ?? 9999;
+        if (sa !== sb) return sa - sb;
+      }
       const byCode = a.materialCode.localeCompare(b.materialCode);
       if (byCode !== 0) return byCode;
       const byName = a.materialName.localeCompare(b.materialName);
@@ -745,7 +974,10 @@ export class ProjectRabService {
       changeDiff,
       materialChanges,
       groups: [...groupsMap.values()],
-      grandTotal: sumGrandTotal(lineOuts.map((l) => l.lineTotal)),
+      ...rabTotalsWithCharges(
+        sumGrandTotal(lineOuts.map((l) => l.lineTotal)),
+        chargesFor(doc, change),
+      ),
     };
   }
 }

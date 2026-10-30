@@ -58,28 +58,28 @@ router.post(
 router.post(
   "/:id/issue",
   requireUser,
-  requirePermission({ key: "quotation.manage" }),
+  requirePermission({ key: "quotation.issue" }),
   quotationController.issue,
 );
 
 router.post(
   "/:id/reissue",
   requireUser,
-  requirePermission({ key: "quotation.manage" }),
+  requirePermission({ key: "quotation.issue" }),
   quotationController.reissue,
 );
 
 router.post(
   "/:id/won",
   requireUser,
-  requirePermission({ key: "quotation.manage" }),
+  requirePermission({ key: "quotation.won" }),
   quotationController.markWon,
 );
 
 router.delete(
   "/:id/won",
   requireUser,
-  requirePermission({ key: "quotation.manage" }),
+  requirePermission({ key: "quotation.won" }),
   quotationController.unmarkWon,
 );
 

@@ -1,9 +1,10 @@
 import { Types } from "mongoose";
 import type { PurchaseOrderStatusDto } from "../../dto/purchasing.dto";
 import {
-  PURCHASE_ORDER_LIVE_STATUSES,
+  PURCHASE_ORDER_HOLDING_QUERY,
   PurchaseOrderRepo,
-} from "../../models/purchaseOrder/purchaseOrder.model";
+  heldLineQty,
+} from "../../models/purchaseOrder.model";
 
 /** One PO line that holds qty against an SPP line. */
 export type LiveOrderLine = {
@@ -15,7 +16,10 @@ export type LiveOrderLine = {
   qty: string;
 };
 
-/** PO lines on live POs for the given SPPs, optionally leaving one PO out. */
+/**
+ * PO lines holding qty for the given SPPs (live POs, and the received part of
+ * partly received cancelled ones), optionally leaving one PO out.
+ */
 export async function liveOrderLines(
   requestIds: Array<string | Types.ObjectId>,
   exceptOrderId?: string,
@@ -24,7 +28,7 @@ export async function liveOrderLines(
   const ids = requestIds.map((id) => new Types.ObjectId(String(id)));
   const query: Record<string, unknown> = {
     "lines.requestId": { $in: ids },
-    status: { $in: PURCHASE_ORDER_LIVE_STATUSES },
+    ...PURCHASE_ORDER_HOLDING_QUERY,
   };
   if (exceptOrderId) query._id = { $ne: new Types.ObjectId(exceptOrderId) };
   const orders = await PurchaseOrderRepo.model
@@ -35,14 +39,14 @@ export async function liveOrderLines(
   const wanted = new Set(ids.map(String));
   return orders.flatMap((o) =>
     o.lines
-      .filter((l) => wanted.has(String(l.requestId)))
+      .filter((l) => wanted.has(String(l.requestId)) && Number(heldLineQty(o.status, l)) > 0)
       .map((l) => ({
         orderId: String(o._id),
         orderNumber: o.number,
         orderStatus: o.status,
         requestId: String(l.requestId),
         requestLineId: String(l.requestLineId),
-        qty: l.qty,
+        qty: heldLineQty(o.status, l),
       })),
   );
 }

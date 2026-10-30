@@ -1,8 +1,8 @@
 import { Types, type UpdateQuery } from "mongoose";
-import { deleteFileIfExists, openDownload } from "../../buckets/gridfs";
+import { deleteFileIfExists, openDownload } from "../../core/gridfs";
 import type { AuditedRepo } from "../../core/audit/auditedModel";
 import { withTx } from "../../core/audit/context";
-import type { ProjectDocumentKind } from "../../models/projectDocument/projectDocument.model";
+import type { ProjectDocumentKind } from "../../models/projectDocument.model";
 import { userEmailsById } from "../../utils/shared";
 import {
   discardIngestedFile,
@@ -65,9 +65,14 @@ export type VersionedFileConfig<T, TOut> = {
   };
 };
 
+type HashedVersion = Pick<
+  VersionedFileDoc,
+  "_id" | "version" | "contentHash" | "forceDifferent"
+>;
+
 export function sameAsVersionFor(
-  doc: VersionedFileDoc,
-  siblings: VersionedFileDoc[],
+  doc: HashedVersion,
+  siblings: HashedVersion[],
 ): number | null {
   if (doc.forceDifferent) return null;
   if (!doc.contentHash) return null;

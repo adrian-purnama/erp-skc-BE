@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it, mock } from "node:test";
 import type { Request, Response } from "express";
-import { RoleModel } from "../../modules/admin/roles/role.model";
+import { RoleModel } from "../../models/role.model";
 import { requirePermission } from "./requirePermission";
 import { invalidateAll } from "./resolve.service";
 

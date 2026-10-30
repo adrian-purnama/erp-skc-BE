@@ -1,5 +1,8 @@
 /** Pure helpers for RAB Excel export (no I/O). */
 
+import type { PurchaseCharge } from "../../models/purchaseCharge.model";
+import { priceStoredCharges } from "../purchasing/purchaseRealization.planner";
+
 export function sanitizeExcelText(raw: string): string {
   const s = String(raw ?? "");
   if (/^[=+\-@]/.test(s)) return `'${s}`;
@@ -166,6 +169,30 @@ export function lineAmount(line: ExportLineIn): number {
 
 export function sumLineAmounts(lines: ExportLineIn[]): number {
   return lines.reduce((s, l) => s + lineAmount(l), 0);
+}
+
+export type ExportChargeRow = {
+  /** Label with the rate for percent charges, e.g. "PPN (11%)". */
+  label: string;
+  /** Percent of the subtotal; null for fixed charges. */
+  rate: number | null;
+  /** Integer rupiah, priced on `subtotal`. */
+  amount: number;
+};
+
+/** RAB additional costs as export rows, priced on the line subtotal. */
+export function exportChargeRows(
+  subtotal: number,
+  charges: PurchaseCharge[],
+): ExportChargeRow[] {
+  return priceStoredCharges(String(subtotal), charges).charges.map((c) => {
+    const rate = c.kind === "percent" ? Number(c.rate ?? 0) : null;
+    return {
+      label: rate === null ? c.label : `${c.label} (${rate}%)`,
+      rate,
+      amount: Number(c.amount),
+    };
+  });
 }
 
 /** Group lines into folder sections (depth1) / subsections (depth2). */

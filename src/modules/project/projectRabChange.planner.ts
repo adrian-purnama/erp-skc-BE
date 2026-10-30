@@ -1,6 +1,7 @@
+import Decimal from "decimal.js";
 import { Types } from "mongoose";
-import type { ProjectRabLine } from "../../models/projectRab/projectRab.model";
-import type { ProjectRabChangeBoqSnapshot } from "../../models/projectRabChange/projectRabChange.model";
+import type { ProjectRabLine } from "../../models/projectRab.model";
+import type { ProjectRabChangeBoqSnapshot } from "../../models/projectRabChange.model";
 import {
   aggregateBoqLinesToRab,
   collectSourceLines,
@@ -84,6 +85,7 @@ export function syncRabLinesFromBoqs(
       key: l.key,
       unitPrice: l.unitPrice,
       tarifId: l.tarifId ? String(l.tarifId) : undefined,
+      priceByTotal: l.priceByTotal,
       origin: l.origin,
       addedAt: l.addedAt,
       addedBy: l.addedBy,
@@ -96,6 +98,7 @@ export function syncRabLinesFromBoqs(
       key: p.key,
       unitPrice: p.unitPrice,
       tarifId: p.tarifId,
+      priceByTotal: p.priceByTotal,
     })),
   );
   const materials: ProjectRabLine[] = merged.map((row) => {
@@ -116,6 +119,7 @@ export function syncRabLinesFromBoqs(
     if (row.tarifId && Types.ObjectId.isValid(row.tarifId)) {
       line.tarifId = new Types.ObjectId(row.tarifId);
     }
+    if (row.priceByTotal) line.priceByTotal = true;
     if (prev?.addedAt) line.addedAt = prev.addedAt;
     if (prev?.addedBy) line.addedBy = prev.addedBy;
     if (prev?.addReason) line.addReason = prev.addReason;
@@ -347,4 +351,35 @@ export function sumLineTotals(lines: ProjectRabLine[]): string | null {
   return sumGrandTotal(
     lines.map((line) => computeLineTotal(line.totalQty, line.unitPrice)),
   );
+}
+
+/** One shop drawing item that already has live SPKs, and what the change does to it. */
+export type ProductionHeldItem = {
+  label: string;
+  /** Qty its non-cancelled SPKs hold (completed ones: what they finished). */
+  heldQty: string;
+  /** Make qty after the change; null when the change removes the item or its BOQ. */
+  nextMakeQty: string | null;
+};
+
+/**
+ * A change after release must not pull work from under live SPKs: no removing
+ * such an item, and no make qty below what its SPKs already hold.
+ */
+export function productionConflicts(items: ProductionHeldItem[]): string[] {
+  const out: string[] = [];
+  for (const item of items) {
+    const held = new Decimal(item.heldQty);
+    if (held.lte(0)) continue;
+    if (item.nextMakeQty === null) {
+      out.push(`${item.label} has SPKs; cancel them before removing the item`);
+      continue;
+    }
+    if (new Decimal(item.nextMakeQty).lt(held)) {
+      out.push(
+        `${item.label}: make qty ${item.nextMakeQty} is below the ${held.toString()} its SPKs already hold`,
+      );
+    }
+  }
+  return out;
 }

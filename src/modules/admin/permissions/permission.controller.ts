@@ -29,4 +29,13 @@ export class PermissionController {
       return fail(res, error, "Failed to get scan report");
     }
   };
+
+  sync = async (req: Request, res: Response) => {
+    try {
+      const data = await permissionService.sync(req.app);
+      return ok(res, "Permissions synced", data);
+    } catch (error) {
+      return fail(res, error, "Failed to sync permissions");
+    }
+  };
 }

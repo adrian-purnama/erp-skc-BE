@@ -9,7 +9,7 @@ import {
   UOM_DEFAULT_DECIMALS,
   UomRepo,
   type UomInterface,
-} from "../../models/uom/uom.model";
+} from "../../models/uom.model";
 import {
   formatDecimal,
   parsePositiveDecimal,
@@ -33,7 +33,6 @@ function toOut(doc: UomLean): UomOutDto {
     name: doc.name,
     formulas: defaultFormulasOr(doc.formulas),
     decimals: doc.decimals ?? UOM_DEFAULT_DECIMALS,
-    rounding: doc.rounding ?? "up",
     isActive: doc.isActive !== false,
   };
 }
@@ -108,7 +107,6 @@ export class UomService {
       name: input.name,
       formulas: input.formulas,
       decimals: input.decimals,
-      rounding: input.rounding,
       isActive: true,
     });
     const detail = await this.getById(String(created._id));
@@ -134,7 +132,6 @@ export class UomService {
           ...(input.name !== undefined ? { name: input.name } : {}),
           ...(input.formulas !== undefined ? { formulas: input.formulas } : {}),
           ...(input.decimals !== undefined ? { decimals: input.decimals } : {}),
-          ...(input.rounding !== undefined ? { rounding: input.rounding } : {}),
           ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
         },
       },

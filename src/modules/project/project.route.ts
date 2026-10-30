@@ -224,6 +224,13 @@ router.patch(
   projectController.patchRabLine,
 );
 
+router.put(
+  "/:id/rab/charges",
+  requireUser,
+  requirePermission({ key: "project.manage" }),
+  projectController.saveRabCharges,
+);
+
 router.get(
   "/:id/rab/labour-items",
   requireUser,
@@ -245,11 +252,25 @@ router.delete(
   projectController.removeRabLabourLine,
 );
 
+router.put(
+  "/:id/rab/labour-process",
+  requireUser,
+  requirePermission({ key: "project.manage" }),
+  projectController.saveRabLabourProcess,
+);
+
 router.get(
   "/:id/rab/changes",
   requireUser,
   requirePermission({ key: "project.view" }),
   projectController.listRabChanges,
+);
+
+router.get(
+  "/:id/rab/lock-origin",
+  requireUser,
+  requirePermission({ key: "project.view" }),
+  projectController.getRabLockOrigin,
 );
 
 router.get(

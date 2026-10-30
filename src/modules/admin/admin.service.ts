@@ -5,7 +5,7 @@ import type {
   AdminUserOutDto,
   UpdateAdminUserDto,
 } from "../../dto/adminUser.dto";
-import { UserModel } from "../../models/user/user.model";
+import { UserModel } from "../../models/user.model";
 import { escapeRegex } from "../../utils/shared";
 function toAdminUser(doc: {
   id: string;

@@ -7,10 +7,6 @@
     "start": "node dist/index.js",
     "build": "tsc -p tsconfig.build.json",
     "type-check": "tsc --noEmit",
-    "lint": "eslint .",
-    "lint:fix": "eslint --fix .",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
     "test": "tsx --env-file=.env --test src/**/*.test.ts"
   },
   "keywords": [],

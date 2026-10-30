@@ -3,7 +3,7 @@ import type {
   ProjectGender,
   ProjectLoseReason,
   ProjectStatus,
-} from "../models/project/project.model";
+} from "../models/project.model";
 
 export type ProjectCustomerContactDto = {
   name: string;
@@ -45,6 +45,33 @@ export type ProjectListItemOutDto = {
   isActive: boolean;
   /** ISO time the project was released to production, or null. */
   productionReleasedAt: string | null;
+};
+
+/** Money/progress roll-up shown on the project list. Money is IDR digits. */
+export type ProjectSummaryOutDto = {
+  /** Won quotation grand total, else latest issued one; null if none. */
+  contractValue: string | null;
+  contractStatus: "won" | "issued" | null;
+  /** Contract before tax minus RAB total; null when either is missing. */
+  plannedMargin: string | null;
+  /** RAB grand total (priced lines only); null when nothing is priced. */
+  rabTotal: string | null;
+  rabStatus: "draft" | "locked" | null;
+  /** Posted purchase realizations on the project's POs. */
+  actualCost: string;
+  shopDrawingCount: number;
+  /** Non-cancelled SPK qty vs non-voided reported qty. */
+  productionOrderedQty: string;
+  productionDoneQty: string;
+  productionPercent: number;
+  /** Next upcoming calendar deadline, else the latest past one, else SPK planned finish. */
+  deadline: string | null;
+  deadlineTitle: string | null;
+};
+
+export type ProjectListRowOutDto = ProjectListItemOutDto & {
+  createdAt: string | null;
+  summary: ProjectSummaryOutDto;
 };
 
 export type ProjectDetailOutDto = ProjectListItemOutDto & {

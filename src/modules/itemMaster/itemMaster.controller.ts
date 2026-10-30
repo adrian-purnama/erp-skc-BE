@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 import { fail, handle, ok } from "../../dto/httpResponse";
-import type { ApiResponseDto } from "../../dto/apiResponse.dto";
+import type { ApiResponseDto } from "../../dto/httpResponse";
 import { parseRouteId } from "../../validation/parseParam";
 import { queryBool, queryString } from "../../validation/query";
 import {

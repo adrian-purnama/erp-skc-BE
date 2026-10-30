@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import { ApiResponseDto } from "../../dto/apiResponse.dto";
+import { ApiResponseDto } from "../../dto/httpResponse";
 import { appConfigService } from "./AppConfig.service";
 
 export class AppConfigController {

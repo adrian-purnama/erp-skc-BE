@@ -4,9 +4,9 @@ import {
   findFile,
   readFileBuffer,
   uploadFile,
-} from "../../buckets/gridfs";
+} from "../../core/gridfs";
 import { withTx } from "../../core/audit/context";
-import { env } from "../../environment/env";
+import { env } from "../../core/env";
 import type { ProjectRabUserRefOutDto } from "../../dto/projectRab.dto";
 import type {
   PatchProjectQuotationLineInDto,
@@ -17,24 +17,25 @@ import type {
   PublicQuotationOutDto,
   UpdateProjectQuotationInDto,
 } from "../../dto/projectQuotation.dto";
-import { CustomerRepo } from "../../models/customer/customer.model";
-import { ProjectRepo } from "../../models/project/project.model";
+import { CustomerRepo } from "../../models/customer.model";
+import { ProjectRepo } from "../../models/project.model";
 import {
   ProjectQuotationRepo,
   type ProjectQuotationContactSnapshot,
   type ProjectQuotationInterface,
   type ProjectQuotationLine,
-} from "../../models/projectQuotation/projectQuotation.model";
+} from "../../models/projectQuotation.model";
 import {
   ProjectRabRepo,
   type ProjectRabInterface,
-} from "../../models/projectRab/projectRab.model";
-import { ProjectShopDrawingBoqRepo } from "../../models/projectShopDrawingBoq/projectShopDrawingBoq.model";
-import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument/projectShopDrawingDocument.model";
-import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem/projectShopDrawingItem.model";
-import { TermOfPaymentRepo } from "../../models/termOfPayment/termOfPayment.model";
-import { UserModel } from "../../models/user/user.model";
-import { logger } from "../../logger/logger";
+} from "../../models/projectRab.model";
+import { ProjectShopDrawingBoqRepo } from "../../models/projectShopDrawingBoq.model";
+import { loadShopDrawingSpecs } from "../project/projectShopDrawingSpec";
+import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument.model";
+import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
+import { TermOfPaymentRepo } from "../../models/termOfPayment.model";
+import { UserModel } from "../../models/user.model";
+import { logger } from "../../core/logger";
 import {
   addJakartaDays,
   jakartaYmdString,
@@ -42,9 +43,9 @@ import {
 } from "../../utils/shared";
 import { appConfigService } from "../appConfig/AppConfig.service";
 import { projectRabChangeService } from "../project/projectRabChange.service";
-import type { BoqLike } from "../project/projectRab.planner";
+import { rabChargeFactor, type BoqLike } from "../project/projectRab.planner";
 import { liveCurrentFiles } from "../project/projectCurrentFiles";
-import { filterCountedBoqs } from "../project/projectRabChange.planner";
+import { filterCountedBoqs, sumLineTotals } from "../project/projectRabChange.planner";
 import { loadRabUomPlan } from "../project/projectRabUomPlan";
 import type { QuotationLogo } from "./quotation.logo";
 import {
@@ -269,10 +270,17 @@ export class QuotationService {
         exactQty: l.exactQty ?? null,
         unitPrice: l.unitPrice ?? null,
         origin: l.origin ?? null,
+        shopDrawingItemId: l.shopDrawingItemId
+          ? String(l.shopDrawingItemId)
+          : null,
       })),
       markupPercent,
       previous: base?.lines.map(toPlannerLine),
       plan: await loadRabUomPlan(seedBoqs),
+      chargeFactor: rabChargeFactor(
+        sumLineTotals(gate.rab.lines),
+        gate.rab.charges ?? [],
+      ),
     });
     if (lines.length === 0) {
       throw new Error("Locked RAB has no shop drawing items to quote");
@@ -385,10 +393,17 @@ export class QuotationService {
         exactQty: l.exactQty ?? null,
         unitPrice: l.unitPrice ?? null,
         origin: l.origin ?? null,
+        shopDrawingItemId: l.shopDrawingItemId
+          ? String(l.shopDrawingItemId)
+          : null,
       })),
       markupPercent: doc.markupPercent,
       previous: doc.lines.map(toPlannerLine),
       plan: await loadRabUomPlan(seedBoqs),
+      chargeFactor: rabChargeFactor(
+        sumLineTotals(gate.rab.lines),
+        gate.rab.charges ?? [],
+      ),
     });
     return this.save(doc, {
       rabRevision: gate.revision,
@@ -992,7 +1007,7 @@ export class QuotationService {
 
   /**
    * Issued: the snapshot on each line. Draft: each shop drawing item's current
-   * category, kode, keterangan and ukuran.
+   * category, kode and ukuran, with keterangan built from its current BOQ.
    */
   private async lineItemMeta(doc: LeanQuotation): Promise<LineItemMeta[]> {
     if (doc.status !== "draft") {
@@ -1007,18 +1022,21 @@ export class QuotationService {
       .map((l) => l.shopDrawingItemId)
       .filter((id): id is Types.ObjectId => Boolean(id));
     if (itemIds.length === 0) return doc.lines.map(() => NO_ITEM_META);
-    const items = await ProjectShopDrawingItemRepo.model
-      .find({ _id: { $in: itemIds } })
-      .select({ category: 1, code: 1, descriptions: 1, dimension: 1 })
-      .lean()
-      .exec();
+    const [items, specs] = await Promise.all([
+      ProjectShopDrawingItemRepo.model
+        .find({ _id: { $in: itemIds } })
+        .select({ category: 1, code: 1, dimension: 1 })
+        .lean()
+        .exec(),
+      loadShopDrawingSpecs(itemIds),
+    ]);
     const byId = new Map(
       items.map((i): [string, LineItemMeta] => [
         String(i._id),
         {
           category: i.category ?? null,
           code: i.code ?? "",
-          descriptions: i.descriptions ?? [],
+          descriptions: specs.get(String(i._id)) ?? [],
           dimension: i.dimension ?? "",
         },
       ]),

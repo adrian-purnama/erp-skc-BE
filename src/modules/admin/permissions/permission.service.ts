@@ -1,10 +1,20 @@
+import type { Application } from "express";
 import { get } from "../../../core/permissions/registry";
 import {
   PermissionModel,
   type PermissionStatus,
-} from "../../../core/permissions/permission.model";
-import { getLastScan } from "../../../core/permissions/scan";
-import { planScanViolations } from "../../../core/permissions/sync";
+} from "../../../models/permission.model";
+import {
+  getLastScan,
+  scanRoutes,
+  type ScanViolation,
+} from "../../../core/permissions/scan";
+import {
+  planScanViolations,
+  recomputeAllRoles,
+  syncPermissions,
+  validateScan,
+} from "../../../core/permissions/sync";
 
 export type PermissionOut = {
   key: string;
@@ -14,6 +24,24 @@ export type PermissionOut = {
   manual: boolean;
   routes: Array<{ method: string; path: string }>;
   implies: string[];
+};
+
+export type PermissionSyncOut = {
+  summary: {
+    active: number;
+    unused: number;
+    deprecated: number;
+    newCount: number;
+    pendingDeprecation: number;
+  };
+  counts: {
+    active: number;
+    unused: number;
+    deprecated: number;
+    unprotected: number;
+    authOnly: number;
+  };
+  violations: ScanViolation[];
 };
 
 export class PermissionService {
@@ -76,6 +104,31 @@ export class PermissionService {
           scan?.routes.filter((r) => r.authType === "none").length ?? 0,
         authOnly: scan?.authOnly.length ?? 0,
       },
+    };
+  }
+
+  async sync(app: Application): Promise<PermissionSyncOut> {
+    const scan = scanRoutes(app);
+    const violations = validateScan(scan, false);
+    const plan = await syncPermissions(scan);
+    await recomputeAllRoles();
+
+    const [active, unused, deprecated] = await Promise.all([
+      PermissionModel.countDocuments({ status: "active" }).exec(),
+      PermissionModel.countDocuments({ status: "unused" }).exec(),
+      PermissionModel.countDocuments({ status: "deprecated" }).exec(),
+    ]);
+
+    return {
+      summary: plan.summary,
+      counts: {
+        active,
+        unused,
+        deprecated,
+        unprotected: scan.routes.filter((r) => r.authType === "none").length,
+        authOnly: scan.authOnly.length,
+      },
+      violations,
     };
   }
 }

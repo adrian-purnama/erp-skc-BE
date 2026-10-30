@@ -1,7 +1,7 @@
 import {
   PROJECT_LOOSE_FILE_KINDS,
   type ProjectLooseFileKind,
-} from "../models/projectLooseFile/projectLooseFile.model";
+} from "../models/projectLooseFile.model";
 import { assertUploadFile, parseFileKind } from "./uploadFile";
 
 export const PROJECT_LOOSE_FILE_MAX_BYTES = 20 * 1024 * 1024;

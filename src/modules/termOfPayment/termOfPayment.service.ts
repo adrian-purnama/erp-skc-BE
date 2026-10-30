@@ -7,7 +7,7 @@ import type {
 import {
   TermOfPaymentRepo,
   type TermOfPaymentInterface,
-} from "../../models/termOfPayment/termOfPayment.model";
+} from "../../models/termOfPayment.model";
 
 type TermOfPaymentLean = TermOfPaymentInterface & { _id: Types.ObjectId };
 
