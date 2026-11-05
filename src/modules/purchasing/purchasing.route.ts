@@ -7,6 +7,7 @@ import { PurchaseRabController } from "./purchaseRab.controller";
 import { PurchaseRealizationController } from "./purchaseRealization.controller";
 import { PurchasingController } from "./purchasing.controller";
 import { PurchasePaymentController } from "./purchasePayment.controller";
+import { VendorInvoiceController } from "./vendorInvoice.controller";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -19,6 +20,7 @@ const purchaseOrderController = new PurchaseOrderController();
 const realizationController = new PurchaseRealizationController();
 const rabController = new PurchaseRabController();
 const paymentController = new PurchasePaymentController();
+const invoiceController = new VendorInvoiceController();
 
 router.get(
   "/materials",
@@ -212,7 +214,7 @@ router.get(
 router.get(
   "/orders/payable",
   requireUser,
-  requirePermission({ key: "purchasing.manage" }),
+  requirePermission({ key: "purchasing.viewAll" }),
   paymentController.listPayable,
 );
 
@@ -446,7 +448,8 @@ router.post(
 router.get(
   "/flow",
   requireUser,
-  requirePermission({ key: "purchasing.viewAll" }),
+  // Requesters see their own SPP's request + order; viewAll sees the whole chain.
+  requirePermission({ key: "purchasing.view" }),
   purchasingController.flow,
 );
 
@@ -467,16 +470,9 @@ router.get(
 );
 
 router.get(
-  "/payments/reimbursable",
-  requireUser,
-  requirePermission({ key: "purchasing.realize" }),
-  paymentController.reimbursable,
-);
-
-router.get(
   "/orders/:id/payments",
   requireUser,
-  requirePermission({ key: "purchasing.manage" }),
+  requirePermission({ key: "purchasing.viewAll" }),
   paymentController.forOrder,
 );
 
@@ -544,20 +540,6 @@ router.post(
 );
 
 router.post(
-  "/payments/:id/items/:itemId/approve",
-  requireUser,
-  requirePermission({ key: "purchasing.viewAll" }),
-  paymentController.approveItem,
-);
-
-router.post(
-  "/payments/:id/items/:itemId/reject",
-  requireUser,
-  requirePermission({ key: "purchasing.viewAll" }),
-  paymentController.rejectItem,
-);
-
-router.post(
   "/payments/:id/cancel",
   requireUser,
   requirePermission({ key: "purchasing.viewAll" }),
@@ -591,6 +573,114 @@ router.delete(
   requireUser,
   requirePermission({ key: "purchasing.pay" }),
   paymentController.removeProof,
+);
+
+// Vendor invoices: what the vendor billed for whole GRs of one PO.
+
+router.get(
+  "/invoices",
+  requireUser,
+  requirePermission({ key: "purchasing.viewAll" }),
+  invoiceController.list,
+);
+
+router.get(
+  "/invoices/queue",
+  requireUser,
+  requirePermission({ key: "purchasing.viewAll" }),
+  invoiceController.queue,
+);
+
+router.get(
+  "/invoices/plan",
+  requireUser,
+  requirePermission({ key: "purchasing.realize" }),
+  invoiceController.plan,
+);
+
+router.post(
+  "/invoices",
+  requireUser,
+  requirePermission({ key: "purchasing.realize" }),
+  invoiceController.create,
+);
+
+router.get(
+  "/invoices/:id",
+  requireUser,
+  requirePermission({ key: "purchasing.viewAll" }),
+  invoiceController.get,
+);
+
+router.put(
+  "/invoices/:id",
+  requireUser,
+  requirePermission({ key: "purchasing.realize" }),
+  invoiceController.update,
+);
+
+router.delete(
+  "/invoices/:id",
+  requireUser,
+  requirePermission({ key: "purchasing.realize" }),
+  invoiceController.remove,
+);
+
+router.post(
+  "/invoices/:id/post",
+  requireUser,
+  requirePermission({ key: "purchasing.realize" }),
+  invoiceController.post,
+);
+
+router.post(
+  "/invoices/:id/void",
+  requireUser,
+  requirePermission({ key: "purchasing.realize" }),
+  invoiceController.void,
+);
+
+router.get(
+  "/invoices/:id/files/:fileId",
+  requireUser,
+  requirePermission({ key: "purchasing.viewAll" }),
+  invoiceController.file,
+);
+
+router.post(
+  "/invoices/:id/files",
+  requireUser,
+  requirePermission({ key: "purchasing.realize" }),
+  upload.array("files", 12),
+  invoiceController.addFiles,
+);
+
+router.delete(
+  "/invoices/:id/files/:fileId",
+  requireUser,
+  requirePermission({ key: "purchasing.realize" }),
+  invoiceController.removeFile,
+);
+
+router.get(
+  "/realizations/:id/pdf",
+  requireUser,
+  requirePermission({ key: "purchasing.viewAll" }),
+  realizationController.pdf,
+);
+
+router.get(
+  "/invoices/:id/pdf",
+  requireUser,
+  requirePermission({ key: "purchasing.viewAll" }),
+  invoiceController.pdf,
+);
+
+router.get(
+  "/payments/:id/pdf",
+  requireUser,
+  requirePermission({ key: "purchasing.viewAll" }),
+  paymentController.pdf,
 );
 
 export default router;

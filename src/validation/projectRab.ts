@@ -5,6 +5,10 @@ import type {
   SaveProjectRabChargesInDto,
   SaveProjectRabLabourProcessInDto,
 } from "../dto/projectRab.dto";
+import {
+  PROJECT_RAB_LABOUR_EXECUTORS,
+  PROJECT_RAB_LABOUR_ROLES,
+} from "../models/projectRab.model";
 import { formatDecimal, parseQtyDecimal } from "../modules/itemMaster/itemUomConvert";
 import { asRecord } from "./asRecord";
 import { parseChargeList } from "./purchasing";
@@ -115,16 +119,21 @@ export function parseSaveProjectRabLabourProcessDto(
     const key = line.key.trim();
     if (seen.has(key)) throw new Error(`Duplicate labour line key: ${key}`);
     seen.add(key);
-    const w =
-      typeof line.weightPercent === "number"
-        ? line.weightPercent
-        : typeof line.weightPercent === "string"
-          ? Number(line.weightPercent.trim())
-          : NaN;
-    if (!Number.isInteger(w) || w < 1 || w > 100) {
-      throw new Error("weightPercent must be an integer from 1 to 100");
+    const role = line.role === undefined ? "making" : line.role;
+    if (!isOneOf(PROJECT_RAB_LABOUR_ROLES, role)) {
+      throw new Error("role must be making or install");
     }
-    lines.push({ key, weightPercent: w });
+    const executor = line.executor === undefined ? "inhouse" : line.executor;
+    if (!isOneOf(PROJECT_RAB_LABOUR_EXECUTORS, executor)) {
+      throw new Error("executor must be inhouse or vendor");
+    }
+    lines.push({
+      key,
+      role,
+      executor,
+      sequence: optionalInt(line.sequence, "sequence", 1, 999),
+      weightPercent: optionalInt(line.weightPercent, "weightPercent", 1, 100),
+    });
   }
   return { shopDrawingItemId: row.shopDrawingItemId, lines };
 }
@@ -141,4 +150,20 @@ export function parseRabLineKey(param: string | string[] | undefined): string {
     throw new Error("Invalid lineKey");
   }
   return key;
+}
+
+function isOneOf<T extends string>(values: readonly T[], v: unknown): v is T {
+  return typeof v === "string" && (values as readonly string[]).includes(v);
+}
+
+/** Null / absent / "" → null; else an integer within [min, max]. */
+function optionalInt(v: unknown, field: string, min: number, max: number): number | null {
+  if (v === null || v === undefined || (typeof v === "string" && v.trim() === "")) {
+    return null;
+  }
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v.trim()) : NaN;
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw new Error(`${field} must be an integer from ${min} to ${max}`);
+  }
+  return n;
 }

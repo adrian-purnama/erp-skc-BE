@@ -3,7 +3,12 @@ import {
   formatDecimal,
   parseQtyDecimal,
 } from "../itemMaster/itemUomConvert";
-import { computeTotals, type QuotationDiscountType } from "../quotation/quotation.planner";
+import {
+  computeTotals,
+  quotationCharges,
+  type QuotationCharge,
+  type QuotationDiscountType,
+} from "../quotation/quotation.planner";
 import { percentOf } from "../production/production.planner";
 import { computeLineTotal, sumGrandTotal } from "./projectRab.planner";
 import type { ProjectSummaryOutDto } from "../../dto/project.dto";
@@ -13,7 +18,9 @@ export type SummaryQuotation = {
   revision: number;
   discountType: QuotationDiscountType;
   discountValue: string;
-  taxPercent: string;
+  /** Extra charges (PPN, …); old revisions have only `taxPercent`. */
+  charges?: QuotationCharge[] | null;
+  taxPercent?: string | null;
   lines: Array<{ qty: string; unitPrice: string; costUnitPrice: string }>;
 };
 
@@ -24,6 +31,13 @@ export type SummaryRab = {
 
 export type SummaryDeadline = { at: Date; title: string };
 
+/** Today's S-curve reading of a project with a schedule. */
+export type SummarySchedule = {
+  plannedPct: number;
+  actualPct: number;
+  deviationPct: number;
+};
+
 export type SummaryInput = {
   quotations: SummaryQuotation[];
   rab: SummaryRab | null;
@@ -32,6 +46,11 @@ export type SummaryInput = {
   orders: Array<{ qty: string; plannedFinish?: string | null }>;
   reportQtys: string[];
   deadlines: SummaryDeadline[];
+  /** Project status: tender (`open`) deadlines come from the calendar. */
+  status: string;
+  /** Project planned finish (YYYY-MM-DD), the deadline once won. */
+  plannedFinishDate?: string | null;
+  schedule?: SummarySchedule | null;
   now: Date;
 };
 
@@ -92,6 +111,48 @@ export function pickDeadline(
   return upcoming ?? sorted[sorted.length - 1] ?? null;
 }
 
+/** Next upcoming calendar deadline only (past milestones are not tracked). */
+export function nextMilestone(
+  deadlines: SummaryDeadline[],
+  now: Date,
+): SummaryDeadline | null {
+  return (
+    [...deadlines]
+      .filter((d) => d.at.getTime() >= now.getTime())
+      .sort((a, b) => a.at.getTime() - b.at.getTime())[0] ?? null
+  );
+}
+
+/**
+ * The deadline a project is held to:
+ * - tender (`open`): its calendar deadlines (next upcoming, else the last past one);
+ * - after that: the project's planned finish, else the latest SPK planned finish.
+ * Past tender milestones stop counting once the project is won.
+ */
+export function projectDeadline(input: {
+  status: string;
+  deadlines: SummaryDeadline[];
+  plannedFinishDate?: string | null;
+  orders: Array<{ plannedFinish?: string | null }>;
+  now: Date;
+}): SummaryDeadline | null {
+  if (input.status === "open") return pickDeadline(input.deadlines, input.now);
+  if (input.plannedFinishDate) {
+    return {
+      at: new Date(`${input.plannedFinishDate}T23:59:59+07:00`),
+      title: "Planned finish",
+    };
+  }
+  const spkFinish = input.orders
+    .map((o) => o.plannedFinish ?? "")
+    .filter((d) => d !== "")
+    .sort()
+    .pop();
+  return spkFinish
+    ? { at: new Date(`${spkFinish}T23:59:59+07:00`), title: "SPK planned finish" }
+    : null;
+}
+
 export function buildProjectSummary(input: SummaryInput): ProjectSummaryOutDto {
   const quotation = pickContractQuotation(input.quotations);
   const totals = quotation
@@ -99,7 +160,7 @@ export function buildProjectSummary(input: SummaryInput): ProjectSummaryOutDto {
         lines: quotation.lines,
         discountType: quotation.discountType,
         discountValue: quotation.discountValue,
-        taxPercent: quotation.taxPercent,
+        charges: quotationCharges(quotation),
       })
     : null;
 
@@ -117,12 +178,8 @@ export function buildProjectSummary(input: SummaryInput): ProjectSummaryOutDto {
   const ordered = formatDecimal(sum(input.orders.map((o) => o.qty)));
   const done = formatDecimal(sum(input.reportQtys));
 
-  const calendarDeadline = pickDeadline(input.deadlines, input.now);
-  const plannedFinish = input.orders
-    .map((o) => o.plannedFinish ?? "")
-    .filter((d) => d !== "")
-    .sort()
-    .pop();
+  const deadline = projectDeadline(input);
+  const milestone = nextMilestone(input.deadlines, input.now);
 
   return {
     contractValue: totals ? totals.grandTotal : null,
@@ -139,15 +196,10 @@ export function buildProjectSummary(input: SummaryInput): ProjectSummaryOutDto {
     productionOrderedQty: ordered,
     productionDoneQty: done,
     productionPercent: percentOf(done, ordered),
-    deadline: calendarDeadline
-      ? calendarDeadline.at.toISOString()
-      : plannedFinish
-        ? new Date(`${plannedFinish}T00:00:00+07:00`).toISOString()
-        : null,
-    deadlineTitle: calendarDeadline
-      ? calendarDeadline.title
-      : plannedFinish
-        ? "SPK planned finish"
-        : null,
+    deadline: deadline ? deadline.at.toISOString() : null,
+    deadlineTitle: deadline ? deadline.title : null,
+    nextMilestone: milestone ? milestone.at.toISOString() : null,
+    nextMilestoneTitle: milestone ? milestone.title : null,
+    schedule: input.schedule ?? null,
   };
 }

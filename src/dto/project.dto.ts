@@ -19,6 +19,8 @@ export type CreateProjectDto = {
   status?: ProjectStatus;
   loseReason?: ProjectLoseReason | null;
   closeReason?: ProjectCloseReason | null;
+  plannedStartDate?: string | null;
+  plannedFinishDate?: string | null;
 };
 
 export type UpdateProjectDto = {
@@ -30,6 +32,9 @@ export type UpdateProjectDto = {
   loseReason?: ProjectLoseReason | null;
   closeReason?: ProjectCloseReason | null;
   isActive?: boolean;
+  /** Sent together; null clears. */
+  plannedStartDate?: string | null;
+  plannedFinishDate?: string | null;
 };
 
 export type ProjectListItemOutDto = {
@@ -45,6 +50,9 @@ export type ProjectListItemOutDto = {
   isActive: boolean;
   /** ISO time the project was released to production, or null. */
   productionReleasedAt: string | null;
+  /** Planned project dates (YYYY-MM-DD), or null. */
+  plannedStartDate: string | null;
+  plannedFinishDate: string | null;
 };
 
 /** Money/progress roll-up shown on the project list. Money is IDR digits. */
@@ -64,9 +72,17 @@ export type ProjectSummaryOutDto = {
   productionOrderedQty: string;
   productionDoneQty: string;
   productionPercent: number;
-  /** Next upcoming calendar deadline, else the latest past one, else SPK planned finish. */
+  /**
+   * The deadline the project is held to. Tender: calendar deadlines (next,
+   * else the last past one). Won: planned finish, else latest SPK planned finish.
+   */
   deadline: string | null;
   deadlineTitle: string | null;
+  /** Next upcoming calendar deadline, or null. */
+  nextMilestone: string | null;
+  nextMilestoneTitle: string | null;
+  /** Today's S-curve reading; null when the project has no schedule. */
+  schedule: { plannedPct: number; actualPct: number; deviationPct: number } | null;
 };
 
 export type ProjectListRowOutDto = ProjectListItemOutDto & {

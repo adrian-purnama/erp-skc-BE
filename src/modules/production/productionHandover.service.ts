@@ -23,7 +23,8 @@ import { jakartaYmdString } from "../../utils/shared";
 import { formatDecimal } from "../itemMaster/itemUomConvert";
 import { projectNumberParts } from "../project/projectNumber";
 import { notifyHandoverPosted } from "./productionNotify";
-import { assertHandoverChecklist, assertReportQty } from "./production.planner";
+import { assertHandoverChecklist } from "./production.planner";
+import { assertOrderReportRoom, assertOrderVoidRoom } from "./stageFlow";
 import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
 import { formatExportYmd, safeFilenamePart } from "../project/projectRabExport.planner";
 import { formatLongDate, splitLines } from "../quotation/quotation.document";
@@ -69,12 +70,12 @@ function requireDraft(doc: LeanHandover): void {
   if (doc.status !== "draft") throw new Error("Only a draft handover can be changed");
 }
 
-/** A released or in-progress subcon / outsource SPK. */
+/** A released or in-progress vendor SPK. */
 async function requireVendorOrder(orderId: string | Types.ObjectId): Promise<LeanOrder> {
   const order = (await ProductionOrderRepo.model.findById(orderId).lean().exec()) as LeanOrder | null;
   if (!order) throw new Error("SPK not found");
-  if (!hasVendorFee(order.type)) {
-    throw new Error("Handovers are for subcon and outsource SPKs; record inhouse output as a report");
+  if (!hasVendorFee(order)) {
+    throw new Error("Handovers are for vendor SPKs; record inhouse output as a report");
   }
   if (!ACTIVE_STATUSES.includes(order.status)) {
     throw new Error("Handovers can only be recorded on a released or in-progress SPK");
@@ -94,7 +95,7 @@ async function checkedFields(order: LeanOrder, input: SaveProductionHandoverInDt
   if (input.handoverDate > jakartaYmdString()) {
     throw new Error("handoverDate cannot be in the future");
   }
-  assertReportQty(input.qty, order.qty, await doneOnOrder(order._id));
+  await assertOrderReportRoom(order, input.qty, await doneOnOrder(order._id));
   return {
     handoverDate: input.handoverDate,
     qty: input.qty,
@@ -242,7 +243,7 @@ export class ProductionHandoverService {
       throw new Error("handoverDate cannot be in the future");
     }
     await withTx(async () => {
-      assertReportQty(doc.qty, order.qty, await doneOnOrder(order._id));
+      await assertOrderReportRoom(order, doc.qty, await doneOnOrder(order._id));
       const report = await ProductionReportRepo.create({
         projectId: order.projectId,
         productionOrderId: order._id,
@@ -284,6 +285,7 @@ export class ProductionHandoverService {
     const order = await requireVendorOrder(doc.productionOrderId);
     const doneAfter = formatDecimal(new Decimal(await doneOnOrder(order._id)).minus(doc.qty));
     await assertFeeCoveredAfterVoid(order, doneAfter);
+    await assertOrderVoidRoom(order, doc.qty);
     const now = new Date();
     const by = new Types.ObjectId(userId);
     await withTx(async () => {

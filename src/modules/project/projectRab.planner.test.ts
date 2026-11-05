@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   aggregateBoqLinesToRab,
+  assertLabourProcess,
   computeLineTotal,
   mergeRabPricing,
   rabLineKey,
@@ -294,5 +295,47 @@ describe("RAB charges", () => {
     assert.equal(rabChargeFactor("1000", charges), "1.21");
     assert.equal(rabChargeFactor("1000", []), "1");
     assert.equal(rabChargeFactor("0", charges), "1");
+  });
+});
+
+describe("assertLabourProcess", () => {
+  const making = (key: string, sequence: number | null, weightPercent: number | null = 50) => ({
+    key,
+    role: "making" as const,
+    executor: "inhouse" as const,
+    sequence,
+    weightPercent,
+  });
+  const install = {
+    key: "i",
+    role: "install" as const,
+    executor: "vendor" as const,
+    sequence: 1,
+    weightPercent: 100,
+  };
+
+  it("accepts making 1..n in any row order plus install 1..n", () => {
+    assertLabourProcess([making("b", 2), making("a", 1), install]);
+  });
+
+  it("rejects repeated or gapped sequence", () => {
+    assert.throws(() => assertLabourProcess([making("a", 1), making("b", 1)]), /1 to 2/);
+    assert.throws(() => assertLabourProcess([making("a", 1), making("b", 3)]), /1 to 2/);
+  });
+
+  it("rejects making without sequence or weight", () => {
+    assert.throws(() => assertLabourProcess([making("a", null)]), /needs a sequence/);
+    assert.throws(() => assertLabourProcess([making("a", 1, null)]), /needs a sequence/);
+  });
+
+  it("checks install as its own track", () => {
+    assert.throws(
+      () => assertLabourProcess([making("a", 1), { ...install, sequence: 2 }]),
+      /Install labour sequence must run 1 to 1/,
+    );
+    assert.throws(
+      () => assertLabourProcess([making("a", 1), { ...install, weightPercent: null }]),
+      /needs a sequence and weight/,
+    );
   });
 });

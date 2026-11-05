@@ -231,9 +231,9 @@ export function buildQuotationPdf(
     drawRow(cells, {});
   }
 
-  // Totals (right two columns)
-  const totalsX = left + COLS.slice(0, 6).reduce((a, b) => a + b, 0);
-  const labelColW = COLS[6];
+  // Totals: the label spans the table up to the amount column, like SUB TOTAL rows.
+  const totalsX = left;
+  const labelColW = COLS.slice(0, 7).reduce((a, b) => a + b, 0);
   const amountColW = COLS[7];
   for (const total of doc.totals) {
     ensure(18);

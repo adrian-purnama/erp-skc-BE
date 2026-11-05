@@ -15,6 +15,7 @@ import {
   type ProjectStatus,
 } from "../models/project.model";
 import { asRecord } from "./asRecord";
+import { parseYmdPair } from "./projectSchedule";
 
 function parseContactMap(raw: unknown): Record<string, string> {
   if (raw === undefined || raw === null) return {};
@@ -142,12 +143,19 @@ export function parseCreateProjectDto(body: unknown): CreateProjectDto {
     loseReason: row.loseReason,
     closeReason: row.closeReason,
   });
+  const [plannedStartDate, plannedFinishDate] = parseYmdPair(
+    row.plannedStartDate,
+    row.plannedFinishDate,
+    "Project dates",
+  );
   return {
     name,
     description,
     customerId: parseCustomerId(row.customerId),
     customerContact: parseCustomerContact(row.customerContact),
     ...statusFields,
+    plannedStartDate,
+    plannedFinishDate,
   };
 }
 
@@ -178,6 +186,15 @@ export function parseUpdateProjectDto(body: unknown): UpdateProjectDto {
       throw new Error("isActive must be a boolean");
     }
     patch.isActive = row.isActive;
+  }
+  if (row.plannedStartDate !== undefined || row.plannedFinishDate !== undefined) {
+    const [start, finish] = parseYmdPair(
+      row.plannedStartDate,
+      row.plannedFinishDate,
+      "Project dates",
+    );
+    patch.plannedStartDate = start;
+    patch.plannedFinishDate = finish;
   }
 
   if (

@@ -1,5 +1,8 @@
 import type { Request, Response } from "express";
-import { purchaseFlow } from "./purchaseFlow.service";
+import { Types } from "mongoose";
+import type { ApiResponseDto } from "../../dto/httpResponse";
+import { purchaseFlow, requesterFlow } from "./purchaseFlow.service";
+import { PurchaseRequestRepo } from "../../models/purchaseRequest.model";
 import { getUserPermissions } from "../../core/permissions/resolve.service";
 import { handle } from "../../dto/httpResponse";
 import { parseRouteId } from "../../validation/parseParam";
@@ -144,14 +147,38 @@ export class PurchasingController {
     );
   };
 
-  /** SPP → PO → receipts → payments around one document (related documents only). */
+  /** SPP → PO → receipts → invoices → payments around one document (related documents only). */
   flow = async (req: Request, res: Response) => {
-    return handle(res, "Failed to load the purchase flow", "Purchase flow retrieved", () => {
-      const kind = queryString(req.query.kind);
-      if (kind !== "request" && kind !== "order" && kind !== "realization" && kind !== "payment" && kind !== "spk") {
-        throw new Error("kind must be request, order, realization, payment or spk");
+    const kind = queryString(req.query.kind);
+    if (kind !== "request" && kind !== "order" && kind !== "realization" && kind !== "invoice" && kind !== "payment" && kind !== "spk") {
+      return res.status(400).json({
+        success: false,
+        message: "kind must be request, order, realization, invoice, payment or spk",
+        data: null,
+      } satisfies ApiResponseDto<null>);
+    }
+    const perms = await getUserPermissions(req.user!);
+    const full = perms.has("*") || perms.has("purchasing.viewAll") || perms.has("purchasing.manage");
+    if (!full) {
+      // Requesters: only their own SPP, request + order stages.
+      const id = queryString(req.query.id) ?? "";
+      const own =
+        kind === "request" &&
+        Types.ObjectId.isValid(id) &&
+        (await PurchaseRequestRepo.model
+          .exists({ _id: new Types.ObjectId(id), createdBy: req.user!._id })
+          .exec()) !== null;
+      if (!own) {
+        return res.status(403).json({
+          success: false,
+          message: "Forbidden",
+          data: null,
+        } satisfies ApiResponseDto<null>);
       }
-      return purchaseFlow(kind, parseRouteId(queryString(req.query.id)));
+    }
+    return handle(res, "Failed to load the purchase flow", "Purchase flow retrieved", async () => {
+      const flow = await purchaseFlow(kind, parseRouteId(queryString(req.query.id)));
+      return full ? flow : requesterFlow(flow);
     });
   };
 }

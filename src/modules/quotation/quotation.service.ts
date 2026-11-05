@@ -54,9 +54,11 @@ import {
   verifyState,
 } from "./quotation.access";
 import {
+  DEFAULT_QUOTATION_CHARGES,
   buildQuotationSections,
   buildSeedLines,
   computeTotals,
+  quotationCharges,
   lineTotal,
   quotationNumber,
   repriceLines,
@@ -297,7 +299,7 @@ export class QuotationService {
       markupPercent,
       discountType: base?.discountType ?? "percent",
       discountValue: base?.discountValue ?? "0",
-      taxPercent: base?.taxPercent ?? "11",
+      charges: base ? quotationCharges(base) : DEFAULT_QUOTATION_CHARGES.map((c) => ({ ...c })),
       validUntil: addJakartaDays(jakartaYmdString(), DEFAULT_VALID_DAYS),
       notes: base?.notes ?? "",
       termOfPaymentId: base?.termOfPaymentId ?? null,
@@ -319,7 +321,7 @@ export class QuotationService {
     if (input.subject !== undefined) set.subject = input.subject;
     if (input.discountType !== undefined) set.discountType = input.discountType;
     if (input.discountValue !== undefined) set.discountValue = input.discountValue;
-    if (input.taxPercent !== undefined) set.taxPercent = input.taxPercent;
+    if (input.charges !== undefined) set.charges = input.charges;
     if (input.validUntil !== undefined) set.validUntil = input.validUntil;
     if (input.notes !== undefined) set.notes = input.notes;
     if (input.markupPercent !== undefined) {
@@ -707,12 +709,19 @@ export class QuotationService {
         issuedByName: out.issuedByName,
         discountType: out.discountType,
         discountValue: out.discountValue,
-        taxPercent: out.taxPercent,
         totals: {
           subtotal: out.totals.subtotal,
           discountAmount: out.totals.discountAmount,
           taxBase: out.totals.taxBase,
-          taxAmount: out.totals.taxAmount,
+          charges: out.totals.charges
+            .filter((c) => c.enabled)
+            .map((c) => ({
+              label: c.label,
+              note: c.note ?? "",
+              kind: c.kind,
+              value: c.value,
+              amount: c.amount,
+            })),
           grandTotal: out.totals.grandTotal,
         },
         termOfPaymentText: out.termOfPaymentText,
@@ -986,7 +995,7 @@ export class QuotationService {
       lines: doc.lines,
       discountType: doc.discountType,
       discountValue: doc.discountValue,
-      taxPercent: doc.taxPercent,
+      charges: quotationCharges(doc),
     });
     return {
       id: String(doc._id),
@@ -1063,7 +1072,7 @@ export class QuotationService {
       markupPercent: doc.markupPercent,
       discountType: doc.discountType,
       discountValue: doc.discountValue,
-      taxPercent: doc.taxPercent,
+      charges: quotationCharges(doc),
       validUntil: doc.validUntil ?? null,
       notes: doc.notes ?? "",
       termOfPaymentId: doc.termOfPaymentId ? String(doc.termOfPaymentId) : null,
@@ -1115,7 +1124,7 @@ export class QuotationService {
         lines: doc.lines,
         discountType: doc.discountType,
         discountValue: doc.discountValue,
-        taxPercent: doc.taxPercent,
+        charges: quotationCharges(doc),
       }),
       rabOutdated,
       verifyUrl:

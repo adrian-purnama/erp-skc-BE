@@ -1,45 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  checkVendorStage,
+  checkPaymentAmount,
   priceStage,
-  reimbursementOutcome,
   sumAmounts,
-  vendorPayable,
 } from "./purchasePayment.planner";
-
-describe("vendorPayable", () => {
-  it("uses the estimate less staff purchases until fully received", () => {
-    assert.deepEqual(
-      vendorPayable({
-        estimatedTotal: "1110000",
-        staffRealizedTotal: "110000",
-        vendorRealizedTotal: "500000",
-        fullyReceived: false,
-      }),
-      { base: "1000000", final: false },
-    );
-  });
-
-  it("uses the actual vendor receipts once fully received", () => {
-    assert.deepEqual(
-      vendorPayable({
-        estimatedTotal: "1110000",
-        staffRealizedTotal: "0",
-        vendorRealizedTotal: "1098000",
-        fullyReceived: true,
-      }),
-      { base: "1098000", final: true },
-    );
-  });
-
-  it("never goes below zero", () => {
-    assert.equal(
-      vendorPayable({ estimatedTotal: "100", staffRealizedTotal: "200", vendorRealizedTotal: "0", fullyReceived: false }).base,
-      "0",
-    );
-  });
-});
 
 describe("priceStage", () => {
   it("prices percent on the payable, half up", () => {
@@ -51,83 +16,40 @@ describe("priceStage", () => {
   });
 });
 
-describe("checkVendorStage", () => {
-  const base = { base: "1000000", final: false };
+describe("checkPaymentAmount", () => {
+  const owed = "1000000";
 
-  it("allows stages up to the payable", () => {
+  it("allows partial payments up to what is owed", () => {
     assert.deepEqual(
-      checkVendorStage({ ...base, stage: "termin", amount: "700000", others: [{ stage: "dp", amount: "300000" }] }),
+      checkPaymentAmount({ owed, stage: "partial", amount: "700000", others: [{ amount: "300000" }] }),
       { amount: "700000" },
     );
   });
 
-  it("refuses going past the payable", () => {
+  it("refuses going past what is owed", () => {
     assert.throws(
-      () => checkVendorStage({ ...base, stage: "termin", amount: "700001", others: [{ stage: "dp", amount: "300000" }] }),
+      () => checkPaymentAmount({ owed, stage: "partial", amount: "700001", others: [{ amount: "300000" }] }),
       /Only Rp 700000 is left/,
     );
   });
 
   it("refuses zero amounts", () => {
-    assert.throws(() => checkVendorStage({ ...base, stage: "dp", amount: "0", others: [] }), /greater than 0/);
+    assert.throws(() => checkPaymentAmount({ owed, stage: "partial", amount: "0", others: [] }), /greater than 0/);
   });
 
-  it("allows pelunasan only when final, settling the rest", () => {
-    assert.throws(
-      () => checkVendorStage({ ...base, stage: "pelunasan", amount: "0", others: [] }),
-      /once everything on the PO is received/,
-    );
+  it("pays the rest on full, upfront or after partials", () => {
+    assert.deepEqual(checkPaymentAmount({ owed, stage: "full", amount: "0", others: [] }), { amount: "1000000" });
     assert.deepEqual(
-      checkVendorStage({
-        base: "1098000",
-        final: true,
-        stage: "pelunasan",
-        amount: "0",
-        others: [{ stage: "dp", amount: "300000" }],
-      }),
-      { amount: "798000" },
+      checkPaymentAmount({ owed: "1098000", stage: "full", amount: "0", others: [{ amount: "1000000" }] }),
+      { amount: "98000" },
     );
   });
 
-  it("refuses pelunasan with nothing left, and anything after pelunasan", () => {
+  it("refuses anything once nothing is left", () => {
     assert.throws(
-      () =>
-        checkVendorStage({ base: "300000", final: true, stage: "pelunasan", amount: "0", others: [{ stage: "dp", amount: "300000" }] }),
+      () => checkPaymentAmount({ owed, stage: "full", amount: "0", others: [{ amount: "1000000" }] }),
       /Nothing is left/,
     );
-    assert.throws(
-      () => checkVendorStage({ ...base, stage: "termin", amount: "1", others: [{ stage: "pelunasan", amount: "5" }] }),
-      /already has its pelunasan/,
-    );
-  });
-});
-
-describe("reimbursementOutcome", () => {
-  it("waits while a nota is pending", () => {
-    assert.deepEqual(
-      reimbursementOutcome([
-        { status: "approved", amount: "100" },
-        { status: "pending", amount: "50" },
-      ]),
-      { status: "pending_approval", amount: "100" },
-    );
-  });
-
-  it("pays the approved notas only", () => {
-    assert.deepEqual(
-      reimbursementOutcome([
-        { status: "approved", amount: "100" },
-        { status: "rejected", amount: "50" },
-      ]),
-      { status: "approved", amount: "100" },
-    );
-  });
-
-  it("is rejected when every nota is rejected", () => {
-    assert.deepEqual(reimbursementOutcome([{ status: "rejected", amount: "50" }]), {
-      status: "rejected",
-      amount: "0",
-    });
   });
 });
 

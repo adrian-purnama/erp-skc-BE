@@ -37,8 +37,10 @@ export type PurchaseRealizationPhoto = {
 
 /**
  * What actually happened on an approved PO, with proof: `vendor` = Penerimaan
- * (goods + invoice from the vendor), `staff` = Nota Realisasi (staff bought it).
+ * (GR: goods only), `staff` = Nota Realisasi (staff bought it, with prices).
  * Posted qty is what arrived; posted money (+ charges) is the actual cost.
+ * A vendor GR's money is never typed: it is calculated from its vendor invoice,
+ * or the PO price until one exists (see `vendorMoney.ts`).
  */
 export interface PurchaseRealizationInterface {
   number: string;
@@ -61,6 +63,8 @@ export interface PurchaseRealizationInterface {
   receivedByName: string;
   /** Surat jalan / delivery note number, if any. */
   deliveryNoteNumber: string;
+  /** Vendor GR: the live (draft / posted) vendor invoice covering it. */
+  invoiceId?: Types.ObjectId | null;
   /** `vendor`: the supplier delivered straight to a subcon SPK's vendor (arrived and at the vendor). */
   deliveredTo?: "us" | "vendor";
   comments: string;
@@ -132,6 +136,7 @@ const purchaseRealizationSchema = new Schema<PurchaseRealizationInterface>(
     receivedByUserId: { type: Schema.Types.ObjectId, ref: "User", default: null },
     receivedByName: { type: String, trim: true, default: "" },
     deliveryNoteNumber: { type: String, trim: true, default: "" },
+    invoiceId: { type: Schema.Types.ObjectId, ref: "VendorInvoice", default: null, index: true },
     deliveredTo: { type: String, enum: ["us", "vendor"], default: "us" },
     comments: { type: String, trim: true, default: "" },
     lines: { type: [lineSchema], default: [] },

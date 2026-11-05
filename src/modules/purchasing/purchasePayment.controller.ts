@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { exportPaymentPdf } from "./purchasingPdf";
 import { getUserPermissions } from "../../core/permissions/resolve.service";
 import { fail, handle } from "../../dto/httpResponse";
 import { parseRouteId } from "../../validation/parseParam";
@@ -7,8 +8,7 @@ import {
   parsePaymentStatusFilter,
   parsePayPurchasePaymentDto,
   parseReasonDto,
-  parseSaveReimbursementDto,
-  parseSaveVendorPaymentDto,
+  parseSavePaymentDto,
 } from "../../validation/purchasing";
 import { queryString } from "../../validation/query";
 import type { PoActor } from "./purchaseOrder.service";
@@ -52,15 +52,6 @@ export class PurchasePaymentController {
     );
   };
 
-  reimbursable = async (req: Request, res: Response) => {
-    return handle(res, "Failed to load notas", "Notas retrieved", () =>
-      purchasePaymentService.reimbursable(
-        parseRouteId(queryString(req.query.payeeUserId)),
-        queryString(req.query.exceptId),
-      ),
-    );
-  };
-
   get = async (req: Request, res: Response) => {
     return handle(res, "Failed to get payment", "Payment retrieved", async () =>
       purchasePaymentService.get(parseRouteId(req.params.id), await actor(req)),
@@ -72,16 +63,18 @@ export class PurchasePaymentController {
       res,
       "Failed to add payment",
       "Payment saved as draft",
-      async () => purchasePaymentService.createVendor(parseSaveVendorPaymentDto(req.body), await actor(req)),
+      async () =>
+        purchasePaymentService.create("vendor", parseSavePaymentDto(req.body, "vendor"), await actor(req)),
       201,
     );
   };
 
   updateVendor = async (req: Request, res: Response) => {
     return handle(res, "Failed to save payment", "Payment saved", async () =>
-      purchasePaymentService.updateVendor(
+      purchasePaymentService.update(
         parseRouteId(req.params.id),
-        parseSaveVendorPaymentDto(req.body),
+        "vendor",
+        parseSavePaymentDto(req.body, "vendor"),
         await actor(req),
       ),
     );
@@ -93,16 +86,17 @@ export class PurchasePaymentController {
       "Failed to add reimbursement",
       "Reimbursement saved as draft",
       async () =>
-        purchasePaymentService.createReimbursement(parseSaveReimbursementDto(req.body), await actor(req)),
+        purchasePaymentService.create("reimburse", parseSavePaymentDto(req.body, "reimburse"), await actor(req)),
       201,
     );
   };
 
   updateReimbursement = async (req: Request, res: Response) => {
     return handle(res, "Failed to save reimbursement", "Reimbursement saved", async () =>
-      purchasePaymentService.updateReimbursement(
+      purchasePaymentService.update(
         parseRouteId(req.params.id),
-        parseSaveReimbursementDto(req.body),
+        "reimburse",
+        parseSavePaymentDto(req.body, "reimburse"),
         await actor(req),
       ),
     );
@@ -132,28 +126,6 @@ export class PurchasePaymentController {
       purchasePaymentService.reject(
         parseRouteId(req.params.id),
         parseReasonDto(req.body).reason,
-        await actor(req),
-      ),
-    );
-  };
-
-  approveItem = async (req: Request, res: Response) => {
-    return handle(res, "Failed to approve nota", "Nota approved", async () =>
-      purchasePaymentService.decideItem(
-        parseRouteId(req.params.id),
-        parseRouteId(req.params.itemId),
-        { approve: true },
-        await actor(req),
-      ),
-    );
-  };
-
-  rejectItem = async (req: Request, res: Response) => {
-    return handle(res, "Failed to reject nota", "Nota rejected", async () =>
-      purchasePaymentService.decideItem(
-        parseRouteId(req.params.id),
-        parseRouteId(req.params.itemId),
-        { approve: false, reason: parseReasonDto(req.body).reason },
         await actor(req),
       ),
     );
@@ -214,6 +186,17 @@ export class PurchasePaymentController {
       stream.pipe(res);
     } catch (error) {
       fail(res, error, "Failed to open file");
+    }
+  };
+
+  pdf = async (req: Request, res: Response) => {
+    try {
+      const file = await exportPaymentPdf(parseRouteId(req.params.id));
+      res.setHeader("Content-Type", file.contentType);
+      res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
+      return res.send(file.buffer);
+    } catch (error) {
+      return fail(res, error, "Failed to export PDF");
     }
   };
 }

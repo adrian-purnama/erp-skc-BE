@@ -599,6 +599,7 @@ export class PurchasingService {
         total: p.total,
       })),
       canChange: canChange(doc, viewer),
+      viewerIsOwner: String(doc.createdBy) === viewer.userId,
     };
   }
 

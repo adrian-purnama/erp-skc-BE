@@ -50,15 +50,74 @@ export type SeedRabLine = {
   shopDrawingItemId?: string | null;
 };
 
+export type QuotationCharge = {
+  key: string;
+  label: string;
+  /** Added to or deducted from the total; absent = add. */
+  sign?: "add" | "deduct";
+  /** Printed reason, e.g. "pembayaran tunai". */
+  note?: string;
+  kind: "percent" | "fixed";
+  value: string;
+  enabled: boolean;
+};
+
+/** A charge with sign and reason filled in. */
+export type ResolvedQuotationCharge = QuotationCharge & { sign: "add" | "deduct"; note: string };
+
+/** A charge with its signed rupiah amount (negative when deducted, 0 when disabled). */
+export type QuotationChargeTotal = ResolvedQuotationCharge & { amount: string };
+
 export type QuotationTotals = {
   costTotal: string;
   subtotal: string;
   discountAmount: string;
   taxBase: string;
-  taxAmount: string;
+  charges: QuotationChargeTotal[];
+  /** Σ enabled charges, deductions negative. */
+  chargesTotal: string;
   grandTotal: string;
   margin: string;
 };
+
+/** New quotations start with PPN 11% (it can be switched off, renamed or retuned). */
+export const DEFAULT_QUOTATION_CHARGES: readonly QuotationCharge[] = [
+  { key: "ppn", label: "PPN", sign: "add", note: "", kind: "percent", value: "11", enabled: true },
+];
+
+/** The quotation's charges; old revisions only had a PPN percent. */
+export function quotationCharges(doc: {
+  charges?: QuotationCharge[] | null;
+  taxPercent?: string | null;
+}): ResolvedQuotationCharge[] {
+  if (doc.charges) {
+    return doc.charges.map((c) => ({ ...c, sign: c.sign ?? "add", note: c.note ?? "" }));
+  }
+  const tax = doc.taxPercent ?? "11";
+  return [
+    {
+      key: "ppn",
+      label: "PPN",
+      sign: "add",
+      note: "",
+      kind: "percent",
+      value: tax,
+      enabled: parseQtyDecimal(tax).gt(0),
+    },
+  ];
+}
+
+/**
+ * Printed label: "PPN 11%" for a percent charge, the label alone when fixed,
+ * then the reason in brackets: "Potongan 5% (pembayaran tunai)".
+ */
+export function chargeLabel(
+  c: Pick<QuotationCharge, "label" | "kind" | "value" | "note">,
+): string {
+  const base = c.kind === "percent" ? `${c.label} ${c.value}%` : c.label;
+  const note = c.note?.trim();
+  return note ? `${base} (${note})` : base;
+}
 
 export function quotationNumber(projectNumber: string, revision: number): string {
   return `QUO/${projectNumber}/R${revision}`;
@@ -275,7 +334,7 @@ export function computeTotals(input: {
   lines: Array<{ qty: string; unitPrice: string; costUnitPrice: string }>;
   discountType: QuotationDiscountType;
   discountValue: string;
-  taxPercent: string;
+  charges: QuotationCharge[];
 }): QuotationTotals {
   let subtotal = new Decimal(0);
   let cost = new Decimal(0);
@@ -294,17 +353,31 @@ export function computeTotals(input: {
   if (discount.gt(subtotal)) discount = subtotal;
 
   const taxBase = subtotal.sub(discount);
-  const tax = new Decimal(
-    rupiah(taxBase.mul(parseQtyDecimal(input.taxPercent)).div(100)),
-  );
+  // Every percent line is on the DPP, so lines never compound on each other.
+  let chargesTotal = new Decimal(0);
+  const charges = input.charges.map((raw): QuotationChargeTotal => {
+    const c = { ...raw, sign: raw.sign ?? "add", note: raw.note ?? "" };
+    if (!c.enabled) return { ...c, amount: "0" };
+    const size = new Decimal(
+      c.kind === "percent"
+        ? rupiah(taxBase.mul(parseQtyDecimal(c.value)).div(100))
+        : rupiah(parseQtyDecimal(c.value)),
+    );
+    const amount = c.sign === "deduct" ? size.neg() : size;
+    chargesTotal = chargesTotal.add(amount);
+    return { ...c, amount: rupiah(amount) };
+  });
+  // Deductions can at most bring the total to zero.
+  const grand = Decimal.max(taxBase.add(chargesTotal), 0);
 
   return {
     costTotal: rupiah(cost),
     subtotal: rupiah(subtotal),
     discountAmount: rupiah(discount),
     taxBase: rupiah(taxBase),
-    taxAmount: rupiah(tax),
-    grandTotal: rupiah(taxBase.add(tax)),
+    charges,
+    chargesTotal: rupiah(grand.sub(taxBase)),
+    grandTotal: rupiah(grand),
     margin: rupiah(taxBase.sub(cost)),
   };
 }

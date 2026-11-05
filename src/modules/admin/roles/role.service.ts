@@ -289,6 +289,34 @@ export class RoleService {
       );
     }
 
+    const uniqueRoles = await this.assertRolesAssignable(
+      roles,
+      actorPermissions,
+    );
+
+    const user = await UserModel.findById(userId).exec();
+    if (!user) throw new Error("User not found");
+
+    const hadSuper = (user.roles ?? []).includes("super_admin");
+    const willHaveSuper = uniqueRoles.includes("super_admin");
+    if (hadSuper && !willHaveSuper && !user.isBlocked) {
+      const active = await countActiveSuperAdmins();
+      if (active <= 1) {
+        throw new RoleValidationError("Cannot remove the last super_admin");
+      }
+    }
+
+    user.roles = uniqueRoles;
+    await user.save();
+    invalidateUser(userId);
+    return uniqueRoles;
+  }
+
+  /** Dedupe role keys; throw unless they all exist and the actor may grant them. */
+  async assertRolesAssignable(
+    roles: string[],
+    actorPermissions: Set<string>,
+  ): Promise<string[]> {
     const uniqueRoles = [...new Set(roles)];
     const roleDocs = await RoleModel.find({ key: { $in: uniqueRoles } }).exec();
     if (roleDocs.length !== uniqueRoles.length) {
@@ -315,21 +343,6 @@ export class RoleService {
       }
     }
 
-    const user = await UserModel.findById(userId).exec();
-    if (!user) throw new Error("User not found");
-
-    const hadSuper = (user.roles ?? []).includes("super_admin");
-    const willHaveSuper = uniqueRoles.includes("super_admin");
-    if (hadSuper && !willHaveSuper && !user.isBlocked) {
-      const active = await countActiveSuperAdmins();
-      if (active <= 1) {
-        throw new RoleValidationError("Cannot remove the last super_admin");
-      }
-    }
-
-    user.roles = uniqueRoles;
-    await user.save();
-    invalidateUser(userId);
     return uniqueRoles;
   }
 

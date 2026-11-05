@@ -20,6 +20,7 @@ import {
   type ProjectRabChangeBoqSnapshot,
   type ProjectRabChangeCurrentFile,
   type ProjectRabChangeInterface,
+  type ProjectRabChangeSource,
 } from "../../models/projectRabChange.model";
 import {
   ProjectRabRepo,
@@ -37,7 +38,9 @@ import {
   diffCurrentFiles,
   diffRabLines,
   filterCountedBoqs,
+  labourLineConflicts,
   productionConflicts,
+  type ProductionHeldLine,
   sumLineTotals,
   syncRabLinesFromBoqs,
   type LeanBoqDoc,
@@ -48,6 +51,9 @@ import { logger } from "../../core/logger";
 import {
   assertAllLinesPriced,
   computeLineTotal,
+  isLabourLine,
+  labourExecutor,
+  labourRole,
   rabQtyWaste,
   rabTotalsWithCharges,
 } from "./projectRab.planner";
@@ -57,6 +63,7 @@ import { ProductionOrderRepo } from "../../models/productionOrder.model";
 import { ProductionReportRepo } from "../../models/productionReport.model";
 import { allocatedQty } from "../production/production.planner";
 import { formatDecimal, parseQtyDecimal } from "../itemMaster/itemUomConvert";
+import { assertProcessKept } from "../production/stageFlow";
 
 export { syncRabLinesFromBoqs } from "./projectRabChange.planner";
 
@@ -82,16 +89,29 @@ function chargesOf(
 
 const DRAFT_GONE = "The change is no longer open (it was committed or discarded)";
 
-/** Items with live SPKs → label and the qty those SPKs hold. */
-async function heldQtyByItem(
-  projectId: string,
-): Promise<Map<string, { label: string; heldQty: string }>> {
+/**
+ * Live SPKs per item: the most any one labour line's SPKs hold (each line is
+ * capped by makeQty), and each line they are on.
+ */
+async function heldByItem(projectId: string): Promise<{
+  items: Map<string, { label: string; heldQty: string }>;
+  lines: ProductionHeldLine[];
+}> {
   const orders = await ProductionOrderRepo.model
     .find({ projectId: new Types.ObjectId(projectId), status: { $ne: "cancelled" } })
-    .select({ shopDrawingItemId: 1, status: 1, qty: 1 })
+    .select({
+      shopDrawingItemId: 1,
+      labourItemId: 1,
+      labourUomId: 1,
+      labourName: 1,
+      role: 1,
+      executor: 1,
+      status: 1,
+      qty: 1,
+    })
     .lean()
     .exec();
-  if (orders.length === 0) return new Map();
+  if (orders.length === 0) return { items: new Map(), lines: [] };
   const [reports, items] = await Promise.all([
     ProductionReportRepo.model
       .find({ productionOrderId: { $in: orders.map((o) => o._id) }, isVoided: false })
@@ -110,38 +130,68 @@ async function heldQtyByItem(
     done.set(key, formatDecimal(parseQtyDecimal(done.get(key) ?? "0").add(r.qtyDone)));
   }
   const labelById = new Map(items.map((i) => [String(i._id), shopDrawingItemLabel(i)]));
-  const out = new Map<string, { label: string; heldQty: string }>();
-  for (const itemId of new Set(orders.map((o) => String(o.shopDrawingItemId)))) {
-    const rows = orders
-      .filter((o) => String(o.shopDrawingItemId) === itemId)
-      .map((o) => ({ id: String(o._id), status: o.status, qty: o.qty }));
-    out.set(itemId, {
-      label: labelById.get(itemId) ?? "Shop drawing item",
-      heldQty: formatDecimal(allocatedQty(rows, done)),
+  const lineKey = (o: (typeof orders)[number]) =>
+    `${String(o.shopDrawingItemId)}:${String(o.labourItemId)}:${String(o.labourUomId)}`;
+  const heldItems = new Map<string, { label: string; heldQty: string }>();
+  const heldLines = new Map<string, ProductionHeldLine>();
+  for (const key of new Set(orders.map(lineKey))) {
+    const lineOrders = orders.filter((o) => lineKey(o) === key);
+    const first = lineOrders[0]!;
+    const itemId = String(first.shopDrawingItemId);
+    const label = labelById.get(itemId) ?? "Shop drawing item";
+    const held = allocatedQty(
+      lineOrders.map((o) => ({ id: String(o._id), status: o.status, qty: o.qty })),
+      done,
+    );
+    const prev = heldItems.get(itemId);
+    if (!prev || held.gt(prev.heldQty)) {
+      heldItems.set(itemId, { label, heldQty: formatDecimal(held) });
+    }
+    heldLines.set(key, {
+      key,
+      label: `${label} · ${first.labourName || "labour"}`,
+      role: first.role,
+      executor: first.executor,
     });
   }
-  return out;
+  return { items: heldItems, lines: [...heldLines.values()] };
 }
 
-/** Commit check after release: live SPKs keep their item and their qty. */
+/** Commit check after release: live SPKs keep their item, labour line and qty. */
 async function assertProductionKept(
   projectId: string,
   countedBoqs: Array<{ shopDrawingItemId: Types.ObjectId | string; makeQty: string }>,
   removedItemIds: string[],
+  nextLines: ProjectRabLine[],
 ): Promise<void> {
-  const held = await heldQtyByItem(projectId);
-  if (held.size === 0) return;
+  const held = await heldByItem(projectId);
+  if (held.items.size === 0) return;
   const makeByItem = new Map(
     countedBoqs.map((b) => [String(b.shopDrawingItemId), b.makeQty]),
   );
-  const conflicts = productionConflicts(
-    [...held].map(([itemId, h]) => ({
-      ...h,
-      nextMakeQty: removedItemIds.includes(itemId)
-        ? null
-        : (makeByItem.get(itemId) ?? null),
-    })),
-  );
+  // Outsource items keep their qty on the item, not on a BOQ.
+  const outsource = await ProjectShopDrawingItemRepo.model
+    .find({ projectId: new Types.ObjectId(projectId), makeType: "outsource", makeQty: { $ne: null } })
+    .select({ makeQty: 1 })
+    .lean()
+    .exec();
+  for (const item of outsource) {
+    if (item.makeQty) makeByItem.set(String(item._id), item.makeQty);
+  }
+  const conflicts = [
+    ...productionConflicts(
+      [...held.items].map(([itemId, h]) => ({
+        ...h,
+        nextMakeQty: removedItemIds.includes(itemId)
+          ? null
+          : (makeByItem.get(itemId) ?? null),
+      })),
+    ),
+    ...labourLineConflicts(
+      held.lines.filter((l) => !removedItemIds.includes(l.key.split(":")[0]!)),
+      nextLines,
+    ),
+  ];
   if (conflicts.length > 0) {
     throw new Error(`Cannot commit: ${conflicts.join("; ")}`);
   }
@@ -230,6 +280,7 @@ export class ProjectRabChangeService {
     projectId: string,
     userId: string,
     input: OpenProjectRabChangeInDto,
+    source: ProjectRabChangeSource = "manual",
   ): Promise<ProjectRabChangeSummaryOutDto> {
     await assertProjectExists(projectId);
     if (!Types.ObjectId.isValid(userId)) {
@@ -269,6 +320,7 @@ export class ProjectRabChangeService {
       projectId: projectOid,
       reason,
       status: "draft",
+      source,
       openedBy: new Types.ObjectId(userId),
       openedAt: now,
       baselineBoqs: boqSnaps,
@@ -363,6 +415,7 @@ export class ProjectRabChangeService {
         newTotalQty: line.totalQty,
         oldUnitPrice: null,
         newUnitPrice: unitPrice,
+        processChanges: [],
       };
     });
 
@@ -501,7 +554,12 @@ export class ProjectRabChangeService {
       throw new Error("A committed RAB needs at least one line");
     }
     assertAllLinesPriced(synced, "before commit");
-    await assertProductionKept(projectId, counted, removedItemIds);
+    await assertProductionKept(projectId, counted, removedItemIds, synced);
+    try {
+      await assertProcessKept(projectId, rab.lines as ProjectRabLine[], synced, removedItemIds);
+    } catch (e) {
+      throw new Error(`Cannot commit: ${e instanceof Error ? e.message : String(e)}`);
+    }
 
     const now = new Date();
     const baseline = this.resolveBaseline(draft);
@@ -621,7 +679,7 @@ export class ProjectRabChangeService {
     const removed = (draft.removedItemIds ?? []).map(String);
     if (removed.includes(itemId)) return;
     const conflicts = productionConflicts(
-      [...(await heldQtyByItem(projectId))]
+      [...(await heldByItem(projectId)).items]
         .filter(([id]) => id === itemId)
         .map(([, held]) => ({ ...held, nextMakeQty: null })),
     );
@@ -941,6 +999,7 @@ export class ProjectRabChangeService {
         newTotalQty: d.newTotalQty,
         oldUnitPrice: d.oldUnitPrice,
         newUnitPrice: d.newUnitPrice,
+        processChanges: d.processChanges,
       };
     });
 
@@ -1074,6 +1133,8 @@ export class ProjectRabChangeService {
         shopDrawingItemName: line.shopDrawingItemId
           ? (itemNames.get(String(line.shopDrawingItemId)) ?? "—")
           : null,
+        role: isLabourLine(line) ? labourRole(line) : null,
+        executor: isLabourLine(line) ? labourExecutor(line) : null,
         sequence:
           typeof line.sequence === "number" && line.sequence >= 1
             ? line.sequence
@@ -1122,6 +1183,7 @@ export class ProjectRabChangeService {
       projectId: String(doc.projectId),
       reason: doc.reason,
       status: doc.status,
+      source: doc.source ?? "manual",
       openedAt: doc.openedAt.toISOString(),
       openedBy: userRef(String(doc.openedBy))!,
       committedAt: doc.committedAt ? doc.committedAt.toISOString() : null,

@@ -55,6 +55,8 @@ describe("project validation", () => {
       status: "open",
       loseReason: null,
       closeReason: null,
+      plannedStartDate: null,
+      plannedFinishDate: null,
     });
   });
 

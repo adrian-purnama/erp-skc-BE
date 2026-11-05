@@ -9,6 +9,11 @@ export interface UserInterface {
   hashedPassword?: string;
   isBlocked?: boolean;
   roles?: string[];
+  /**
+   * Metrics shown per dashboard, in order: `project → ["active-projects", …]`.
+   * A missing dashboard means never customized (defaults apply).
+   */
+  dashboardMetrics?: Map<string, string[]>;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -43,6 +48,11 @@ const userSchema = new Schema<UserInterface>(
       type: [String],
       required: true,
       default: [],
+    },
+    dashboardMetrics: {
+      type: Map,
+      of: [String],
+      default: {},
     },
   },
   { timestamps: true },

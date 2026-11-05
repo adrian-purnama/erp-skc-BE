@@ -5,6 +5,7 @@ import { LoginInDto } from "../../dto/login.dto";
 import { registerInDto } from "../../dto/register.dto";
 import { normalizeEmail } from "../../utils/email";
 import { parseUpdateProfileDto } from "../../validation/profile";
+import { parseSaveDashboardMetricsDto } from "../../validation/dashboardMetrics";
 import { AuthService } from "./auth.service";
 
 export class AuthController {
@@ -98,6 +99,28 @@ export class AuthController {
       return ok(res, "Profile loaded", data);
     } catch (error) {
       return fail(res, error, "Failed to load profile");
+    }
+  };
+
+  getDashboardMetrics = async (req: Request, res: Response) => {
+    try {
+      const data = await this.authService.getDashboardMetrics(String(req.user!._id));
+      return ok(res, "Dashboard metrics loaded", data);
+    } catch (error) {
+      return fail(res, error, "Failed to load dashboard metrics");
+    }
+  };
+
+  saveDashboardMetrics = async (req: Request, res: Response) => {
+    try {
+      const input = parseSaveDashboardMetricsDto(req.params.dashboard, req.body);
+      const data = await this.authService.saveDashboardMetrics(
+        String(req.user!._id),
+        input,
+      );
+      return ok(res, "Dashboard metrics saved", data);
+    } catch (error) {
+      return fail(res, error, "Failed to save dashboard metrics");
     }
   };
 

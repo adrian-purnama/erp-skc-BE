@@ -17,8 +17,9 @@ import type {
   SavePurchaseOrdersInDto,
   SavePurchaseRabInDto,
   SaveRealizationInDto,
-  SaveReimbursementInDto,
-  SaveVendorPaymentInDto,
+  SavePurchasePaymentInDto,
+  SaveVendorInvoiceInDto,
+  VendorInvoiceStatusDto,
   UpdatePurchaseRequestInDto,
 } from "../dto/purchasing.dto";
 import { PURCHASE_ORDER_STATUSES } from "../models/purchaseOrder.model";
@@ -251,11 +252,12 @@ export function parseSaveRealizationDto(body: unknown): SaveRealizationInDto {
       return {
         poLineId: parseObjectId(line.poLineId, `${at}.poLineId`),
         qty: parseProductionQty(line.qty, `${at}.qty`),
-        unitPrice: parseRupiah(line.unitPrice, `${at}.unitPrice`),
+        // A vendor GR is goods only; its price comes from the invoice or the PO.
+        unitPrice: row.method === "vendor" ? "0" : parseRupiah(line.unitPrice, `${at}.unitPrice`),
         note: parseText(line.note, `${at}.note`, LINE_NOTE_MAX),
       };
     }),
-    charges: parseChargeList(row.charges),
+    charges: row.method === "vendor" ? [] : parseChargeList(row.charges),
   };
 }
 
@@ -359,38 +361,28 @@ function parseRate(raw: unknown): string {
   return String(n);
 }
 
-export function parseSaveVendorPaymentDto(body: unknown): SaveVendorPaymentInDto {
+export function parseSavePaymentDto(body: unknown, kind: "vendor" | "reimburse"): SavePurchasePaymentInDto {
   const row = asRecord(body);
   const stage = row.stage;
   if (typeof stage !== "string" || !(PURCHASE_PAYMENT_STAGES as readonly string[]).includes(stage)) {
     throw new Error(`stage must be one of: ${PURCHASE_PAYMENT_STAGES.join(", ")}`);
   }
-  const pelunasan = stage === "pelunasan";
-  const basis = pelunasan ? null : row.basis;
-  if (!pelunasan && basis !== "percent" && basis !== "fixed") {
+  const full = stage === "full";
+  const basis = full ? null : row.basis;
+  if (!full && basis !== "percent" && basis !== "fixed") {
     throw new Error("basis must be percent or fixed");
   }
   return {
     purchaseOrderId: parseObjectId(row.purchaseOrderId, "purchaseOrderId"),
-    stage: stage as SaveVendorPaymentInDto["stage"],
-    basis: basis as SaveVendorPaymentInDto["basis"],
+    payeeUserId: kind === "reimburse" ? parseObjectId(row.payeeUserId, "payeeUserId") : null,
+    stage: stage as SavePurchasePaymentInDto["stage"],
+    basis: basis as SavePurchasePaymentInDto["basis"],
     rate: basis === "percent" ? parseRate(row.rate) : null,
     amount: basis === "fixed" ? parseRupiah(row.amount, "amount") : "0",
     dueDate: parseOptionalYmd(row.dueDate, "dueDate"),
     notes: parseText(row.notes, "notes", NOTES_MAX),
-    realizationIds: parseIdList(row.realizationIds, "realizationIds"),
-  };
-}
-
-export function parseSaveReimbursementDto(body: unknown): SaveReimbursementInDto {
-  const row = asRecord(body);
-  const realizationIds = parseIdList(row.realizationIds, "realizationIds");
-  if (realizationIds.length === 0) throw new Error("Pick at least one nota");
-  return {
-    payeeUserId: parseObjectId(row.payeeUserId, "payeeUserId"),
-    realizationIds,
-    dueDate: parseOptionalYmd(row.dueDate, "dueDate"),
-    notes: parseText(row.notes, "notes", NOTES_MAX),
+    realizationIds: kind === "reimburse" ? parseIdList(row.realizationIds, "realizationIds") : [],
+    invoiceIds: kind === "vendor" ? parseIdList(row.invoiceIds, "invoiceIds") : [],
   };
 }
 
@@ -421,4 +413,42 @@ export function parsePaymentStatusFilter(raw: string | undefined): PurchasePayme
     throw new Error(`status must be one of: ${PURCHASE_PAYMENT_STATUSES.join(", ")}`);
   }
   return raw as PurchasePaymentStatusDto;
+}
+
+// ---- Vendor invoices ----
+
+const INVOICE_STATUSES: VendorInvoiceStatusDto[] = ["draft", "posted", "voided"];
+
+export function parseSaveVendorInvoiceDto(body: unknown): SaveVendorInvoiceInDto {
+  const row = asRecord(body);
+  const realizationIds = parseIdList(row.realizationIds, "realizationIds");
+  if (realizationIds.length === 0) throw new Error("Pick at least one goods receipt");
+  if (!Array.isArray(row.lines)) throw new Error("lines must be a list");
+  if (row.lines.length > LINES_MAX) throw new Error(`At most ${LINES_MAX} lines`);
+  return {
+    purchaseOrderId: parseObjectId(row.purchaseOrderId, "purchaseOrderId"),
+    vendorInvoiceNumber: parseText(row.vendorInvoiceNumber, "vendorInvoiceNumber", 100),
+    invoiceDate: parseYmd(row.invoiceDate, "invoiceDate"),
+    dueDate: parseOptionalYmd(row.dueDate, "dueDate"),
+    notes: parseText(row.notes, "notes", NOTES_MAX),
+    realizationIds,
+    lines: row.lines.map((raw, i) => {
+      const line = asRecord(raw);
+      const at = `lines[${i}]`;
+      return {
+        realizationLineId: parseObjectId(line.realizationLineId, `${at}.realizationLineId`),
+        unitPrice: parseRupiah(line.unitPrice, `${at}.unitPrice`),
+        note: parseText(line.note, `${at}.note`, LINE_NOTE_MAX),
+      };
+    }),
+    charges: parseChargeList(row.charges),
+  };
+}
+
+export function parseVendorInvoiceStatusFilter(raw: string | undefined): VendorInvoiceStatusDto | undefined {
+  if (!raw) return undefined;
+  if (!(INVOICE_STATUSES as string[]).includes(raw)) {
+    throw new Error(`status must be one of: ${INVOICE_STATUSES.join(", ")}`);
+  }
+  return raw as VendorInvoiceStatusDto;
 }

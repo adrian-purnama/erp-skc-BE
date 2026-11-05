@@ -24,6 +24,14 @@ export type ProjectRabStatus = (typeof PROJECT_RAB_STATUSES)[number];
 export const PROJECT_RAB_LINE_ORIGINS = ["lock", "append", "labour"] as const;
 export type ProjectRabLineOrigin = (typeof PROJECT_RAB_LINE_ORIGINS)[number];
 
+/** Labour: a making stage (weighted, sequenced) or installing the finished pcs. */
+export const PROJECT_RAB_LABOUR_ROLES = ["making", "install"] as const;
+export type ProjectRabLabourRole = (typeof PROJECT_RAB_LABOUR_ROLES)[number];
+
+/** Labour: done by our own crew or by a vendor (the line is then the vendor fee). */
+export const PROJECT_RAB_LABOUR_EXECUTORS = ["inhouse", "vendor"] as const;
+export type ProjectRabLabourExecutor = (typeof PROJECT_RAB_LABOUR_EXECUTORS)[number];
+
 export type ProjectRabLine = {
   /**
    * Stable: `${materialItemId}:${itemUomId}`; labour per shop drawing item:
@@ -50,14 +58,18 @@ export type ProjectRabLine = {
   addReason?: string;
   /** Labour only: the shop drawing item it belongs to (absent = project-wide). */
   shopDrawingItemId?: Types.ObjectId;
+  /** Labour only; absent = making. */
+  role?: ProjectRabLabourRole;
+  /** Labour only; absent = inhouse. */
+  executor?: ProjectRabLabourExecutor;
   /**
-   * Inhouse process order within the drawing's labour list (1-based).
-   * Ignored for subcon/outsource fee labour.
+   * Making labour: stage order within the drawing (1..n, unique).
+   * Absent on install labour.
    */
   sequence?: number;
   /**
-   * Inhouse process weight percent (1–100). Drawing's labour weights must
-   * sum to 100 before an inhouse SPK is released.
+   * Making labour: stage weight percent (1–100). The drawing's making
+   * weights must sum to 100 before release. Absent on install labour.
    */
   weightPercent?: number;
 };
@@ -128,6 +140,8 @@ export const projectRabLineSchema = new Schema(
       ref: "ProjectShopDrawingItem",
       required: false,
     },
+    role: { type: String, required: false, enum: PROJECT_RAB_LABOUR_ROLES },
+    executor: { type: String, required: false, enum: PROJECT_RAB_LABOUR_EXECUTORS },
     sequence: { type: Number, required: false, min: 1 },
     weightPercent: { type: Number, required: false, min: 1, max: 100 },
   },

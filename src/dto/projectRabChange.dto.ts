@@ -21,6 +21,8 @@ export type ProjectRabChangeSummaryOutDto = {
   projectId: string;
   reason: string;
   status: "draft" | "committed" | "discarded";
+  /** "production": saved from the Production process editor and committed at once. */
+  source: "manual" | "production";
   openedAt: string;
   openedBy: ProjectRabUserRefOutDto;
   committedAt: string | null;
@@ -40,6 +42,14 @@ export type ProjectRabChangeLineDiffOutDto = {
   newTotalQty: string | null;
   oldUnitPrice: string | null;
   newUnitPrice: string | null;
+  /** Labour process fields that changed (role, executor, sequence, weight). */
+  processChanges: ProjectRabLineProcessChangeOutDto[];
+};
+
+export type ProjectRabLineProcessChangeOutDto = {
+  field: "role" | "executor" | "sequence" | "weightPercent";
+  from: string | null;
+  to: string | null;
 };
 
 

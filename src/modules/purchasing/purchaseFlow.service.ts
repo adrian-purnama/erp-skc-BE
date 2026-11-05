@@ -15,6 +15,7 @@ import {
 } from "../../models/purchaseRealization.model";
 import { PurchaseRequestRepo } from "../../models/purchaseRequest.model";
 import { VendorRepo } from "../../models/vendor.model";
+import { VendorInvoiceRepo } from "../../models/vendorInvoice.model";
 import { labourItemIds } from "../itemMaster/itemMeta";
 import { estimatesOf } from "./purchaseOrder.service";
 import { purchasePaymentService } from "./purchasePayment.service";
@@ -31,6 +32,37 @@ function oid(id: string): Types.ObjectId {
 
 function rupiah(d: Decimal): string {
   return d.toFixed(0);
+}
+
+/**
+ * A requester's view of their own SPP: the request and its POs (number,
+ * vendor, status), without receipts, invoices, payments or amounts.
+ */
+export function requesterFlow(flow: PurchaseFlowOutDto): PurchaseFlowOutDto {
+  return {
+    ...flow,
+    stages: ["request", "order"],
+    purchaseRabs: [],
+    orders: flow.orders.map((o) => ({
+      ...o,
+      total: "0",
+      estimatedTotal: "0",
+      receivedSubtotal: "0",
+      payable: null,
+      paid: null,
+    })),
+    realizations: [],
+    invoices: [],
+    payments: [],
+    totals: {
+      ordered: "0",
+      receivedGoods: "0",
+      owed: "0",
+      paid: "0",
+      staffBought: "0",
+      reimbursed: "0",
+    },
+  };
 }
 
 /**
@@ -58,10 +90,14 @@ export async function purchaseFlow(kind: PurchaseFlowKindDto, id: string): Promi
     const r = await PurchaseRealizationRepo.model.findById(oid(id)).select({ purchaseOrderId: 1 }).lean().exec();
     if (!r) throw new Error("Realization not found");
     orderIds = [r.purchaseOrderId];
+  } else if (kind === "invoice") {
+    const inv = await VendorInvoiceRepo.model.findById(oid(id)).select({ purchaseOrderId: 1 }).lean().exec();
+    if (!inv) throw new Error("Vendor invoice not found");
+    orderIds = [inv.purchaseOrderId];
   } else if (kind === "payment") {
     const p = (await PurchasePaymentRepo.model.findById(oid(id)).lean().exec()) as LeanPayment | null;
     if (!p) throw new Error("Payment not found");
-    orderIds = p.purchaseOrderId ? [p.purchaseOrderId] : [...new Set(p.items.map((i) => String(i.purchaseOrderId)))].map(oid);
+    orderIds = [p.purchaseOrderId];
   } else {
     productionOrderId = oid(id);
     const [pos, spps] = await Promise.all([
@@ -83,7 +119,7 @@ export async function purchaseFlow(kind: PurchaseFlowKindDto, id: string): Promi
     ].map(oid);
   }
 
-  const [requests, realizations, vendorPayments, vendors] = await Promise.all([
+  const [requests, realizations, payments, vendors, invoices] = await Promise.all([
     PurchaseRequestRepo.model
       .find({ _id: { $in: requestIds } })
       .select({ number: 1, status: 1, productionOrderId: 1, purchaseRabId: 1 })
@@ -96,7 +132,7 @@ export async function purchaseFlow(kind: PurchaseFlowKindDto, id: string): Promi
       .lean()
       .exec() as Promise<LeanRealization[]>,
     PurchasePaymentRepo.model
-      .find({ kind: "vendor", purchaseOrderId: { $in: orders.map((o) => o._id) } })
+      .find({ purchaseOrderId: { $in: orders.map((o) => o._id) } })
       .sort({ createdAt: 1 })
       .lean()
       .exec() as Promise<LeanPayment[]>,
@@ -105,13 +141,12 @@ export async function purchaseFlow(kind: PurchaseFlowKindDto, id: string): Promi
       .select({ name: 1 })
       .lean()
       .exec(),
+    VendorInvoiceRepo.model
+      .find({ purchaseOrderId: { $in: orders.map((o) => o._id) }, status: { $in: ["draft", "posted"] } })
+      .sort({ createdAt: 1 })
+      .lean()
+      .exec(),
   ]);
-  const staffNotaIds = realizations.filter((r) => r.method === "staff" && r.status === "posted").map((r) => r._id);
-  const reimbursements = (await PurchasePaymentRepo.model
-    .find({ kind: "reimburse", "items.realizationId": { $in: staffNotaIds } })
-    .sort({ createdAt: 1 })
-    .lean()
-    .exec()) as LeanPayment[];
 
   // The SPK or Purchasing RAB the chain serves.
   const spkIds = new Set<string>(productionOrderId ? [String(productionOrderId)] : []);
@@ -121,7 +156,7 @@ export async function purchaseFlow(kind: PurchaseFlowKindDto, id: string): Promi
   const [spks, rabs] = await Promise.all([
     ProductionOrderRepo.model
       .find({ _id: { $in: [...spkIds].map(oid) } })
-      .select({ number: 1, type: 1, status: 1 })
+      .select({ number: 1, labourName: 1, executor: 1, status: 1 })
       .lean()
       .exec(),
     PurchaseRabRepo.model
@@ -137,8 +172,10 @@ export async function purchaseFlow(kind: PurchaseFlowKindDto, id: string): Promi
 
   let orderedTotal = new Decimal(0);
   let receivedTotal = new Decimal(0);
-  let payable = new Decimal(0);
-  let vendorPaid = new Decimal(0);
+  let owed = new Decimal(0);
+  let paid = new Decimal(0);
+  let staffTotal = new Decimal(0);
+  let reimbursed = new Decimal(0);
   const orderOut: PurchaseFlowOutDto["orders"] = [];
   for (const o of orders) {
     const mine = posted.filter((r) => String(r.purchaseOrderId) === String(o._id));
@@ -152,9 +189,14 @@ export async function purchaseFlow(kind: PurchaseFlowKindDto, id: string): Promi
     let payment: { payable: string; paid: string } | null = null;
     if (o.status === "approved" || o.closedPartial) {
       const summary = await purchasePaymentService.forOrder(String(o._id));
-      payment = { payable: summary.payable, paid: summary.paidTotal };
-      payable = payable.plus(summary.payable);
-      vendorPaid = vendorPaid.plus(summary.paidTotal);
+      const vendor = summary.payees[0]!;
+      payment = { payable: vendor.owed, paid: vendor.paidTotal };
+      owed = owed.plus(summary.owedTotal);
+      paid = paid.plus(summary.paidTotal);
+      for (const p of summary.payees.slice(1)) {
+        staffTotal = staffTotal.plus(p.owed);
+        reimbursed = reimbursed.plus(p.paidTotal);
+      }
     }
     orderOut.push({
       id: String(o._id),
@@ -173,19 +215,17 @@ export async function purchaseFlow(kind: PurchaseFlowKindDto, id: string): Promi
     });
   }
 
-  const staffTotal = posted.filter((r) => r.method === "staff").reduce((s, r) => s.plus(r.total), new Decimal(0));
-  const notaSet = new Set(staffNotaIds.map(String));
-  let reimbursed = new Decimal(0);
-  for (const p of reimbursements) {
-    if (p.status !== "paid") continue;
-    for (const i of p.items) {
-      if (i.status === "approved" && notaSet.has(String(i.realizationId))) reimbursed = reimbursed.plus(i.amount);
-    }
-  }
 
   return {
     focus: { kind, id },
-    spks: spks.map((s) => ({ id: String(s._id), number: s.number, type: s.type, status: s.status })),
+    stages: ["request", "order", "receive", "invoice", "pay"],
+    spks: spks.map((s) => ({
+      id: String(s._id),
+      number: s.number,
+      labourName: s.labourName,
+      executor: s.executor,
+      status: s.status,
+    })),
     purchaseRabs: rabs.map((r) => ({ id: String(r._id), number: r.number })),
     requests: requests.map((r) => ({ id: String(r._id), number: r.number, status: r.status })),
     orders: orderOut,
@@ -197,23 +237,32 @@ export async function purchaseFlow(kind: PurchaseFlowKindDto, id: string): Promi
       purchaseOrderId: String(r.purchaseOrderId),
       total: r.total,
       deliveredTo: r.deliveredTo ?? "us",
+      invoiceId: r.invoiceId ? String(r.invoiceId) : null,
     })),
-    payments: [...vendorPayments, ...reimbursements].map((p) => ({
+    invoices: invoices.map((inv) => ({
+      id: String(inv._id),
+      number: inv.number,
+      status: inv.status,
+      purchaseOrderId: String(inv.purchaseOrderId),
+      vendorInvoiceNumber: inv.vendorInvoiceNumber ?? "",
+      total: inv.total,
+    })),
+    payments: payments.map((p) => ({
       id: String(p._id),
       number: p.number,
       kind: p.kind,
       status: p.status,
-      stage: p.stage ?? null,
+      stage: p.stage,
       amount: p.amount,
-      purchaseOrderId: p.purchaseOrderId ? String(p.purchaseOrderId) : null,
+      purchaseOrderId: String(p.purchaseOrderId),
       payeeName: p.payeeName ?? "",
     })),
     totals: {
       ordered: rupiah(orderedTotal),
       receivedGoods: rupiah(receivedTotal),
       /** Vendor payable plus what staff paid themselves. */
-      owed: rupiah(payable.plus(staffTotal)),
-      paid: rupiah(vendorPaid.plus(reimbursed)),
+      owed: rupiah(owed),
+      paid: rupiah(paid),
       staffBought: rupiah(staffTotal),
       reimbursed: rupiah(reimbursed),
     },

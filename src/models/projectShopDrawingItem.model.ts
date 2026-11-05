@@ -2,8 +2,9 @@ import { Schema, type Types } from "mongoose";
 import { auditedModel } from "../core/audit/auditedModel";
 
 /**
- * Who makes the item. Outsource: the vendor is fully responsible, so it needs
- * no BOQ materials or File Produksi; its cost is a RAB labour line on the item.
+ * Who makes the item: a tag. Outsource: the vendor is fully responsible, so it
+ * needs no BOQ (its make qty sits on the item) and File Produksi is optional;
+ * its cost is a RAB labour line on the item.
  */
 export const SHOP_DRAWING_MAKE_TYPES = ["inhouse", "subcon", "outsource"] as const;
 export type ShopDrawingMakeType = (typeof SHOP_DRAWING_MAKE_TYPES)[number];
@@ -21,6 +22,8 @@ export interface ProjectShopDrawingItemInterface {
   mockupApproveDate?: string | null;
   /** Inhouse when absent (items made before make types existed). */
   makeType?: ShopDrawingMakeType;
+  /** Outsource only: pcs to make (no BOQ to hold it). */
+  makeQty?: string | null;
   createdBy?: Types.ObjectId;
   isDeleted: boolean;
   deletedAt?: Date | null;
@@ -72,6 +75,7 @@ const projectShopDrawingItemSchema = new Schema<ProjectShopDrawingItemInterface>
       enum: SHOP_DRAWING_MAKE_TYPES,
       default: "inhouse",
     },
+    makeQty: { type: String, trim: true, default: null },
     createdBy: {
       type: Schema.Types.ObjectId,
       ref: "User",

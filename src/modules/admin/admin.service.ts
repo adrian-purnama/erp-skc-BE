@@ -3,10 +3,13 @@ import { Types } from "mongoose";
 import type {
   AdminUserDetailOutDto,
   AdminUserOutDto,
+  CreateAdminUserDto,
   UpdateAdminUserDto,
 } from "../../dto/adminUser.dto";
 import { UserModel } from "../../models/user.model";
 import { escapeRegex } from "../../utils/shared";
+import { RoleValidationError } from "../../validation/role";
+import { roleService } from "./roles/role.service";
 function toAdminUser(doc: {
   id: string;
   email?: string;
@@ -34,6 +37,42 @@ export class AdminService {
       .exec();
 
     return users.map((user) => toAdminUser(user));
+  }
+
+  /**
+   * Admin-created accounts skip the register OTP: the email counts as verified
+   * and the user can log in right away.
+   */
+  async createUser(
+    input: CreateAdminUserDto,
+    actorPermissions: Set<string>,
+  ): Promise<AdminUserOutDto> {
+    const exists = await UserModel.exists({ email: input.email });
+    if (exists) {
+      throw new Error("Email already registered");
+    }
+
+    let roles: string[] = [];
+    if (input.roles.length > 0) {
+      if (
+        !actorPermissions.has("*") &&
+        !actorPermissions.has("admin.role.manage")
+      ) {
+        throw new RoleValidationError("You are not allowed to assign roles");
+      }
+      roles = await roleService.assertRolesAssignable(
+        input.roles,
+        actorPermissions,
+      );
+    }
+
+    const user = await UserModel.create({
+      email: input.email,
+      fullName: input.fullName,
+      hashedPassword: await bcrypt.hash(input.password, 10),
+      roles,
+    });
+    return toAdminUser(user);
   }
 
   async updateUser(

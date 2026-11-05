@@ -95,6 +95,8 @@ export type PurchaseRequestOutDto = PurchaseRequestSummaryOutDto & {
   orders: Array<{ id: string; number: string; status: PurchaseOrderStatusDto; vendorName: string; total: string }>;
   /** The viewer may edit, submit, delete or cancel it (requester or purchasing). */
   canChange: boolean;
+  /** The viewer made this SPP (cancels it); purchasing on someone else's SPP declines it. */
+  viewerIsOwner: boolean;
 };
 
 /** One SPK material / RAB line: planned vs already requested on other live SPPs. */
@@ -330,7 +332,7 @@ export type PurchaseOrderSummaryOutDto = {
   approvedAt: string | null;
   /** Posted receipts against the PO's lines. */
   receiptStatus: "none" | "partial" | "full";
-  /** Vendor payments marked paid, integer rupiah. */
+  /** Payments marked paid on this PO (vendor and reimbursements), integer rupiah. */
   paidTotal: string;
 };
 
@@ -503,7 +505,9 @@ export type SaveRealizationInDto = {
   /** `vendor`: the supplier delivered straight to the subcon SPK's vendor. */
   deliveredTo: "us" | "vendor";
   comments: string;
+  /** Vendor GR: `unitPrice` is ignored (goods only; priced by its invoice or the PO). */
   lines: Array<{ poLineId: string; qty: string; unitPrice: string; note: string }>;
+  /** Ignored for a vendor GR. */
   charges: RealizationChargeInDto[];
 };
 
@@ -581,8 +585,10 @@ export type RealizationSummaryOutDto = {
   place: string;
   deliveryNoteNumber: string;
   deliveredTo: "us" | "vendor";
-  /** Staff notas: the reimbursement paying it back, if any. */
-  reimbursement: { id: string; number: string; status: PurchasePaymentStatusDto } | null;
+  /** The live payment that names this GR / NR, if any. */
+  payment: { id: string; number: string; status: PurchasePaymentStatusDto } | null;
+  /** Vendor GR: the live vendor invoice covering it; null = priced at the PO until invoiced. */
+  invoice: { id: string; number: string; status: VendorInvoiceStatusDto } | null;
   /** Σ line amounts. */
   subtotal: string;
   chargesTotal: string;
@@ -623,6 +629,115 @@ export type RealizationQueueRowOutDto = PurchaseOrderSummaryOutDto & {
 };
 
 export type PurchasingUserOutDto = { id: string; name: string; email: string };
+
+// ---- Vendor invoices (what the vendor billed for whole GRs of one PO) ----
+
+export type VendorInvoiceStatusDto = "draft" | "posted" | "voided";
+
+export type VendorInvoiceLineOutDto = {
+  id: string;
+  realizationId: string;
+  realizationNumber: string;
+  realizationLineId: string;
+  poLineId: string;
+  materialCode: string;
+  materialName: string;
+  uomSymbol: string;
+  qty: string;
+  unitPrice: string;
+  /** The PO's price for this line. */
+  poPrice: string;
+  amount: string;
+  /** amount − qty × PO price. */
+  difference: string;
+  note: string;
+};
+
+export type VendorInvoiceReceiptRefOutDto = {
+  id: string;
+  number: string;
+  purchaseDate: string;
+  deliveryNoteNumber: string;
+};
+
+export type VendorInvoiceSummaryOutDto = {
+  id: string;
+  number: string;
+  status: VendorInvoiceStatusDto;
+  purchaseOrderId: string;
+  poNumber: string;
+  vendorName: string;
+  vendorInvoiceNumber: string;
+  invoiceDate: string;
+  dueDate: string | null;
+  receipts: VendorInvoiceReceiptRefOutDto[];
+  subtotal: string;
+  chargesTotal: string;
+  total: string;
+  fileCount: number;
+  createdBy: ProjectRabUserRefOutDto | null;
+  createdAt: string | null;
+  postedAt: string | null;
+};
+
+export type VendorInvoiceOutDto = VendorInvoiceSummaryOutDto & {
+  lines: VendorInvoiceLineOutDto[];
+  charges: RealizationChargeOutDto[];
+  files: RealizationPhotoOutDto[];
+  notes: string;
+  postedBy: ProjectRabUserRefOutDto | null;
+  voidedAt: string | null;
+  voidedBy: ProjectRabUserRefOutDto | null;
+  voidReason: string;
+  /** An approved / paid payment names it: it can no longer change. */
+  lockedBy: { id: string; number: string } | null;
+  /** Live payments naming this invoice. */
+  payments: Array<{ id: string; number: string; status: PurchasePaymentStatusDto; amount: string }>;
+  /** Other live invoices of this vendor with the same vendor invoice number (one paper bill over several POs). */
+  sameNumber: Array<{ id: string; number: string; poNumber: string; total: string; status: VendorInvoiceStatusDto }>;
+};
+
+/** A posted vendor GR that may go on an invoice, with its lines at the PO price. */
+export type InvoiceableReceiptOutDto = VendorInvoiceReceiptRefOutDto & {
+  lines: Array<{
+    realizationLineId: string;
+    poLineId: string;
+    materialCode: string;
+    materialName: string;
+    uomSymbol: string;
+    qty: string;
+    poPrice: string;
+  }>;
+};
+
+export type VendorInvoicePlanOutDto = {
+  purchaseOrderId: string;
+  poNumber: string;
+  vendorName: string;
+  /** The PO's estimated charges, to prefill the invoice's. */
+  estimatedCharges: RealizationChargeOutDto[];
+  /** Posted vendor GRs not on another live invoice. */
+  receipts: InvoiceableReceiptOutDto[];
+};
+
+/** A PO with posted vendor GRs that no invoice covers yet. */
+export type VendorInvoiceQueueRowOutDto = {
+  purchaseOrderId: string;
+  poNumber: string;
+  vendorName: string;
+  receipts: Array<VendorInvoiceReceiptRefOutDto & { total: string }>;
+};
+
+export type SaveVendorInvoiceInDto = {
+  purchaseOrderId: string;
+  vendorInvoiceNumber: string;
+  invoiceDate: string;
+  dueDate: string | null;
+  notes: string;
+  realizationIds: string[];
+  lines: Array<{ realizationLineId: string; unitPrice: string; note: string }>;
+  charges: RealizationChargeInDto[];
+};
 
 // ---- Purchasing RAB (budget outside the BOQ) ----
 
@@ -691,7 +806,7 @@ export type PurchaseRabOutDto = PurchaseRabSummaryOutDto & {
   canUnlock: boolean;
 };
 
-// ---- Payments (vendor stages, staff reimbursements) ----
+// ---- Payments (per PO, to the vendor or to a staff member) ----
 
 export type PurchasePaymentKindDto = "vendor" | "reimburse";
 export type PurchasePaymentStatusDto =
@@ -701,7 +816,7 @@ export type PurchasePaymentStatusDto =
   | "paid"
   | "rejected"
   | "cancelled";
-export type PurchasePaymentStageDto = "dp" | "termin" | "pelunasan";
+export type PurchasePaymentStageDto = "partial" | "full";
 export type PurchasePaymentMethodDto = "transfer" | "cash" | "other";
 
 /** Level 1 → level 2 sign-off; `awaitingUserId` is who acts next. */
@@ -721,19 +836,6 @@ export type PaymentApprovalOutDto = {
   rejectReason: string;
 };
 
-/** One staff nota in a reimbursement. */
-export type ReimburseItemOutDto = PaymentApprovalOutDto & {
-  id: string;
-  realizationId: string;
-  realizationNumber: string;
-  purchaseOrderId: string;
-  purchaseOrderNumber: string;
-  purchaseDate: string;
-  place: string;
-  amount: string;
-  status: "pending" | "approved" | "rejected";
-};
-
 export type PaymentProofOutDto = {
   id: string;
   originalFilename: string;
@@ -749,18 +851,21 @@ export type PurchasePaymentOutDto = PaymentApprovalOutDto & {
   number: string;
   kind: PurchasePaymentKindDto;
   status: PurchasePaymentStatusDto;
-  purchaseOrderId: string | null;
-  purchaseOrderNumber: string | null;
+  purchaseOrderId: string;
+  purchaseOrderNumber: string;
   vendorName: string | null;
-  stage: PurchasePaymentStageDto | null;
+  stage: PurchasePaymentStageDto;
   basis: "percent" | "fixed" | null;
   rate: string | null;
-  /** Receipts a vendor stage pays for, if named. */
+  /** Reimburse: the NR this pays back, if named. */
   realizations: Array<{ id: string; number: string; purchaseDate: string; total: string }>;
+  /** Vendor: the vendor invoices this pays, if named. */
+  invoices: PaymentInvoiceRefOutDto[];
+  /** Reimburse: the staff member paid back. */
   payeeUserId: string | null;
+  /** Vendor name or staff name: who receives the money. */
   payeeName: string;
-  items: ReimburseItemOutDto[];
-  /** Integer rupiah (reimbursement: the approved notas once decided, else all of them). */
+  /** Integer rupiah. */
   amount: string;
   dueDate: string | null;
   notes: string;
@@ -778,62 +883,76 @@ export type PurchasePaymentOutDto = PaymentApprovalOutDto & {
   cancelReason: string;
 };
 
-/** A PO's vendor payments and what is left to pay. */
-export type PurchaseOrderPaymentsOutDto = {
-  purchaseOrderId: string;
-  /** What the vendor is owed in all (estimate until fully received, then actual). */
-  payable: string;
-  /** The payable is the actual received amount (pelunasan possible). */
+/** A posted vendor invoice a vendor payment may name. */
+export type PaymentInvoiceRefOutDto = {
+  id: string;
+  number: string;
+  vendorInvoiceNumber: string;
+  invoiceDate: string;
+  total: string;
+};
+
+/** One payee of a PO (its vendor, or a staff member with posted NR) and what they are owed. */
+export type PaymentPayeeOutDto = {
+  kind: PurchasePaymentKindDto;
+  payeeUserId: string | null;
+  name: string;
+  /**
+   * Vendor: the PO estimate less staff purchases until fully received, then the
+   * actual GR total. Staff: their posted NR total on this PO.
+   */
+  owed: string;
+  /** The owed amount is actual, not an estimate. */
   final: boolean;
-  /** Σ live stages (draft → paid). */
+  /** Σ live payments (draft → paid). */
   scheduledTotal: string;
   paidTotal: string;
-  /** payable − scheduled, never below 0. */
+  /** owed − scheduled, never below 0. */
   remaining: string;
-  /** Bought by staff on this PO: paid by reimbursement, not to the vendor. */
-  staffRealizedTotal: string;
+  /** Reimburse: this person's NR that a payment may name. */
+  realizations: Array<{ id: string; number: string; purchaseDate: string; total: string }>;
+  /** Vendor: the PO's posted vendor invoices that a payment may name. */
+  invoices: PaymentInvoiceRefOutDto[];
+};
+
+/** A PO's payments and what is left to pay, per payee. */
+export type PurchaseOrderPaymentsOutDto = {
+  purchaseOrderId: string;
+  purchaseOrderNumber: string;
+  vendorName: string;
+  /** Vendor first, then staff with posted NR. */
+  payees: PaymentPayeeOutDto[];
+  owedTotal: string;
+  paidTotal: string;
+  remaining: string;
   payments: PurchasePaymentOutDto[];
 };
 
-/** Slim row for the Finance → Payments PO picker (still owes the vendor). */
+/** Slim row for the Finance → Payments PO picker (something still unscheduled). */
 export type PayablePurchaseOrderOutDto = {
   id: string;
   number: string;
   vendorName: string;
-  payable: string;
+  owed: string;
   remaining: string;
-  /** Fully received or closed-partial: pelunasan allowed. */
-  final: boolean;
 };
 
-/** A posted staff nota not yet in a live reimbursement. */
-export type ReimbursableNotaOutDto = {
-  realizationId: string;
-  number: string;
+/** Kind comes from the route (`/payments/vendor` or `/payments/reimburse`). */
+export type SavePurchasePaymentInDto = {
   purchaseOrderId: string;
-  purchaseOrderNumber: string;
-  purchaseDate: string;
-  place: string;
-  total: string;
-};
-
-export type SaveVendorPaymentInDto = {
-  purchaseOrderId: string;
+  /** Reimburse only: the staff member paid back. */
+  payeeUserId: string | null;
   stage: PurchasePaymentStageDto;
-  /** Null for pelunasan (it settles the rest). */
+  /** Null for full (it pays the rest). */
   basis: "percent" | "fixed" | null;
   rate: string | null;
   amount: string;
   dueDate: string | null;
   notes: string;
+  /** Reimburse only: NR of the payee. */
   realizationIds: string[];
-};
-
-export type SaveReimbursementInDto = {
-  payeeUserId: string;
-  realizationIds: string[];
-  dueDate: string | null;
-  notes: string;
+  /** Vendor only: posted vendor invoices of the PO. */
+  invoiceIds: string[];
 };
 
 export type PayPurchasePaymentInDto = {
@@ -844,12 +963,22 @@ export type PayPurchasePaymentInDto = {
 
 // ---- Purchase flow (related documents around one document) ----
 
-export type PurchaseFlowKindDto = "request" | "order" | "realization" | "payment" | "spk";
+export type PurchaseFlowKindDto = "request" | "order" | "realization" | "invoice" | "payment" | "spk";
 
 /** SPP → PO → receipts → payments around one document, related ones only. */
+export type PurchaseFlowStageDto = "request" | "order" | "receive" | "invoice" | "pay";
+
 export type PurchaseFlowOutDto = {
   focus: { kind: PurchaseFlowKindDto; id: string };
-  spks: Array<{ id: string; number: string; type: "inhouse" | "subcon" | "outsource"; status: string }>;
+  /** Stages this viewer may see: a requester sees request + order only, without amounts. */
+  stages: PurchaseFlowStageDto[];
+  spks: Array<{
+    id: string;
+    number: string;
+    labourName: string;
+    executor: "inhouse" | "vendor";
+    status: string;
+  }>;
   purchaseRabs: Array<{ id: string; number: string }>;
   requests: Array<{ id: string; number: string; status: PurchaseRequestStatusDto }>;
   orders: Array<{
@@ -877,15 +1006,26 @@ export type PurchaseFlowOutDto = {
     purchaseOrderId: string;
     total: string;
     deliveredTo: "us" | "vendor";
+    /** Vendor GR: its live invoice; null = still at the PO price. */
+    invoiceId: string | null;
+  }>;
+  /** Live vendor invoices on these POs. */
+  invoices: Array<{
+    id: string;
+    number: string;
+    status: VendorInvoiceStatusDto;
+    purchaseOrderId: string;
+    vendorInvoiceNumber: string;
+    total: string;
   }>;
   payments: Array<{
     id: string;
     number: string;
     kind: PurchasePaymentKindDto;
     status: PurchasePaymentStatusDto;
-    stage: PurchasePaymentStageDto | null;
+    stage: PurchasePaymentStageDto;
     amount: string;
-    purchaseOrderId: string | null;
+    purchaseOrderId: string;
     payeeName: string;
   }>;
   totals: {
@@ -895,9 +1035,9 @@ export type PurchaseFlowOutDto = {
     receivedGoods: string;
     /** Vendor payable plus what staff paid themselves. */
     owed: string;
-    /** Vendor payments paid plus reimbursed notas. */
+    /** Every paid payment (vendor and reimbursements). */
     paid: string;
-    /** Posted staff notas (paid back by reimbursement) and what of that is reimbursed. */
+    /** Posted staff NR (paid back by reimbursement) and what of that is reimbursed. */
     staffBought: string;
     reimbursed: string;
   };

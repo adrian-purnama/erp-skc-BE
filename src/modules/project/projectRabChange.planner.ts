@@ -137,7 +137,34 @@ export type RabLineDiffEntry = {
   newTotalQty: string | null;
   oldUnitPrice: string | null;
   newUnitPrice: string | null;
+  processChanges: RabLineProcessChange[];
 };
+
+export type RabLineProcessChange = {
+  field: "role" | "executor" | "sequence" | "weightPercent";
+  from: string | null;
+  to: string | null;
+};
+
+/** Labour lines: role / executor / sequence / weight that differ (defaults applied). */
+export function diffLabourProcess(
+  oldL: ProjectRabLine,
+  newL: ProjectRabLine,
+): RabLineProcessChange[] {
+  if (oldL.origin !== "labour" && newL.origin !== "labour") return [];
+  const pick = (l: ProjectRabLine) => ({
+    role: l.role ?? "making",
+    executor: l.executor ?? "inhouse",
+    sequence: l.sequence != null ? String(l.sequence) : null,
+    weightPercent: l.weightPercent != null ? String(l.weightPercent) : null,
+  });
+  const a = pick(oldL);
+  const b = pick(newL);
+  const fields = ["role", "executor", "sequence", "weightPercent"] as const;
+  return fields
+    .filter((f) => a[f] !== b[f])
+    .map((f) => ({ field: f, from: a[f], to: b[f] }));
+}
 
 function normPrice(p: string | undefined): string | null {
   if (p === undefined || p === null || String(p).trim() === "") return null;
@@ -164,6 +191,7 @@ export function diffRabLines(
         newTotalQty: newL.totalQty,
         oldUnitPrice: null,
         newUnitPrice: normPrice(newL.unitPrice),
+        processChanges: [],
       });
       continue;
     }
@@ -175,13 +203,15 @@ export function diffRabLines(
         newTotalQty: null,
         oldUnitPrice: normPrice(oldL.unitPrice),
         newUnitPrice: null,
+        processChanges: [],
       });
       continue;
     }
     if (!oldL || !newL) continue;
     const qtyChanged = String(oldL.totalQty) !== String(newL.totalQty);
     const priceChanged = normPrice(oldL.unitPrice) !== normPrice(newL.unitPrice);
-    if (qtyChanged || priceChanged) {
+    const processChanges = diffLabourProcess(oldL, newL);
+    if (qtyChanged || priceChanged || processChanges.length > 0) {
       out.push({
         key,
         kind: "changed",
@@ -189,6 +219,7 @@ export function diffRabLines(
         newTotalQty: newL.totalQty,
         oldUnitPrice: normPrice(oldL.unitPrice),
         newUnitPrice: normPrice(newL.unitPrice),
+        processChanges,
       });
     }
   }
@@ -366,6 +397,37 @@ export type ProductionHeldItem = {
  * A change after release must not pull work from under live SPKs: no removing
  * such an item, and no make qty below what its SPKs already hold.
  */
+/** A RAB labour line that live SPKs are on: its role and done-by as those SPKs follow them. */
+export type ProductionHeldLine = {
+  key: string;
+  label: string;
+  role: "making" | "install";
+  executor: "inhouse" | "vendor";
+};
+
+/** Commit check: a labour line with live SPKs stays, with the same role and done-by. */
+export function labourLineConflicts(
+  held: ProductionHeldLine[],
+  next: Array<{ key: string; role?: string | null; executor?: string | null; origin?: string | null }>,
+): string[] {
+  const byKey = new Map(next.filter((l) => l.origin === "labour").map((l) => [l.key, l]));
+  const out: string[] = [];
+  for (const h of held) {
+    const line = byKey.get(h.key);
+    if (!line) {
+      out.push(`${h.label} has SPKs; cancel them before removing that labour`);
+      continue;
+    }
+    if ((line.role ?? "making") !== h.role) {
+      out.push(`${h.label} has SPKs; its role cannot change`);
+    }
+    if ((line.executor ?? "inhouse") !== h.executor) {
+      out.push(`${h.label} has SPKs; who does it (inhouse / vendor) cannot change`);
+    }
+  }
+  return out;
+}
+
 export function productionConflicts(items: ProductionHeldItem[]): string[] {
   const out: string[] = [];
   for (const item of items) {

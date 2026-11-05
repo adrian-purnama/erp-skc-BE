@@ -26,6 +26,12 @@ router.post("/reset-password", publicRoute(), authController.resetPassword);
 router.get("/validate", requireUser, authController.validateUser);
 router.get("/profile", requireUser, authController.getProfile);
 router.patch("/profile", requireUser, authController.updateProfile);
+router.get("/dashboard-metrics", requireUser, authController.getDashboardMetrics);
+router.put(
+  "/dashboard-metrics/:dashboard",
+  requireUser,
+  authController.saveDashboardMetrics,
+);
 router.post(
   "/profile/picture",
   requireUser,

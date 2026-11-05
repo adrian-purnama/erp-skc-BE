@@ -8,12 +8,34 @@ export type ProjectQuotationStatusDto =
   | "won";
 export type ProjectQuotationDiscountTypeDto = "percent" | "amount";
 
+/**
+ * Extra line after the discount (PPN is one): percent of the DPP or fixed
+ * rupiah, added to or deducted from the total.
+ */
+export type ProjectQuotationChargeDto = {
+  key: string;
+  label: string;
+  sign: "add" | "deduct";
+  /** Printed reason next to the label ("" = none). */
+  note: string;
+  kind: "percent" | "fixed";
+  value: string;
+  /** Off = kept on the form but not added or printed. */
+  enabled: boolean;
+};
+
+export type ProjectQuotationChargeTotalOutDto = ProjectQuotationChargeDto & {
+  /** Signed integer rupiah (negative when deducted); "0" when disabled. */
+  amount: string;
+};
+
 export type UpdateProjectQuotationInDto = {
   subject?: string;
   markupPercent?: string;
   discountType?: ProjectQuotationDiscountTypeDto;
   discountValue?: string;
-  taxPercent?: string;
+  /** Replaces the whole list, in printed order. */
+  charges?: ProjectQuotationChargeDto[];
   validUntil?: string | null;
   notes?: string;
   /** Null clears the term of payment. */
@@ -63,7 +85,9 @@ export type ProjectQuotationTotalsOutDto = {
   discountAmount: string;
   /** Subtotal after discount (DPP). */
   taxBase: string;
-  taxAmount: string;
+  charges: ProjectQuotationChargeTotalOutDto[];
+  /** Σ enabled charges, deductions negative. */
+  chargesTotal: string;
   grandTotal: string;
   /** taxBase − costTotal. */
   margin: string;
@@ -109,7 +133,7 @@ export type ProjectQuotationOutDto = ProjectQuotationSummaryOutDto & {
   markupPercent: string;
   discountType: ProjectQuotationDiscountTypeDto;
   discountValue: string;
-  taxPercent: string;
+  charges: ProjectQuotationChargeDto[];
   validUntil: string | null;
   notes: string;
   termOfPaymentId: string | null;
@@ -172,12 +196,19 @@ export type PublicQuotationDocOutDto = {
   issuedByName: string | null;
   discountType: ProjectQuotationDiscountTypeDto;
   discountValue: string;
-  taxPercent: string;
   totals: {
     subtotal: string;
     discountAmount: string;
     taxBase: string;
-    taxAmount: string;
+    /** Enabled charges only, in printed order. */
+    charges: Array<{
+      label: string;
+      note: string;
+      kind: "percent" | "fixed";
+      value: string;
+      /** Signed: negative when deducted. */
+      amount: string;
+    }>;
     grandTotal: string;
   };
   termOfPaymentText: string;

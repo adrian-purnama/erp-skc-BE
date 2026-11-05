@@ -31,7 +31,7 @@ export const PRODUCTION_PERMS = [
   },
   {
     key: "production.manage",
-    label: "Release projects and manage SPK",
+    label: "Release projects, set up item process and manage SPK",
     implies: ["production.view", "production.report", "production.handover", "production.dispatch"],
   },
 ] as const satisfies readonly PermissionDef[];

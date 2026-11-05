@@ -23,17 +23,31 @@ import { labourItemIds, loadItemMeta } from "../itemMaster/itemMeta";
 import { assertFeeWithinHandover, feeReceivableQty } from "./production.planner";
 
 /**
- * Subcon / outsource SPK helpers shared by production and purchasing:
- * handovers as DTOs, and the vendor fee received in step with handovers.
+ * Vendor SPK helpers shared by production and purchasing: handovers as DTOs,
+ * and the vendor fee received in step with handovers.
  */
 
 type LeanOrder = ProductionOrderInterface & { _id: Types.ObjectId };
 type LeanHandover = ProductionHandoverInterface & { _id: Types.ObjectId };
 type FeeLine = { key: string; materialItemId: string; itemUomId: string; qty: string };
 
-/** Subcon and outsource SPKs carry the vendor fee; inhouse does not. */
-export function hasVendorFee(type: ProductionOrderInterface["type"]): boolean {
-  return type !== "inhouse";
+/** Vendor SPKs carry their labour line as the vendor fee; inhouse ones do not. */
+export function hasVendorFee(order: Pick<ProductionOrderInterface, "executor">): boolean {
+  return order.executor === "vendor";
+}
+
+/** The item's BOQ materials ride on its first making stage's SPKs. */
+export function carriesMaterials(
+  order: Pick<ProductionOrderInterface, "role" | "sequence">,
+): boolean {
+  return order.role === "making" && order.sequence === 1;
+}
+
+/** A vendor SPK with the materials: they are sent to the vendor (surat jalan). */
+export function sendsMaterialToVendor(
+  order: Pick<ProductionOrderInterface, "executor" | "role" | "sequence">,
+): boolean {
+  return hasVendorFee(order) && carriesMaterials(order);
 }
 
 function iso(d: Date | null | undefined): string | null {
@@ -56,7 +70,7 @@ export async function doneOnOrder(orderId: Types.ObjectId): Promise<string> {
 
 /** A released vendor SPK's fee lines: the snapshot materials that are labour items. */
 async function feeLines(order: LeanOrder): Promise<FeeLine[]> {
-  if (!hasVendorFee(order.type) || !order.snapshot) return [];
+  if (!hasVendorFee(order) || !order.snapshot) return [];
   const materials = order.snapshot.materials.map((m) => ({
     materialItemId: String(m.materialItemId),
     itemUomId: String(m.itemUomId),
@@ -315,10 +329,12 @@ export async function directToVendorTargets(purchaseOrderId: string): Promise<st
   if (po.lines.some((l) => labour.has(String(l.materialItemId)))) return null;
   const vendorIds = new Set<string>();
   for (const id of orderIds) {
-    const order = (await ProductionOrderRepo.model.findById(id).select({ type: 1 }).lean().exec()) as
-      | Pick<LeanOrder, "_id" | "type">
-      | null;
-    if (!order || order.type !== "subcon") return null;
+    const order = (await ProductionOrderRepo.model
+      .findById(id)
+      .select({ executor: 1, role: 1, sequence: 1 })
+      .lean()
+      .exec()) as Pick<LeanOrder, "_id" | "executor" | "role" | "sequence"> | null;
+    if (!order || !sendsMaterialToVendor(order)) return null;
     const fee = await approvedFeeOrders(order._id);
     if (fee.length === 0) return null;
     vendorIds.add(String(fee[0]!.vendorId));

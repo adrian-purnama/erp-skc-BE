@@ -11,6 +11,7 @@ import {
   parseCreateProductionReportDto,
   parseProductionOrderStatusFilter,
   parseSaveMaterialDispatchDto,
+  parseSaveProductionProcessDto,
   parseSaveProductionHandoverDto,
   parseSendMaterialDispatchDto,
   parseUpdateProductionOrderDto,
@@ -25,6 +26,8 @@ import {
 } from "./production.service";
 import { exportHandoverPdf, productionHandoverService } from "./productionHandover.service";
 import { exportDispatchPdf, materialDispatchService } from "./materialDispatch.service";
+import { productionProcessService } from "./productionProcess.service";
+import { projectRabService } from "../project/projectRab.service";
 
 function userId(req: Request): string {
   if (!req.user?._id) throw new Error("Unauthorized");
@@ -32,6 +35,26 @@ function userId(req: Request): string {
 }
 
 export class ProductionController {
+  /** Save one item's stages; returns the refreshed project progress. */
+  saveProcess = async (req: Request, res: Response) => {
+    return handle(res, "Failed to save the process", "Process saved", async () => {
+      const projectId = parseRouteId(req.params.projectId);
+      await productionProcessService.save(
+        projectId,
+        parseRouteId(req.params.itemId),
+        userId(req),
+        parseSaveProductionProcessDto(req.body),
+      );
+      return productionService.progress(projectId);
+    });
+  };
+
+  labourItems = async (req: Request, res: Response) => {
+    return handle(res, "Failed to list labour items", "Labour items retrieved", () =>
+      projectRabService.listLabourItems(parseRouteId(req.params.projectId)),
+    );
+  };
+
   readiness = async (req: Request, res: Response) => {
     return handle(
       res,

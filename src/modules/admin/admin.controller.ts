@@ -1,6 +1,10 @@
 import type { Request, Response } from "express";
 import { fail, handle, ok } from "../../dto/httpResponse";
-import { parseUpdateAdminUserDto } from "../../validation/adminUser";
+import { getUserPermissions } from "../../core/permissions/resolve.service";
+import {
+  parseCreateAdminUserDto,
+  parseUpdateAdminUserDto,
+} from "../../validation/adminUser";
 import { parseRouteId } from "../../validation/parseParam";
 import { queryString } from "../../validation/query";
 import { appConfigService } from "../appConfig/AppConfig.service";
@@ -164,6 +168,20 @@ export class AdminController {
     const query = queryString(req.query.email) ?? "";
     return handle(res, "Failed to search users", "Users retrieved", () =>
       this.adminService.searchUsersByEmail(query),
+    );
+  };
+
+  createUser = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to create user",
+      "User created",
+      async () =>
+        this.adminService.createUser(
+          parseCreateAdminUserDto(req.body),
+          await getUserPermissions(req.user!),
+        ),
+      201,
     );
   };
 

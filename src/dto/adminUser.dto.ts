@@ -10,6 +10,13 @@ export interface UpdateAdminUserDto {
   isBlocked?: boolean;
 }
 
+export interface CreateAdminUserDto {
+  email: string;
+  password: string;
+  fullName: string;
+  roles: string[];
+}
+
 export interface AdminUserDetailOutDto extends AdminUserOutDto {
   accountCreatedAt: string;
 }

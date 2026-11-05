@@ -33,6 +33,20 @@ router.get(
   productionController.progress,
 );
 
+router.put(
+  "/projects/:projectId/items/:itemId/process",
+  requireUser,
+  requirePermission({ key: "production.manage" }),
+  productionController.saveProcess,
+);
+
+router.get(
+  "/projects/:projectId/labour-items",
+  requireUser,
+  requirePermission({ key: "production.manage" }),
+  productionController.labourItems,
+);
+
 router.get(
   "/orders",
   requireUser,

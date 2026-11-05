@@ -1,6 +1,7 @@
 import { Types } from "mongoose";
 import type {
   PatchProjectQuotationLineInDto,
+  ProjectQuotationChargeDto,
   UpdateProjectQuotationInDto,
 } from "../dto/projectQuotation.dto";
 import { formatDecimal, parseQtyDecimal } from "../modules/itemMaster/itemUomConvert";
@@ -34,6 +35,45 @@ function textField(raw: unknown, field: string, maxLength: number): string {
   return value;
 }
 
+const CHARGE_KEY = /^[a-z0-9_-]{1,40}$/;
+const MAX_CHARGES = 10;
+
+/** Extra charges in printed order; a missing / bad key gets a fresh one. */
+function parseCharges(raw: unknown): ProjectQuotationChargeDto[] {
+  if (!Array.isArray(raw)) throw new Error("charges must be an array");
+  if (raw.length > MAX_CHARGES) throw new Error(`At most ${MAX_CHARGES} extra charges`);
+  const seen = new Set<string>();
+  return raw.map((item, i) => {
+    const c = asRecord(item);
+    const label = textField(c.label, `charges[${i}].label`, 60);
+    if (!label) throw new Error(`Extra charge ${i + 1} needs a label`);
+    if (c.kind !== "percent" && c.kind !== "fixed") {
+      throw new Error(`Extra charge “${label}” must be percent or fixed`);
+    }
+    const value =
+      c.kind === "percent"
+        ? decimalField(c.value, `${label} %`, 100)
+        : decimalField(c.value, `${label} amount`);
+    if (c.sign !== undefined && c.sign !== "add" && c.sign !== "deduct") {
+      throw new Error(`Extra charge “${label}” must add or deduct`);
+    }
+    const note = c.note === undefined || c.note === null ? "" : textField(c.note, `${label} reason`, 120);
+    let key =
+      typeof c.key === "string" && CHARGE_KEY.test(c.key) ? c.key : new Types.ObjectId().toHexString();
+    if (seen.has(key)) key = new Types.ObjectId().toHexString();
+    seen.add(key);
+    return {
+      key,
+      label,
+      sign: c.sign === "deduct" ? ("deduct" as const) : ("add" as const),
+      note,
+      kind: c.kind,
+      value,
+      enabled: c.enabled !== false,
+    };
+  });
+}
+
 export function parseVerifyToken(param: string | string[] | undefined): string {
   const raw = Array.isArray(param) ? param[0] : param;
   // Shape only; an unknown token simply reads as "unavailable".
@@ -58,9 +98,7 @@ export function parseUpdateProjectQuotationDto(
   if (row.markupPercent !== undefined) {
     out.markupPercent = decimalField(row.markupPercent, "markupPercent");
   }
-  if (row.taxPercent !== undefined) {
-    out.taxPercent = decimalField(row.taxPercent, "taxPercent", 100);
-  }
+  if (row.charges !== undefined) out.charges = parseCharges(row.charges);
   if (row.discountType !== undefined) {
     if (row.discountType !== "percent" && row.discountType !== "amount") {
       throw new Error("discountType must be percent or amount");

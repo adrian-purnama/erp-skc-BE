@@ -29,7 +29,12 @@ import {
 } from "../../validation/projectRab";
 import { parseOpenProjectRabChangeDto } from "../../validation/projectRabChange";
 import { parseProjectLooseFileKind } from "../../validation/projectLooseFile";
+import {
+  parseSaveProjectScheduleDto,
+  parseSCurvePeriod,
+} from "../../validation/projectSchedule";
 import { projectCalendarService } from "./projectCalendar.service";
+import { projectScheduleService } from "./projectSchedule.service";
 import { projectDocumentService } from "./projectDocument.service";
 import { projectRabChangeService } from "./projectRabChange.service";
 import {
@@ -790,6 +795,36 @@ export class ProjectController {
           parseRouteId(req.params.eventId),
           parseUpdateProjectCalendarEventDto(req.body),
         ),
+    );
+  };
+
+  getSchedule = async (req: Request, res: Response) => {
+    return handle(res, "Failed to load schedule", "Schedule retrieved", () =>
+      projectScheduleService.get(parseRouteId(req.params.id)),
+    );
+  };
+
+  saveSchedule = async (req: Request, res: Response) => {
+    return handle(res, "Failed to save schedule", "Schedule saved", () =>
+      projectScheduleService.save(
+        parseRouteId(req.params.id),
+        parseSaveProjectScheduleDto(req.body),
+      ),
+    );
+  };
+
+  setScheduleBaseline = async (req: Request, res: Response) => {
+    return handle(res, "Failed to set baseline", "Baseline set", () =>
+      projectScheduleService.setBaseline(parseRouteId(req.params.id), userId(req)),
+    );
+  };
+
+  sCurve = async (req: Request, res: Response) => {
+    return handle(res, "Failed to load S-curve", "S-curve retrieved", () =>
+      projectScheduleService.sCurve(
+        parseRouteId(req.params.id),
+        parseSCurvePeriod(req.query.period),
+      ),
     );
   };
 

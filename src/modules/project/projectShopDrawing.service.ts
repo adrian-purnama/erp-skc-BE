@@ -29,6 +29,8 @@ import {
   type VersionedFileDoc,
   type VersionedFileExtras,
 } from "./versionedProjectFile.service";
+import { formatDecimal } from "../itemMaster/itemUomConvert";
+import { heldQtyOnItem } from "../production/stageFlow";
 
 /** Locked RAB with no open change — version switch needs a change first. */
 async function assertCanSwitchShopDrawingCurrent(
@@ -130,6 +132,7 @@ type LeanItem = {
   category?: string | null;
   mockupApproveDate?: string | null;
   makeType?: ShopDrawingMakeType;
+  makeQty?: string | null;
   isDeleted?: boolean;
   deletedAt?: Date | null;
   deletedBy?: Types.ObjectId | null;
@@ -161,6 +164,7 @@ type ItemMetaOut = Pick<
   | "category"
   | "mockupApproveDate"
   | "makeType"
+  | "makeQty"
 >;
 
 function toItemMeta(item: LeanItem, descriptions: string[] = []): ItemMetaOut {
@@ -176,7 +180,19 @@ function toItemMeta(item: LeanItem, descriptions: string[] = []): ItemMetaOut {
       ? item.mockupApproveDate.trim()
       : null,
     makeType: item.makeType ?? "inhouse",
+    makeQty: (item.makeType ?? "inhouse") === "outsource" ? (item.makeQty ?? null) : null,
   };
+}
+
+/** An outsource item's qty may not drop below what its labour lines' SPKs hold. */
+async function assertMakeQtyKeepsSpks(itemId: string, makeQty: string | null): Promise<void> {
+  const held = await heldQtyOnItem(new Types.ObjectId(itemId));
+  if (held.lte(0)) return;
+  if (makeQty === null || held.gt(makeQty)) {
+    throw new Error(
+      `Qty cannot go below the ${formatDecimal(held)} this item's SPKs already hold`,
+    );
+  }
 }
 
 /** SPKs are typed by the item, so the type is fixed while live ones exist. */
@@ -381,6 +397,7 @@ export class ProjectShopDrawingService {
       category: input.category,
       mockupApproveDate: input.mockupApproveDate,
       makeType: input.makeType ?? "inhouse",
+      makeQty: input.makeType === "outsource" ? (input.makeQty ?? null) : null,
       createdBy: actorId ? new Types.ObjectId(actorId) : undefined,
       isDeleted: false,
       deletedAt: null,
@@ -410,6 +427,13 @@ export class ProjectShopDrawingService {
       input.makeType !== undefined &&
       input.makeType !== (existing.makeType ?? "inhouse");
     if (makeTypeChanged) await assertMakeTypeChangeable(itemId);
+    const nextMakeQty = input.makeQty !== undefined ? input.makeQty : (existing.makeQty ?? null);
+    if (
+      (input.makeType ?? existing.makeType ?? "inhouse") === "outsource" &&
+      nextMakeQty !== (existing.makeQty ?? null)
+    ) {
+      await assertMakeQtyKeepsSpks(itemId, nextMakeQty);
+    }
 
     const updated = await ProjectShopDrawingItemRepo.findByIdAndUpdate(itemId, {
       $set: {
@@ -419,6 +443,7 @@ export class ProjectShopDrawingService {
         category: input.category,
         mockupApproveDate: input.mockupApproveDate,
         ...(makeTypeChanged ? { makeType: input.makeType } : {}),
+        ...(input.makeQty !== undefined ? { makeQty: input.makeQty } : {}),
       },
     });
     if (!updated) throw new Error("Item not found");

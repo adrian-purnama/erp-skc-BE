@@ -1,5 +1,5 @@
 ﻿import assert from "node:assert/strict";
-import { productionConflicts } from "./projectRabChange.planner";
+import { labourLineConflicts, productionConflicts } from "./projectRabChange.planner";
 import { describe, it } from "node:test";
 import { Types } from "mongoose";
 import type { ProjectRabLine } from "../../models/projectRab.model";
@@ -387,5 +387,28 @@ describe("productionConflicts", () => {
   it("refuses a make qty below what SPKs hold", () => {
     const out = productionConflicts([{ label: "SA1-PYLON", heldQty: "6", nextMakeQty: "5" }]);
     assert.match(out[0]!, /make qty 5 is below the 6/);
+  });
+});
+
+describe("labourLineConflicts", () => {
+  const held = [
+    { key: "i1:cut:m", label: "SG10 · Cutting", role: "making" as const, executor: "inhouse" as const },
+  ];
+
+  it("passes when the line stays as it is", () => {
+    assert.deepEqual(
+      labourLineConflicts(held, [{ key: "i1:cut:m", origin: "labour", role: "making", executor: "inhouse" }]),
+      [],
+    );
+    // Absent fields read as making / inhouse.
+    assert.deepEqual(labourLineConflicts(held, [{ key: "i1:cut:m", origin: "labour" }]), []);
+  });
+
+  it("refuses removing the line or changing its role or done-by", () => {
+    assert.match(labourLineConflicts(held, [])[0]!, /before removing that labour/);
+    assert.deepEqual(
+      labourLineConflicts(held, [{ key: "i1:cut:m", origin: "labour", role: "install", executor: "vendor" }]).length,
+      2,
+    );
   });
 });

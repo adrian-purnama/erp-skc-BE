@@ -1066,7 +1066,7 @@ export class PurchaseOrderService {
       );
     }
     const openPayments = await PurchasePaymentRepo.model
-      .countDocuments({ kind: "vendor", purchaseOrderId: doc._id, status: { $in: ["pending_approval", "approved"] } })
+      .countDocuments({ purchaseOrderId: doc._id, status: { $in: ["pending_approval", "approved"] } })
       .exec();
     if (openPayments > 0) {
       throw new Error("This PO has payments waiting for approval or payment: cancel them first");
@@ -1428,7 +1428,7 @@ export class PurchaseOrderService {
         .lean()
         .exec(),
       PurchasePaymentRepo.model
-        .find({ kind: "vendor", purchaseOrderId: { $in: docIds }, status: "paid" })
+        .find({ purchaseOrderId: { $in: docIds }, status: "paid" })
         .select({ purchaseOrderId: 1, amount: 1 })
         .lean()
         .exec(),

@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { exportRealizationPdf } from "./purchasingPdf";
 import { getUserPermissions } from "../../core/permissions/resolve.service";
 import { fail, handle } from "../../dto/httpResponse";
 import { parseRouteId } from "../../validation/parseParam";
@@ -135,5 +136,16 @@ export class PurchaseRealizationController {
         await actor(req),
       ),
     );
+  };
+
+  pdf = async (req: Request, res: Response) => {
+    try {
+      const file = await exportRealizationPdf(parseRouteId(req.params.id));
+      res.setHeader("Content-Type", file.contentType);
+      res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
+      return res.send(file.buffer);
+    } catch (error) {
+      return fail(res, error, "Failed to export PDF");
+    }
   };
 }

@@ -1,5 +1,9 @@
 import type { ItemUomOutDto } from "./itemMaster.dto";
-import type { ProjectRabLineRounding } from "../models/projectRab.model";
+import type {
+  ProjectRabLabourExecutor,
+  ProjectRabLabourRole,
+  ProjectRabLineRounding,
+} from "../models/projectRab.model";
 import type { RealizationChargeInDto, RealizationChargeOutDto } from "./purchasing.dto";
 
 export type PatchProjectRabLineInDto = {
@@ -19,10 +23,19 @@ export type AddProjectRabLabourLineInDto = {
   unitPrice?: string | null;
 };
 
-/** Rewrite process order + weights for one drawing's labour lines (array order = sequence). */
+/**
+ * Rewrite one drawing's labour setup. Making lines: sequence 1..n + weight;
+ * install lines: both null.
+ */
 export type SaveProjectRabLabourProcessInDto = {
   shopDrawingItemId: string;
-  lines: Array<{ key: string; weightPercent: number }>;
+  lines: Array<{
+    key: string;
+    role: ProjectRabLabourRole;
+    executor: ProjectRabLabourExecutor;
+    sequence: number | null;
+    weightPercent: number | null;
+  }>;
 };
 
 export type ProjectRabLabourItemOutDto = {
@@ -70,9 +83,13 @@ export type ProjectRabLineOutDto = {
   /** Labour: shop drawing item it is costed to (null = project-wide). */
   shopDrawingItemId: string | null;
   shopDrawingItemName: string | null;
-  /** Inhouse process order within the drawing (null if unset). */
+  /** Labour: making stage or install (null on material lines). */
+  role: ProjectRabLabourRole | null;
+  /** Labour: inhouse crew or vendor (null on material lines). */
+  executor: ProjectRabLabourExecutor | null;
+  /** Making labour: stage order within the drawing (null if unset). */
   sequence: number | null;
-  /** Inhouse process weight percent (null if unset). */
+  /** Making labour: stage weight percent (null if unset). */
   weightPercent: number | null;
 };
 

@@ -5,22 +5,29 @@ import {
   allocatedQty,
   assertFeeWithinHandover,
   assertHandoverChecklist,
-  assertLabourStagesForRelease,
+  assertLabourStages,
+  assertProcessChange,
   assertOrderQty,
-  assertStageReportQty,
+  assertStageReport,
+  assertStageVoid,
   checkDispatchLines,
   assertReportQty,
   evaluateReadiness,
   feeReceivableQty,
-  finishedQty,
+  installCapacity,
+  installedQty,
+  itemInstallPercent,
+  itemMakingPercent,
+  madeQty,
   maxOrderQty,
   percentOf,
   planFeeLines,
   planMaterials,
   progressStatus,
-  qtyByStage,
-  weightedProgressPercent,
+  stageRoom,
+  type ProcessLine,
   type ReadinessItemInput,
+  type StageLine,
 } from "./production.planner";
 
 function item(overrides: Partial<ReadinessItemInput> = {}): ReadinessItemInput {
@@ -34,6 +41,7 @@ function item(overrides: Partial<ReadinessItemInput> = {}): ReadinessItemInput {
     hasBoq: true,
     makeQty: "2",
     hasProductionFile: true,
+    labour: [{ key: "cut", role: "making", sequence: 1, weightPercent: 100 }],
     ...overrides,
   };
 }
@@ -80,6 +88,36 @@ describe("evaluateReadiness", () => {
     assert.equal(r.items[0]!.ready, true);
     assert.equal(r.items[0]!.productionFileRequired, false);
     // Still needs the BOQ qty.
+    assert.equal(r.items[1]!.ready, false);
+  });
+
+  it("does not need the process to release (only reports it)", () => {
+    const r = evaluateReadiness({
+      ...base,
+      items: [
+        item({ labour: [] }),
+        item({
+          itemId: "i2",
+          labour: [{ key: "cut", role: "making", sequence: 1, weightPercent: 60 }],
+        }),
+      ],
+    });
+    assert.equal(r.ready, true);
+    assert.equal(r.items[0]!.labour, false);
+    assert.match(r.items[1]!.labourDetail, /total 100%/);
+  });
+
+  it("needs no BOQ on an outsource item, only its qty", () => {
+    const r = evaluateReadiness({
+      ...base,
+      items: [
+        item({ makeType: "outsource", hasBoq: false, makeQty: "5", hasProductionFile: false }),
+        item({ itemId: "i2", makeType: "inhouse", hasBoq: false, makeQty: "5" }),
+      ],
+    });
+    assert.equal(r.items[0]!.boqRequired, false);
+    assert.equal(r.items[0]!.ready, true);
+    // Inhouse still needs its BOQ.
     assert.equal(r.items[1]!.ready, false);
   });
 
@@ -242,106 +280,160 @@ describe("progress", () => {
 });
 
 describe("labour stages", () => {
-  const stages = [
-    { sequence: 1, weightPercent: 40 },
-    { sequence: 2, weightPercent: 40 },
-    { sequence: 3, weightPercent: 20 },
+  // Acrylic: cutting 40% → cat 40% → UV 20%, then deliver 30% → pasang 70%.
+  const lines: StageLine[] = [
+    { key: "uv", role: "making", sequence: 3, weightPercent: 20 },
+    { key: "cut", role: "making", sequence: 1, weightPercent: 40 },
+    { key: "cat", role: "making", sequence: 2, weightPercent: 40 },
+    { key: "pasang", role: "install", sequence: 2, weightPercent: 70 },
+    { key: "kirim", role: "install", sequence: 1, weightPercent: 30 },
   ];
+  const done = new Map([
+    ["cut", "10"],
+    ["cat", "6"],
+    ["uv", "4"],
+    ["kirim", "3"],
+    ["pasang", "1"],
+  ]);
 
-  it("accepts stages that sum to 100 with sequences 1..n", () => {
-    assertLabourStagesForRelease(stages);
-  });
-
-  it("refuses weights that do not total 100", () => {
+  it("SPKs need making stages 1..n totalling 100, and install the same if any", () => {
+    assertLabourStages(lines);
+    assertLabourStages(lines.filter((l) => l.role === "making"));
+    assert.throws(() => assertLabourStages([lines[3]!]), /at least one making stage/);
     assert.throws(
-      () =>
-        assertLabourStagesForRelease([
-          { sequence: 1, weightPercent: 50 },
-          { sequence: 2, weightPercent: 40 },
-        ]),
-      /total 100%/,
+      () => assertLabourStages([{ ...lines[1]!, weightPercent: 50 }, lines[2]!, lines[0]!]),
+      /Making labour weights must total 100% \(currently 110%\)/,
     );
-  });
-
-  it("refuses gaps in sequence", () => {
     assert.throws(
-      () =>
-        assertLabourStagesForRelease([
-          { sequence: 1, weightPercent: 50 },
-          { sequence: 3, weightPercent: 50 },
-        ]),
-      /1, 2, 3/,
+      () => assertLabourStages([lines[1]!, lines[2]!, lines[0]!, { ...lines[4]!, weightPercent: 40 }, lines[3]!]),
+      /Install labour weights must total 100%/,
     );
-  });
-
-  it("sums qty per stage and finished qty is the last stage", () => {
-    const by = qtyByStage(
-      [
-        { qtyDone: "10", stageSequence: 1 },
-        { qtyDone: "5", stageSequence: 1 },
-        { qtyDone: "8", stageSequence: 2 },
-        { qtyDone: "3", stageSequence: 3 },
-      ],
-      stages,
-    );
-    assert.equal(by.get(1), "15");
-    assert.equal(by.get(2), "8");
-    assert.equal(by.get(3), "3");
-    assert.equal(finishedQty(stages, by), "3");
-  });
-
-  it("weights progress across stages", () => {
-    // 100 pcs: all cut (40), half painted (20), none UV → 60%
-    const by = new Map([
-      [1, "100"],
-      [2, "50"],
-      [3, "0"],
-    ]);
-    assert.equal(weightedProgressPercent("100", stages, by), 60);
-  });
-
-  it("caps a stage report by the previous stage", () => {
-    const by = new Map([
-      [1, "10"],
-      [2, "8"],
-      [3, "0"],
-    ]);
     assert.throws(
-      () =>
-        assertStageReportQty({
-          stages,
-          qtyByStage: by,
-          stageSequence: 2,
-          qtyDone: "3",
-          orderQty: "100",
-        }),
-      /left on this stage/,
+      () => assertLabourStages([lines[1]!, lines[2]!, lines[0]!, lines[3]!]),
+      /Install labour sequences/,
     );
-    assertStageReportQty({
-      stages,
-      qtyByStage: by,
-      stageSequence: 2,
-      qtyDone: "2",
-      orderQty: "100",
+  });
+
+  it("made pcs are the last making stage, installed the last install step", () => {
+    assert.equal(madeQty(lines, done), "4");
+    assert.equal(madeQty([], done), "0");
+    assert.equal(installedQty(lines, done), "1");
+  });
+
+  it("a stage may report what the previous stage passed on", () => {
+    assert.equal(stageRoom(lines, done, "cut"), null);
+    assert.equal(stageRoom(lines, done, "cat")!.toString(), "4");
+    assert.equal(stageRoom(lines, done, "uv")!.toString(), "2");
+    // Install step 1: fully made pcs not yet delivered; step 2: delivered not yet installed.
+    assert.equal(stageRoom(lines, done, "kirim")!.toString(), "1");
+    assert.equal(stageRoom(lines, done, "pasang")!.toString(), "2");
+    assert.equal(installCapacity(lines, done, "kirim"), "4");
+    assert.equal(installCapacity(lines, done, "pasang"), "3");
+  });
+
+  it("refuses a report past the SPK qty or the stage room", () => {
+    assertStageReport({ qtyDone: "4", orderQty: "10", orderDone: "0", room: new Decimal(4), fromLabel: "Cutting" });
+    assert.throws(
+      () => assertStageReport({ qtyDone: "5", orderQty: "10", orderDone: "0", room: new Decimal(4), fromLabel: "Cutting" }),
+      /4 Cutting has passed on/,
+    );
+    assert.throws(
+      () => assertStageReport({ qtyDone: "3", orderQty: "10", orderDone: "8", room: null, fromLabel: "" }),
+      /left on this SPK/,
+    );
+  });
+
+  it("refuses a void that leaves a later stage ahead", () => {
+    assertStageVoid(lines, done, "cat", "2");
+    assert.throws(() => assertStageVoid(lines, done, "cat", "3"), /next stage/);
+    // Last making stage vs install step 1.
+    assertStageVoid(lines, done, "uv", "1");
+    assert.throws(() => assertStageVoid(lines, done, "uv", "2"), /installed/);
+    // Install step 1 vs step 2.
+    assertStageVoid(lines, done, "kirim", "2");
+    assert.throws(() => assertStageVoid(lines, done, "kirim", "3"), /next stage/);
+    assertStageVoid(lines, done, "pasang", "1");
+  });
+
+  it("weights each track", () => {
+    // (10×40 + 6×40 + 4×20) / 10 = 72
+    assert.equal(itemMakingPercent("10", lines, done), 72);
+    assert.equal(itemMakingPercent("0", lines, done), 0);
+    // (3×30 + 1×70) / 10 = 16
+    assert.equal(itemInstallPercent("10", lines, done), 16);
+  });
+});
+
+describe("assertProcessChange", () => {
+  const p = (key: string, role: StageLine["role"], sequence: number, weightPercent: number): ProcessLine => ({
+    key,
+    role,
+    sequence,
+    weightPercent,
+    name: key,
+    executor: "inhouse",
+  });
+  const before = [p("cut", "making", 1, 40), p("cat", "making", 2, 40), p("uv", "making", 3, 20)];
+  const done = new Map([
+    ["cut", "10"],
+    ["cat", "6"],
+  ]);
+  const live = new Set(["cut", "cat"]);
+
+  it("allows reweighting and adding a stage where nothing downstream has started", () => {
+    assertProcessChange({
+      before,
+      after: [p("cut", "making", 1, 30), p("cat", "making", 2, 30), p("coat", "making", 3, 20), p("uv", "making", 4, 20)],
+      liveKeys: live,
+      doneByLine: done,
     });
   });
 
-  it("caps the first stage by the SPK qty", () => {
+  it("refuses an order where a stage did more than what feeds it", () => {
     assert.throws(
       () =>
-        assertStageReportQty({
-          stages,
-          qtyByStage: new Map([
-            [1, "95"],
-            [2, "0"],
-            [3, "0"],
-          ]),
-          stageSequence: 1,
-          qtyDone: "6",
-          orderQty: "100",
+        assertProcessChange({
+          before,
+          after: [p("cut", "making", 1, 30), p("coat", "making", 2, 30), p("cat", "making", 3, 20), p("uv", "making", 4, 20)],
+          liveKeys: live,
+          doneByLine: done,
         }),
-      /left on this stage/,
+      /cat already did 6, more than the 0 coat/,
     );
+  });
+
+  it("keeps lines with live SPKs: not removed, same role and executor, stage 1 stays first", () => {
+    assert.throws(
+      () => assertProcessChange({ before, after: [p("cut", "making", 1, 100)], liveKeys: live, doneByLine: done }),
+      /cat has live SPKs: cancel them/,
+    );
+    assert.throws(
+      () =>
+        assertProcessChange({
+          before,
+          after: [p("cut", "making", 1, 60), { ...p("cat", "making", 2, 40), executor: "vendor" }, p("uv", "making", 3, 20)],
+          liveKeys: live,
+          doneByLine: done,
+        }),
+      /inhouse \/ vendor/,
+    );
+    assert.throws(
+      () =>
+        assertProcessChange({
+          before,
+          after: [p("cat", "making", 1, 40), p("cut", "making", 2, 40), p("uv", "making", 3, 20)],
+          liveKeys: new Set(["cut"]),
+          doneByLine: new Map(),
+        }),
+      /must stay making stage 1/,
+    );
+    // A stage with no live SPKs can be removed.
+    assertProcessChange({
+      before,
+      after: [p("cut", "making", 1, 50), p("cat", "making", 2, 50)],
+      liveKeys: live,
+      doneByLine: done,
+    });
   });
 });
 

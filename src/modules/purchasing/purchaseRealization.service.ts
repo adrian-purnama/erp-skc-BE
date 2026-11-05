@@ -39,6 +39,8 @@ import { notifyPurchaseOrderEvent } from "./purchasingNotify";
 import { assertRealizationFeeWithinHandover, directToVendorTargets } from "../production/vendorWork";
 import { assertRealizationNotPaid } from "./purchasePayment.service";
 import { PURCHASE_PAYMENT_LIVE_STATUSES, PurchasePaymentRepo } from "../../models/purchasePayment.model";
+import { VendorInvoiceRepo } from "../../models/vendorInvoice.model";
+import { repriceVendorReceipts } from "./vendorMoney";
 
 /** Nota files live apart from project files (Shrink DB only cleans `project`). */
 
@@ -453,6 +455,7 @@ export class PurchaseRealizationService {
       );
       if (!updated) throw new Error("Realization is no longer a draft");
     });
+    await repriceVendorReceipts(doc.purchaseOrderId);
     await notifyPurchaseOrderEvent({
       kind: "goods_received",
       orderId: String(doc.purchaseOrderId),
@@ -473,6 +476,10 @@ export class PurchaseRealizationService {
     if (order?.status === "cancelled") {
       throw new Error("Its PO was cancelled with this part kept as received, so it cannot be voided");
     }
+    if (doc.invoiceId) {
+      const invoice = await VendorInvoiceRepo.model.findById(doc.invoiceId).select({ number: 1 }).lean().exec();
+      throw new Error(`This GR is on vendor invoice ${invoice?.number ?? ""}: remove it from the invoice first`);
+    }
     await assertRealizationNotPaid(doc);
     const updated = await PurchaseRealizationRepo.findOneAndUpdate(
       { _id: doc._id, status: "posted" },
@@ -486,6 +493,7 @@ export class PurchaseRealizationService {
       },
     );
     if (!updated) throw new Error("Failed to void realization");
+    await repriceVendorReceipts(doc.purchaseOrderId);
     return this.get(id, actor);
   }
 
@@ -503,8 +511,13 @@ export class PurchaseRealizationService {
         { poLineId: l.id, label: l.materialName, qty: l.qty, unitPrice: l.unitPrice },
       ]),
     );
+    // A vendor GR is goods only: its money comes from its invoice, or the PO price until then.
+    const vendor = input.method === "vendor";
+    const lines = vendor
+      ? input.lines.map((l) => ({ ...l, unitPrice: poLines.get(l.poLineId)?.unitPrice ?? "0" }))
+      : input.lines;
     const checked = checkRealizationLines({
-      lines: input.lines,
+      lines,
       poLines,
       realizedElsewhere: await realizedOnOrder(input.purchaseOrderId, exceptId),
     });
@@ -522,7 +535,7 @@ export class PurchaseRealizationService {
       lines: checked.lines.map((l) => ({ poLineId: l.poLineId, qty: l.qty })),
       exceptRealizationId: exceptId,
     });
-    const priced = checkRealizationCharges(checked.total, input.charges);
+    const priced = checkRealizationCharges(checked.total, vendor ? [] : input.charges);
     return {
       purchaseOrderId: new Types.ObjectId(order.id),
       requestId: new Types.ObjectId(order.requestId),
@@ -531,7 +544,7 @@ export class PurchaseRealizationService {
       buyerName,
       purchaseDate: input.purchaseDate,
       place: input.place,
-      notaNumber: input.notaNumber,
+      notaNumber: vendor ? "" : input.notaNumber,
       receivedByUserId: input.receivedByUserId ? new Types.ObjectId(input.receivedByUserId) : null,
       receivedByName,
       deliveryNoteNumber: input.deliveryNoteNumber,
@@ -563,24 +576,29 @@ export class PurchaseRealizationService {
     );
     const orderById = new Map(orders.map((o) => [String(o._id), o]));
     const names = await userEmailsById(docs.flatMap((d) => (d.createdBy ? [String(d.createdBy)] : [])));
-    // Staff notas: the live reimbursement paying each back (a rejected nota is free again).
-    const reimbursements = await PurchasePaymentRepo.model
+    // The live payment naming each GR / NR, if any.
+    const payments = await PurchasePaymentRepo.model
       .find({
-        kind: "reimburse",
         status: { $in: PURCHASE_PAYMENT_LIVE_STATUSES },
-        "items.realizationId": { $in: docs.filter((d) => d.method === "staff").map((d) => d._id) },
+        realizationIds: { $in: docs.map((d) => d._id) },
       })
-      .select({ number: 1, status: 1, items: 1 })
+      .select({ number: 1, status: 1, realizationIds: 1 })
       .lean()
       .exec();
-    const reimbursementOf = new Map<string, { id: string; number: string; status: (typeof reimbursements)[number]["status"] }>();
-    for (const p of reimbursements) {
-      for (const i of p.items) {
-        if (i.status !== "rejected") {
-          reimbursementOf.set(String(i.realizationId), { id: String(p._id), number: p.number, status: p.status });
-        }
+    const paymentOf = new Map<string, { id: string; number: string; status: (typeof payments)[number]["status"] }>();
+    for (const p of payments) {
+      for (const rid of p.realizationIds) {
+        paymentOf.set(String(rid), { id: String(p._id), number: p.number, status: p.status });
       }
     }
+    const invoices = await VendorInvoiceRepo.model
+      .find({ _id: { $in: docs.map((d) => d.invoiceId).filter(Boolean) } })
+      .select({ number: 1, status: 1 })
+      .lean()
+      .exec();
+    const invoiceById = new Map(
+      invoices.map((i) => [String(i._id), { id: String(i._id), number: i.number, status: i.status }]),
+    );
     return docs.map((d) => {
       const order = orderById.get(String(d.purchaseOrderId));
       const po = summaries.get(String(d.purchaseOrderId));
@@ -610,7 +628,8 @@ export class PurchaseRealizationService {
         place: d.place ?? "",
         deliveryNoteNumber: d.deliveryNoteNumber ?? "",
         deliveredTo: d.deliveredTo ?? "us",
-        reimbursement: reimbursementOf.get(String(d._id)) ?? null,
+        payment: paymentOf.get(String(d._id)) ?? null,
+        invoice: d.invoiceId ? (invoiceById.get(String(d.invoiceId)) ?? null) : null,
         subtotal: d.subtotal ?? d.total,
         chargesTotal: d.chargesTotal ?? "0",
         total: d.total,

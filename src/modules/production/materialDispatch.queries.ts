@@ -17,7 +17,7 @@ import { userEmailsById } from "../../utils/shared";
 import { formatDecimal } from "../itemMaster/itemUomConvert";
 import { labourItemIds, loadItemMeta } from "../itemMaster/itemMeta";
 import type { DispatchableMaterial } from "./production.planner";
-import { approvedFeeOrders, postedReceiptsByKey } from "./vendorWork";
+import { approvedFeeOrders, postedReceiptsByKey, sendsMaterialToVendor } from "./vendorWork";
 
 /** Subcon material dispatch reads, shared by the SPK detail and the dispatch service. */
 
@@ -44,7 +44,7 @@ type Flow = {
 
 /** Each non-fee SPK material and where it is; `exceptDispatchId` leaves one dispatch out. */
 export async function materialFlow(order: LeanOrder, exceptDispatchId?: Types.ObjectId): Promise<Flow[]> {
-  if (order.type !== "subcon" || !order.snapshot) return [];
+  if (!sendsMaterialToVendor(order) || !order.snapshot) return [];
   const all = order.snapshot.materials.map((m) => ({
     materialItemId: String(m.materialItemId),
     itemUomId: String(m.itemUomId),
@@ -128,7 +128,7 @@ export async function materialsAtVendorOut(order: LeanOrder): Promise<Production
 export async function dispatchVendorOf(
   order: LeanOrder,
 ): Promise<{ vendorId: Types.ObjectId; vendorName: string; purchaseOrderId: Types.ObjectId; purchaseOrderNumber: string } | null> {
-  if (order.type !== "subcon") return null;
+  if (!sendsMaterialToVendor(order)) return null;
   const [fee] = await approvedFeeOrders(order._id);
   if (!fee) return null;
   const vendor = await VendorRepo.model.findById(fee.vendorId).select({ name: 1 }).lean().exec();
@@ -218,7 +218,9 @@ export async function subconDispatchOut(order: LeanOrder): Promise<{
   dispatches: MaterialDispatchOutDto[];
   dispatchVendor: { vendorName: string; purchaseOrderNumber: string } | null;
 }> {
-  if (order.type !== "subcon") return { materialsAtVendor: [], dispatches: [], dispatchVendor: null };
+  if (!sendsMaterialToVendor(order)) {
+    return { materialsAtVendor: [], dispatches: [], dispatchVendor: null };
+  }
   const [materialsAtVendor, dispatches, vendor] = await Promise.all([
     materialsAtVendorOut(order),
     dispatchesOut(order._id),

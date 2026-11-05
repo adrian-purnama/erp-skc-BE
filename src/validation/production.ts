@@ -7,6 +7,8 @@ import type {
   CreateProductionReportInDto,
   ProductionHandoverCheckDto,
   ProductionOrderStatusDto,
+  ProductionProcessLineInDto,
+  SaveProductionProcessInDto,
   SaveMaterialDispatchInDto,
   SaveProductionHandoverInDto,
   UpdateProductionOrderInDto,
@@ -110,6 +112,8 @@ export function parseCreateProductionOrderDto(
   return {
     projectId: parseObjectId(row.projectId, "projectId"),
     shopDrawingItemId: parseObjectId(row.shopDrawingItemId, "shopDrawingItemId"),
+    labourItemId: parseObjectId(row.labourItemId, "labourItemId"),
+    labourUomId: parseObjectId(row.labourUomId, "labourUomId"),
     qty: parseProductionQty(row.qty),
     plannedStart,
     plannedFinish,
@@ -159,24 +163,10 @@ export function parseCreateProductionReportDto(
   body: unknown,
 ): CreateProductionReportInDto {
   const row = asRecord(body);
-  let stageSequence: number | undefined;
-  if (row.stageSequence !== undefined && row.stageSequence !== null) {
-    const n =
-      typeof row.stageSequence === "number"
-        ? row.stageSequence
-        : typeof row.stageSequence === "string"
-          ? Number(row.stageSequence.trim())
-          : NaN;
-    if (!Number.isInteger(n) || n < 1) {
-      throw new Error("stageSequence must be a positive integer");
-    }
-    stageSequence = n;
-  }
   return {
     qtyDone: parseProductionQty(row.qtyDone, "qtyDone"),
     reportDate: parseRequiredYmd(row.reportDate, "reportDate"),
     notes: parseText(row.notes, "notes", NOTES_MAX),
-    ...(stageSequence !== undefined ? { stageSequence } : {}),
   };
 }
 
@@ -285,4 +275,65 @@ export function parseSendMaterialDispatchDto(body: unknown): { dispatchDate: str
     dispatchDate: parseRequiredYmd(row.dispatchDate, "dispatchDate"),
     receivedByName: parseText(row.receivedByName, "receivedByName", 120),
   };
+}
+
+function parseProcessInt(raw: unknown, field: string, max: number): number {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : NaN;
+  if (!Number.isInteger(n) || n < 1 || n > max) {
+    throw new Error(`${field} must be an integer from 1 to ${max}`);
+  }
+  return n;
+}
+
+export function parseSaveProductionProcessDto(body: unknown): SaveProductionProcessInDto {
+  const row = asRecord(body);
+  const reason = parseReason(row.reason, "reason");
+  if (!Array.isArray(row.lines) || row.lines.length === 0) {
+    throw new Error("Add at least one stage");
+  }
+  const seen = new Set<string>();
+  const lines = row.lines.map((raw, i): ProductionProcessLineInDto => {
+    const line = asRecord(raw);
+    const role = line.role;
+    if (role !== "making" && role !== "install") {
+      throw new Error(`Stage ${i + 1}: role must be making or install`);
+    }
+    const executor = line.executor;
+    if (executor !== "inhouse" && executor !== "vendor") {
+      throw new Error(`Stage ${i + 1}: executor must be inhouse or vendor`);
+    }
+    const base = {
+      role,
+      executor,
+      sequence: parseProcessInt(line.sequence, `Stage ${i + 1} sequence`, 999),
+      weightPercent: parseProcessInt(line.weightPercent, `Stage ${i + 1} weight`, 100),
+    } as const;
+    if (typeof line.key === "string" && line.key.trim()) {
+      const key = line.key.trim();
+      if (seen.has(key)) throw new Error("A stage is listed twice");
+      seen.add(key);
+      return { ...base, key };
+    }
+    return {
+      ...base,
+      labourItemId: parseObjectId(line.labourItemId, `Stage ${i + 1} labour item`),
+      labourUomId: parseObjectId(line.labourUomId, `Stage ${i + 1} UOM`),
+      totalQty: parseProductionQty(line.totalQty, `Stage ${i + 1} qty`),
+      unitPrice: parseUnitPrice(line.unitPrice, `Stage ${i + 1} unit price`),
+    };
+  });
+  return { reason, lines };
+}
+
+function parseUnitPrice(raw: unknown, field: string): string {
+  const text = typeof raw === "number" ? String(raw) : raw;
+  if (typeof text !== "string" || !text.trim()) throw new Error(`${field} is required`);
+  let d: Decimal;
+  try {
+    d = new Decimal(text.trim());
+  } catch {
+    throw new Error(`${field} must be a number`);
+  }
+  if (!d.isFinite() || d.isNeg()) throw new Error(`${field} must be 0 or more`);
+  return formatDecimal(d);
 }

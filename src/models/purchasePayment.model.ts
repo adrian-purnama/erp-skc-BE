@@ -1,7 +1,7 @@
 import { Schema, type Types } from "mongoose";
 import { auditedModel } from "../core/audit/auditedModel";
 
-/** `vendor`: a stage of paying a PO's vendor; `reimburse`: paying staff back for their notas. */
+/** Who is paid on the PO: `vendor` = the PO's vendor; `reimburse` = a staff member, for their Nota Realisasi. */
 export const PURCHASE_PAYMENT_KINDS = ["vendor", "reimburse"] as const;
 export type PurchasePaymentKind = (typeof PURCHASE_PAYMENT_KINDS)[number];
 
@@ -15,7 +15,7 @@ export const PURCHASE_PAYMENT_STATUSES = [
 ] as const;
 export type PurchasePaymentStatus = (typeof PURCHASE_PAYMENT_STATUSES)[number];
 
-/** Statuses that hold an amount against the PO (or a nota against reimbursement). */
+/** Statuses that hold an amount against what the PO owes its payee. */
 export const PURCHASE_PAYMENT_LIVE_STATUSES: PurchasePaymentStatus[] = [
   "draft",
   "pending_approval",
@@ -23,15 +23,12 @@ export const PURCHASE_PAYMENT_LIVE_STATUSES: PurchasePaymentStatus[] = [
   "paid",
 ];
 
-/** DP (down payment), termin (progress payment), pelunasan (final settlement). */
-export const PURCHASE_PAYMENT_STAGES = ["dp", "termin", "pelunasan"] as const;
+/** `partial`: part of what is owed; `full`: everything left for the payee at that moment. */
+export const PURCHASE_PAYMENT_STAGES = ["partial", "full"] as const;
 export type PurchasePaymentStage = (typeof PURCHASE_PAYMENT_STAGES)[number];
 
 export const PURCHASE_PAYMENT_METHODS = ["transfer", "cash", "other"] as const;
 export type PurchasePaymentMethod = (typeof PURCHASE_PAYMENT_METHODS)[number];
-
-export const REIMBURSE_ITEM_STATUSES = ["pending", "approved", "rejected"] as const;
-export type ReimburseItemStatus = (typeof REIMBURSE_ITEM_STATUSES)[number];
 
 /** Level 1 → level 2 sign-off, by the approvers copied from the PO at submit. */
 export type PaymentApproval = {
@@ -50,16 +47,6 @@ export type PaymentApproval = {
   rejectReason?: string;
 };
 
-/** One staff nota in a reimbursement, approved by its own PO's approvers. */
-export type ReimburseItem = PaymentApproval & {
-  _id?: Types.ObjectId;
-  realizationId: Types.ObjectId;
-  purchaseOrderId: Types.ObjectId;
-  /** The nota total (goods + charges) at the time it was added, integer rupiah. */
-  amount: string;
-  status: ReimburseItemStatus;
-};
-
 /** Transfer slip / receipt, in the `purchasing` GridFS bucket. */
 export type PaymentProof = {
   _id?: Types.ObjectId;
@@ -72,29 +59,30 @@ export type PaymentProof = {
 };
 
 /**
- * Money going out for purchasing: a vendor payment stage on one PO, or a
- * reimbursement of staff notas. Approved, then paid by finance with proof.
- * Loosely tied to goods received: a stage may name receipts, but only the
- * pelunasan needs the PO fully received.
+ * Money going out on one PO, to one payee: the PO's vendor, or a staff member
+ * paid back for their posted Nota Realisasi. Partial or full; approved by the
+ * PO's approvers, then paid by finance with proof. It may name the vendor
+ * invoices (vendor) or NR (reimburse) it pays for.
  */
 export interface PurchasePaymentInterface extends PaymentApproval {
   number: string;
   kind: PurchasePaymentKind;
   status: PurchasePaymentStatus;
-  /** Vendor payments. */
-  purchaseOrderId?: Types.ObjectId | null;
+  purchaseOrderId: Types.ObjectId;
+  /** The PO's vendor (both kinds, for display). */
   vendorId?: Types.ObjectId | null;
-  stage?: PurchasePaymentStage | null;
-  /** Percent of the PO payable, or a fixed amount; null for pelunasan and reimbursements. */
+  stage: PurchasePaymentStage;
+  /** Partial: percent of what the payee is owed, or a fixed amount; null for full. */
   basis?: "percent" | "fixed" | null;
   rate?: string | null;
-  /** Receipts this stage pays for, if any (informational). */
+  /** Reimburse: the payee's NR this pays back, if named. */
   realizationIds: Types.ObjectId[];
-  /** Reimbursements: the staff member paid back, and their notas. */
+  /** Vendor: the posted vendor invoices this pays, if named. */
+  invoiceIds: Types.ObjectId[];
+  /** Reimbursements: the staff member paid back. */
   payeeUserId?: Types.ObjectId | null;
   payeeName: string;
-  items: ReimburseItem[];
-  /** Integer rupiah to pay (reimbursement: the approved notas once decided). */
+  /** Integer rupiah to pay. */
   amount: string;
   /** YYYY-MM-DD or null. */
   dueDate?: string | null;
@@ -131,17 +119,6 @@ const approvalFields = {
   rejectReason: { type: String, trim: true, default: "" },
 };
 
-const itemSchema = new Schema(
-  {
-    ...approvalFields,
-    realizationId: { type: Schema.Types.ObjectId, ref: "PurchaseRealization", required: true },
-    purchaseOrderId: { type: Schema.Types.ObjectId, ref: "PurchaseOrder", required: true },
-    amount: { type: String, required: true, trim: true },
-    status: { type: String, enum: REIMBURSE_ITEM_STATUSES, required: true, default: "pending" },
-  },
-  { _id: true },
-);
-
 const proofSchema = new Schema(
   {
     gridFsId: { type: Schema.Types.ObjectId, required: true },
@@ -166,15 +143,15 @@ const purchasePaymentSchema = new Schema<PurchasePaymentInterface>(
       default: "draft",
       index: true,
     },
-    purchaseOrderId: { type: Schema.Types.ObjectId, ref: "PurchaseOrder", default: null, index: true },
+    purchaseOrderId: { type: Schema.Types.ObjectId, ref: "PurchaseOrder", required: true, index: true },
     vendorId: { type: Schema.Types.ObjectId, ref: "Vendor", default: null },
-    stage: { type: String, enum: [...PURCHASE_PAYMENT_STAGES, null], default: null },
+    stage: { type: String, enum: PURCHASE_PAYMENT_STAGES, required: true },
     basis: { type: String, enum: ["percent", "fixed", null], default: null },
     rate: { type: String, trim: true, default: null },
     realizationIds: { type: [Schema.Types.ObjectId], default: [] },
+    invoiceIds: { type: [Schema.Types.ObjectId], default: [] },
     payeeUserId: { type: Schema.Types.ObjectId, ref: "User", default: null, index: true },
     payeeName: { type: String, trim: true, default: "" },
-    items: { type: [itemSchema], default: [] },
     amount: { type: String, required: true, default: "0" },
     dueDate: { type: String, default: null },
     notes: { type: String, trim: true, default: "" },
@@ -194,7 +171,8 @@ const purchasePaymentSchema = new Schema<PurchasePaymentInterface>(
   { timestamps: true },
 );
 
-purchasePaymentSchema.index({ "items.realizationId": 1 });
+purchasePaymentSchema.index({ realizationIds: 1 });
+purchasePaymentSchema.index({ invoiceIds: 1 });
 purchasePaymentSchema.index({ kind: 1, status: 1, createdAt: -1 });
 
 export const PurchasePaymentRepo = auditedModel<PurchasePaymentInterface>(

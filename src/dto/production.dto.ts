@@ -1,6 +1,9 @@
 import type { ProjectRabUserRefOutDto } from "./projectRab.dto";
 
+/** Shop drawing item make type: a tag only (outsource makes File Produksi optional). */
 export type ProductionOrderTypeDto = "inhouse" | "subcon" | "outsource";
+export type ProductionLabourRoleDto = "making" | "install";
+export type ProductionLabourExecutorDto = "inhouse" | "vendor";
 export type ProductionOrderStatusDto =
   | "draft"
   | "released"
@@ -25,12 +28,18 @@ export type ProductionReadinessItemOutDto = {
   label: string;
   makeType: ProductionOrderTypeDto;
   shopDrawing: boolean;
+  /** BOQ with qty > 0; on outsource, the item's own qty > 0. */
   boq: boolean;
-  /** BOQ make qty; null when there is no BOQ. */
+  /** False on outsource: no BOQ, the qty is set on the item. */
+  boqRequired: boolean;
+  /** Make qty (BOQ, or the outsource item's); null when unset. */
   makeQty: string | null;
   productionFile: boolean;
-  /** False for outsource: the vendor brings its own production files. */
+  /** False for outsource: File Produksi is optional there. */
   productionFileRequired: boolean;
+  /** Making labour set: sequences 1..n and weights totalling 100. */
+  labour: boolean;
+  labourDetail: string;
   ready: boolean;
 };
 
@@ -51,6 +60,25 @@ export type ProductionItemProgressStatusDto =
   | "in_progress"
   | "done";
 
+/** One RAB labour line of an item: what its SPKs hold and finished. */
+export type ProductionStageProgressOutDto = {
+  /** RAB line key `${itemId}:${labourItemId}:${labourUomId}`. */
+  key: string;
+  labourItemId: string;
+  labourUomId: string;
+  name: string;
+  role: ProductionLabourRoleDto;
+  executor: ProductionLabourExecutorDto;
+  sequence: number | null;
+  weightPercent: number | null;
+  /** Qty held by this line's SPKs (completed SPKs count their finished qty). */
+  orderedQty: string;
+  doneQty: string;
+  /** Free to put on a new SPK: makeQty (install: what feeds the step) − orderedQty. */
+  remainingToOrder: string;
+  orderCount: number;
+};
+
 /** Per shop drawing item: planned vs ordered (SPK) vs finished. */
 export type ProductionItemProgressOutDto = {
   itemId: string;
@@ -58,16 +86,28 @@ export type ProductionItemProgressOutDto = {
   name: string;
   label: string;
   category: string | null;
+  makeType: ProductionOrderTypeDto;
   makeQty: string;
-  /** Qty held by SPKs (completed SPKs count their finished qty). */
+  /** Qty held by first-stage SPKs (completed SPKs count their finished qty). */
   orderedQty: string;
+  /** Pcs fully made (last making stage done). */
   doneQty: string;
   /** makeQty − orderedQty, never below 0. */
   remainingToOrder: string;
-  /** doneQty / makeQty × 100, 0–100. */
+  /** Weighted making progress: Σ stage weight × stage done ÷ makeQty, 0–100. */
   percent: number;
+  /** Pcs fully installed (last install step done). */
+  installedQty: string;
+  /** Weighted install progress over the install steps, 0–100. */
+  installPercent: number;
+  /** The item's process (stages + weights) is valid, so SPKs can be made. */
+  processReady: boolean;
+  /** What is missing, or a short summary when ready. */
+  processDetail: string;
   status: ProductionItemProgressStatusDto;
   orderCount: number;
+  /** Making stages in sequence, then install steps in sequence. */
+  stages: ProductionStageProgressOutDto[];
 };
 
 export type ProductionProjectProgressOutDto = {
@@ -93,7 +133,13 @@ export type ProductionOrderMaterialOutDto = {
 export type ProductionOrderSummaryOutDto = {
   id: string;
   number: string;
-  type: ProductionOrderTypeDto;
+  labourItemId: string;
+  labourUomId: string;
+  labourName: string;
+  role: ProductionLabourRoleDto;
+  executor: ProductionLabourExecutorDto;
+  /** Making stage order; null on install SPKs. */
+  sequence: number | null;
   status: ProductionOrderStatusDto;
   projectId: string;
   projectNumber: string;
@@ -101,12 +147,9 @@ export type ProductionOrderSummaryOutDto = {
   shopDrawingItemId: string;
   itemLabel: string;
   qty: string;
-  /** Finished pcs (last labour stage, or legacy Σ qtyDone). */
+  /** Σ live reports on this SPK. */
   doneQty: string;
-  /**
-   * Weighted labour progress 0–100 when the SPK has frozen stages;
-   * otherwise same as doneQty/qty percent.
-   */
+  /** doneQty / qty, 0–100. */
   progressPercent: number;
   plannedStart: string | null;
   plannedFinish: string | null;
@@ -117,24 +160,12 @@ export type ProductionOrderSummaryOutDto = {
   completedAt: string | null;
 };
 
-export type ProductionLabourStageOutDto = {
-  sequence: number;
-  name: string;
-  weightPercent: number;
-  materialItemId: string;
-  itemUomId: string;
-  /** Pcs reported through this stage. */
-  qtyDone: string;
-};
-
 export type ProductionReportOutDto = {
   id: string;
   productionOrderId: string;
   /** Set when a vendor handover created this report; void the handover instead. */
   handoverId: string | null;
   qtyDone: string;
-  /** Inhouse staged report; null on legacy / vendor reports. */
-  stageSequence: number | null;
   reportDate: string;
   notes: string;
   reportedBy: ProjectRabUserRefOutDto | null;
@@ -169,23 +200,28 @@ export type ProductionOrderOutDto = ProductionOrderSummaryOutDto & {
   productionFile: ProductionOrderFileRefOutDto | null;
   /** Largest qty this SPK may hold right now (draft edit / create). */
   maxQty: string;
+  /**
+   * Item-wide qty this stage may still report: previous stage done (install:
+   * made pcs) minus this line's done. Null on the first making stage.
+   */
+  reportRoom: string | null;
+  /** Where that room comes from: the previous stage's name, or "Fully made" on install. */
+  reportRoomFrom: string | null;
   reports: ProductionReportOutDto[];
-  /** Subcon / outsource: vendor handovers, newest first (empty for inhouse). */
+  /** Vendor SPK: handovers, newest first (empty for inhouse). */
   handovers: ProductionHandoverOutDto[];
   /** Checklist rows a new handover starts with. */
   defaultHandoverChecklist: string[];
-  /** Subcon / outsource: each fee line, how much of it may be received so far and how much is. */
+  /** Vendor SPK: its fee line, how much of it may be received so far and how much is. */
   vendorFees: ProductionVendorFeeOutDto[];
-  /** Subcon: each material, how much is at our warehouse, on its way and at the vendor. */
+  /** Vendor SPK with materials: each material at our warehouse, on its way and at the vendor. */
   materialsAtVendor: ProductionMaterialAtVendorOutDto[];
-  /** Subcon: Surat Jalan to the vendor, newest first. */
+  /** Vendor SPK with materials: Surat Jalan to the vendor, newest first. */
   dispatches: MaterialDispatchOutDto[];
-  /** Subcon: where material goes, from the approved fee PO; null until it is approved. */
+  /** Vendor SPK with materials: where material goes, from the approved fee PO; null until approved. */
   dispatchVendor: { vendorName: string; purchaseOrderNumber: string } | null;
   /** POs carrying this SPK's lines; `vendorFee` ones are the subcon / outsource vendor. */
   purchaseOrders: ProductionOrderPurchaseOutDto[];
-  /** Inhouse staged SPK: frozen labour stepper (empty when legacy / vendor). */
-  labourStages: ProductionLabourStageOutDto[];
 };
 
 export type ProductionOrderPurchaseOutDto = {
@@ -195,13 +231,16 @@ export type ProductionOrderPurchaseOutDto = {
   status: "draft" | "pending_approval" | "approved" | "rejected" | "cancelled";
   /** Σ of this SPK's lines on the PO, integer rupiah. */
   total: string;
-  /** Carries the vendor fee (a labour line): the subcon / outsource vendor's PO. */
+  /** Carries the vendor fee (a labour line): the vendor's PO. */
   vendorFee: boolean;
 };
 
 export type CreateProductionOrderInDto = {
   projectId: string;
   shopDrawingItemId: string;
+  /** The RAB labour line (item × UOM) on this drawing the SPK is for. */
+  labourItemId: string;
+  labourUomId: string;
   qty: string;
   plannedStart: string | null;
   plannedFinish: string | null;
@@ -232,8 +271,6 @@ export type CreateProductionReportInDto = {
   qtyDone: string;
   reportDate: string;
   notes: string;
-  /** Required on inhouse SPKs that froze labour stages. */
-  stageSequence?: number;
 };
 
 export type VoidProductionReportInDto = { reason: string };
@@ -371,4 +408,24 @@ export type SaveMaterialDispatchInDto = {
   lines: Array<{ materialItemId: string; itemUomId: string; qty: string }>;
   notes: string;
   receivedByName: string;
+};
+
+/** One stage in the Production process editor: an existing RAB labour line, or a new one. */
+export type ProductionProcessLineInDto = {
+  role: ProductionLabourRoleDto;
+  executor: ProductionLabourExecutorDto;
+  sequence: number;
+  weightPercent: number;
+} & (
+  | { key: string }
+  | { key?: undefined; labourItemId: string; labourUomId: string; totalQty: string; unitPrice: string }
+);
+
+/**
+ * Save an item's whole process. Existing lines left out are removed; new
+ * ones are added to the RAB. Recorded as an auto-committed RAB change.
+ */
+export type SaveProductionProcessInDto = {
+  reason: string;
+  lines: ProductionProcessLineInDto[];
 };

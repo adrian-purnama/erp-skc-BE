@@ -5,7 +5,10 @@ import {
   boqLineKey,
   buildQuotationSections,
   buildSeedLines,
+  DEFAULT_QUOTATION_CHARGES,
+  chargeLabel,
   computeTotals,
+  quotationCharges,
   LABOUR_LINE_KEY,
   quotationNumber,
   repriceLines,
@@ -233,12 +236,13 @@ describe("computeTotals", () => {
       lines,
       discountType: "percent",
       discountValue: "10",
-      taxPercent: "11",
+      charges: [...DEFAULT_QUOTATION_CHARGES],
     });
     assert.equal(t.subtotal, "2500");
     assert.equal(t.discountAmount, "250");
     assert.equal(t.taxBase, "2250");
-    assert.equal(t.taxAmount, "248");
+    assert.equal(t.charges[0]!.amount, "248");
+    assert.equal(t.chargesTotal, "248");
     assert.equal(t.grandTotal, "2498");
     assert.equal(t.costTotal, "1800");
     assert.equal(t.margin, "450");
@@ -249,10 +253,76 @@ describe("computeTotals", () => {
       lines,
       discountType: "amount",
       discountValue: "99999",
-      taxPercent: "0",
+      charges: [],
     });
     assert.equal(t.discountAmount, "2500");
     assert.equal(t.grandTotal, "0");
+  });
+
+  it("adds enabled percent (on DPP) and fixed charges, skips disabled ones", () => {
+    const t = computeTotals({
+      lines,
+      discountType: "amount",
+      discountValue: "500",
+      charges: [
+        { key: "ppn", label: "PPN", kind: "percent", value: "11", enabled: true },
+        { key: "kirim", label: "Ongkir", kind: "fixed", value: "100", enabled: true },
+        { key: "pph", label: "PPh", kind: "percent", value: "2", enabled: false },
+      ],
+    });
+    // DPP 2000: PPN 220 + ongkir 100; PPh off.
+    assert.equal(t.taxBase, "2000");
+    assert.deepEqual(t.charges.map((c) => c.amount), ["220", "100", "0"]);
+    assert.equal(t.chargesTotal, "320");
+    assert.equal(t.grandTotal, "2320");
+  });
+});
+
+describe("deducted charges", () => {
+  const lines = [{ qty: "1", unitPrice: "1000", costUnitPrice: "500" }];
+
+  it("subtracts a deducted percent or fixed line", () => {
+    const t = computeTotals({
+      lines,
+      discountType: "amount",
+      discountValue: "0",
+      charges: [
+        { key: "ppn", label: "PPN", kind: "percent", value: "11", enabled: true },
+        { key: "tunai", label: "Potongan", sign: "deduct", kind: "percent", value: "5", enabled: true },
+        { key: "dp", label: "DP", sign: "deduct", kind: "fixed", value: "100", enabled: true },
+      ],
+    });
+    assert.deepEqual(t.charges.map((c) => c.amount), ["110", "-50", "-100"]);
+    assert.equal(t.grandTotal, "960");
+  });
+
+  it("never takes the total below zero", () => {
+    const t = computeTotals({
+      lines,
+      discountType: "amount",
+      discountValue: "0",
+      charges: [{ key: "x", label: "X", sign: "deduct", kind: "fixed", value: "5000", enabled: true }],
+    });
+    assert.equal(t.grandTotal, "0");
+    assert.equal(t.chargesTotal, "-1000");
+  });
+
+  it("prints the reason after the label", () => {
+    assert.equal(
+      chargeLabel({ label: "Potongan", kind: "percent", value: "5", note: "pembayaran tunai" }),
+      "Potongan 5% (pembayaran tunai)",
+    );
+  });
+});
+
+describe("quotationCharges", () => {
+  it("reads old revisions' PPN percent as one charge", () => {
+    assert.deepEqual(quotationCharges({ taxPercent: "11" }), [
+      { key: "ppn", label: "PPN", sign: "add", note: "", kind: "percent", value: "11", enabled: true },
+    ]);
+    assert.equal(quotationCharges({ taxPercent: "0" })[0]!.enabled, false);
+    assert.equal(chargeLabel({ label: "PPN", kind: "percent", value: "11" }), "PPN 11%");
+    assert.equal(chargeLabel({ label: "Ongkir", kind: "fixed", value: "100" }), "Ongkir");
   });
 });
 

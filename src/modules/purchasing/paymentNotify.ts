@@ -34,34 +34,21 @@ export async function notifyPaymentEvent(input: {
   kind: PaymentNotifyKind;
   paymentId: string;
   actorUserId: string;
-  /** Reimbursements: the nota that was just decided. */
-  itemId?: string;
 }): Promise<void> {
   try {
     const doc = (await PurchasePaymentRepo.model.findById(input.paymentId).lean().exec()) as LeanPayment | null;
     if (!doc) return;
     const actor = input.actorUserId;
-    const po = doc.purchaseOrderId
-      ? await PurchaseOrderRepo.model.findById(doc.purchaseOrderId).select({ number: 1 }).lean().exec()
-      : null;
-    const what =
-      doc.kind === "vendor"
-        ? `${doc.stage ? STAGE_LABELS[doc.stage] : "Payment"} for ${po?.number ?? "a PO"}`
-        : `Reimbursement to ${doc.payeeName}`;
+    const po = await PurchaseOrderRepo.model.findById(doc.purchaseOrderId).select({ number: 1 }).lean().exec();
+    const what = `${STAGE_LABELS[doc.stage]} ${doc.kind === "vendor" ? "payment" : "reimbursement"} to ${
+      doc.payeeName || "the vendor"
+    } for ${po?.number ?? "a PO"}`;
     const summary = `${doc.number} · ${what} · ${rupiah(doc.amount)}`;
     const paymentLink = `/dashboard/finance/payments?payment=${String(doc._id)}`;
     const owner = doc.createdBy ? [doc.createdBy] : [];
 
-    // Who signs next: the whole stage, or the notas still waiting at this level.
-    const nextApprovers = (): Array<Types.ObjectId | null | undefined> => {
-      if (doc.status !== "pending_approval") return [];
-      if (doc.kind === "vendor") {
-        return [doc.approvalLevel === 1 ? doc.approver1Id : doc.approver2Id];
-      }
-      return doc.items
-        .filter((i) => i.status === "pending" && (!input.itemId || String(i._id) === input.itemId || input.kind === "submitted"))
-        .map((i) => (i.approvalLevel === 1 ? i.approver1Id : i.approver2Id));
-    };
+    const nextApprovers = (): Array<Types.ObjectId | null | undefined> =>
+      doc.status === "pending_approval" ? [doc.approvalLevel === 1 ? doc.approver1Id : doc.approver2Id] : [];
 
     if (input.kind === "submitted" || (input.kind === "approved_step" && doc.status === "pending_approval")) {
       await safeNotify({
@@ -89,11 +76,10 @@ export async function notifyPaymentEvent(input: {
       return;
     }
     if (input.kind === "rejected" || doc.status === "rejected") {
-      const item = input.itemId ? doc.items.find((i) => String(i._id) === input.itemId) : null;
       await safeNotify({
         userIds: ids(owner, actor),
-        title: `${item ? "A nota was rejected" : "Payment rejected"}: ${doc.number}`,
-        body: `${summary} · ${item?.rejectReason || doc.rejectReason || ""}`.trim(),
+        title: `Payment rejected: ${doc.number}`,
+        body: `${summary} · ${doc.rejectReason || ""}`.trim(),
         link: paymentLink,
       });
       return;

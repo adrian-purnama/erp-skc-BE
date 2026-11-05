@@ -8,11 +8,6 @@ export interface ProductionReportInterface {
   /** Copied from the SPK so per-item roll-ups need no join. */
   shopDrawingItemId: Types.ObjectId;
   qtyDone: string;
-  /**
-   * Inhouse staged SPK: which frozen labour stage this qty completed.
-   * Null on legacy reports and vendor handover reports.
-   */
-  stageSequence?: number | null;
   /** Set when a vendor handover created this report (it is voided with the handover). */
   handoverId?: Types.ObjectId | null;
   /** YYYY-MM-DD (Jakarta). */
@@ -47,7 +42,6 @@ const productionReportSchema = new Schema<ProductionReportInterface>(
       required: true,
     },
     qtyDone: { type: String, required: true, trim: true },
-    stageSequence: { type: Number, required: false, default: null, min: 1 },
     handoverId: { type: Schema.Types.ObjectId, ref: "ProductionHandover", default: null },
     reportDate: { type: String, required: true, trim: true },
     notes: { type: String, trim: true, default: "" },

@@ -13,6 +13,7 @@ import {
   addJakartaDays,
   jakartaYmdString,
 } from "../../utils/shared";
+import { projectScheduleService } from "./projectSchedule.service";
 import { assertProjectExists } from "./projectShared";
 
 type LeanEvent = {
@@ -34,7 +35,13 @@ function toOut(doc: LeanEvent): ProjectCalendarEventOutDto {
     notes: doc.notes ?? "",
     startAt: new Date(doc.startAt).toISOString(),
     endAt: doc.endAt ? new Date(doc.endAt).toISOString() : null,
+    source: "event",
+    shopDrawingItemId: null,
   };
+}
+
+function byStart(a: ProjectCalendarEventOutDto, b: ProjectCalendarEventOutDto): number {
+  return a.startAt.localeCompare(b.startAt);
 }
 
 export class ProjectCalendarService {
@@ -45,7 +52,8 @@ export class ProjectCalendarService {
       .sort({ startAt: 1 })
       .lean()
       .exec()) as LeanEvent[];
-    return rows.map(toOut);
+    const schedule = await projectScheduleService.calendarEvents(projectId);
+    return [...rows.map(toOut), ...schedule].sort(byStart);
   }
 
   async create(
@@ -147,6 +155,10 @@ export class ProjectCalendarService {
       .sort({ startAt: 1 })
       .lean()
       .exec()) as LeanEvent[];
+    const events = [
+      ...rows.map(toOut),
+      ...(await projectScheduleService.calendarEvents(opts.projectId)),
+    ].sort(byStart);
 
     const todayYmd = jakartaYmdString(new Date());
     const dueUntilYmd = addJakartaDays(todayYmd, opts.nearDays);
@@ -155,15 +167,14 @@ export class ProjectCalendarService {
     const upcoming: ProjectCalendarEventOutDto[] = [];
     const dueIn: ProjectCalendarEventOutDto[] = [];
 
-    for (const row of rows) {
-      const out = toOut(row);
-      const startYmd = jakartaYmdString(new Date(row.startAt));
-      const endYmd = row.endAt
-        ? jakartaYmdString(new Date(row.endAt))
+    for (const out of events) {
+      const startYmd = jakartaYmdString(new Date(out.startAt));
+      const endYmd = out.endAt
+        ? jakartaYmdString(new Date(out.endAt))
         : startYmd;
 
       const activeToday =
-        row.type === "deadline"
+        out.type === "deadline"
           ? startYmd === todayYmd
           : startYmd <= todayYmd && todayYmd <= endYmd;
 
@@ -176,7 +187,7 @@ export class ProjectCalendarService {
       }
 
       if (
-        row.type === "deadline" &&
+        out.type === "deadline" &&
         startYmd >= todayYmd &&
         startYmd <= dueUntilYmd
       ) {

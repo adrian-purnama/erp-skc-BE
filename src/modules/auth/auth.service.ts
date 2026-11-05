@@ -17,6 +17,10 @@ import { SendOtpInDto } from "../../dto/sendOtp.dto";
 import { env } from "../../core/env";
 import { logger } from "../../core/logger";
 import { UserModel } from "../../models/user.model";
+import type {
+  DashboardMetricsOutDto,
+  SaveDashboardMetricsInDto,
+} from "../../dto/dashboardMetrics.dto";
 import { assertUploadFile } from "../../validation/uploadFile";
 import { signAccessToken } from "../../utils/jwt";
 import { appConfigService } from "../appConfig/AppConfig.service";
@@ -224,6 +228,25 @@ export class AuthService {
       throw new Error("User not found");
     }
     return toProfileOut(user);
+  }
+
+  async getDashboardMetrics(userId: string): Promise<DashboardMetricsOutDto> {
+    const user = await UserModel.findById(userId).select({ dashboardMetrics: 1 });
+    if (!user) throw new Error("User not found");
+    return Object.fromEntries(user.dashboardMetrics ?? new Map<string, string[]>());
+  }
+
+  async saveDashboardMetrics(
+    userId: string,
+    input: SaveDashboardMetricsInDto,
+  ): Promise<DashboardMetricsOutDto> {
+    const user = await UserModel.findByIdAndUpdate(
+      userId,
+      { $set: { [`dashboardMetrics.${input.dashboard}`]: input.metrics } },
+      { new: true },
+    ).select({ dashboardMetrics: 1 });
+    if (!user) throw new Error("User not found");
+    return Object.fromEntries(user.dashboardMetrics ?? new Map<string, string[]>());
   }
 
   async updateProfile(

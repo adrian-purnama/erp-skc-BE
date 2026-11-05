@@ -28,10 +28,17 @@ export type ReadinessItemInput = {
   hasBoq: boolean;
   makeQty: string | null;
   hasProductionFile: boolean;
+  /** The item's RAB labour lines (making stages and install). */
+  labour: StageLine[];
 };
 
-/** Outsource vendors work from the shop drawing; no File Produksi needed. */
+/** Outsource items: File Produksi is optional (it can still be uploaded). */
 export function needsProductionFile(makeType: ShopDrawingMakeType): boolean {
+  return makeType !== "outsource";
+}
+
+/** Outsource items need no BOQ: their make qty sits on the item. */
+export function needsBoq(makeType: ShopDrawingMakeType): boolean {
   return makeType !== "outsource";
 }
 
@@ -64,8 +71,12 @@ function plural(n: number, word: string): string {
 
 export function evaluateReadiness(input: ReadinessInput): ReadinessResult {
   const items = input.items.map((i): ProductionReadinessItemOutDto => {
-    const boq = i.hasBoq && positive(i.makeQty);
+    const boqRequired = needsBoq(i.makeType);
+    // Outsource: the item's own qty stands in for the BOQ.
+    const boq = (i.hasBoq || !boqRequired) && positive(i.makeQty);
     const productionFileRequired = needsProductionFile(i.makeType);
+    // Info only: the process is set up in Production and checked per SPK.
+    const labour = processReadiness(i.labour);
     return {
       itemId: i.itemId,
       code: i.code,
@@ -74,9 +85,12 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessResult {
       makeType: i.makeType,
       shopDrawing: i.hasShopDrawing,
       boq,
-      makeQty: i.hasBoq ? i.makeQty : null,
+      boqRequired,
+      makeQty: i.makeQty,
       productionFile: i.hasProductionFile,
       productionFileRequired,
+      labour: labour.ok,
+      labourDetail: labour.detail,
       ready:
         i.hasShopDrawing &&
         boq &&
@@ -116,7 +130,7 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessResult {
       detail:
         items.length === 0
           ? "Add shop drawing items"
-          : `${readyCount} of ${plural(items.length, "item")} have shop drawing, BOQ and File Produksi (outsource: shop drawing and BOQ qty)`,
+          : `${readyCount} of ${plural(items.length, "item")} have shop drawing, BOQ (outsource: qty), File Produksi (optional on outsource)`,
     },
   ];
 
@@ -398,117 +412,294 @@ export function percentOf(done: string, total: string): number {
   return Math.min(100, Math.max(0, Math.round(p.toNumber())));
 }
 
-/** Frozen / planned inhouse labour stage (sequence + weight). */
-export type LabourStageRef = {
-  sequence: number;
-  weightPercent: number;
+/** One RAB labour line of an item, as the SPK stage rules see it. */
+export type StageLine = {
+  key: string;
+  role: "making" | "install";
+  sequence: number | null;
+  weightPercent: number | null;
 };
 
-export type StageReportRow = {
-  qtyDone: string;
-  stageSequence?: number | null;
-};
+type StageRole = StageLine["role"];
 
-/** Inhouse release: ≥1 stage, sequences 1..n, weights sum to exactly 100. */
-export function assertLabourStagesForRelease(
-  stages: Array<{ sequence: number; weightPercent: number }>,
-): void {
-  if (stages.length === 0) {
-    throw new Error(
-      "Cannot release: add inhouse labour stages on this item's RAB (sequence + weight %) first",
-    );
-  }
-  const sorted = [...stages].sort((a, b) => a.sequence - b.sequence);
-  for (let i = 0; i < sorted.length; i++) {
-    const s = sorted[i]!;
+/** One track's lines (making or install) in stage order, unsequenced last. */
+export function stagesOf<T extends StageLine>(lines: T[], role: StageRole): T[] {
+  return lines
+    .filter((l) => l.role === role)
+    .sort((a, b) => (a.sequence ?? 9999) - (b.sequence ?? 9999));
+}
+
+/** Making lines in stage order (unsequenced last). */
+export function makingStages<T extends StageLine>(lines: T[]): T[] {
+  return stagesOf(lines, "making");
+}
+
+const TRACK_LABEL: Record<StageRole, string> = { making: "Making", install: "Install" };
+
+function assertTrack(stages: StageLine[], role: StageRole): void {
+  const label = TRACK_LABEL[role];
+  stages.forEach((s, i) => {
     if (s.sequence !== i + 1) {
-      throw new Error(
-        "Cannot release: labour stage sequences must be 1, 2, 3… with no gaps",
-      );
+      throw new Error(`${label} labour sequences must be 1, 2, 3… with no gaps`);
     }
     if (
+      s.weightPercent === null ||
       !Number.isInteger(s.weightPercent) ||
       s.weightPercent < 1 ||
       s.weightPercent > 100
     ) {
-      throw new Error("Each labour stage weight must be an integer from 1 to 100");
+      throw new Error(`Each ${label.toLowerCase()} labour weight must be an integer from 1 to 100`);
     }
+  });
+  const sum = stages.reduce((acc, s) => acc + (s.weightPercent ?? 0), 0);
+  if (stages.length > 0 && sum !== 100) {
+    throw new Error(`${label} labour weights must total 100% (currently ${sum}%)`);
   }
-  const sum = sorted.reduce((acc, s) => acc + s.weightPercent, 0);
-  if (sum !== 100) {
-    throw new Error(
-      `Cannot release: labour stage weights must total 100% (currently ${sum}%)`,
-    );
-  }
-}
-
-/** Σ qtyDone per stage sequence (only rows with a stageSequence). */
-export function qtyByStage(
-  reports: StageReportRow[],
-  stages: LabourStageRef[],
-): Map<number, string> {
-  const sums = new Map<number, Decimal>();
-  for (const s of stages) sums.set(s.sequence, new Decimal(0));
-  for (const r of reports) {
-    if (r.stageSequence == null) continue;
-    if (!sums.has(r.stageSequence)) continue;
-    sums.set(r.stageSequence, sums.get(r.stageSequence)!.plus(r.qtyDone));
-  }
-  return new Map([...sums].map(([k, v]) => [k, formatDecimal(v)]));
-}
-
-/** Pcs that finished the last stage. */
-export function finishedQty(
-  stages: LabourStageRef[],
-  byStage: Map<number, string>,
-): string {
-  if (stages.length === 0) return "0";
-  const last = Math.max(...stages.map((s) => s.sequence));
-  return byStage.get(last) ?? "0";
-}
-
-/** Σ (qtyAtStage / orderQty × weight), rounded 0–100. */
-export function weightedProgressPercent(
-  orderQty: string,
-  stages: LabourStageRef[],
-  byStage: Map<number, string>,
-): number {
-  const qty = new Decimal(orderQty);
-  if (qty.lte(0) || stages.length === 0) return 0;
-  let sum = new Decimal(0);
-  for (const s of stages) {
-    const at = new Decimal(byStage.get(s.sequence) ?? "0");
-    sum = sum.plus(at.div(qty).times(s.weightPercent));
-  }
-  return Math.min(100, Math.max(0, Math.round(sum.toNumber())));
 }
 
 /**
- * Stage pipeline: first stage capped by order qty; later stages by the
- * previous stage's qty. `qtyByStage` is the amount already posted (before this report).
+ * The item's process is usable for SPKs: at least one making stage; each
+ * track (making, and install if any) has sequences 1..n and weights totalling 100.
  */
-export function assertStageReportQty(input: {
-  stages: LabourStageRef[];
-  qtyByStage: Map<number, string>;
-  stageSequence: number;
+export function assertLabourStages(lines: StageLine[]): void {
+  const making = stagesOf(lines, "making");
+  if (making.length === 0) {
+    throw new Error("Set up this item's process: add at least one making stage");
+  }
+  assertTrack(making, "making");
+  assertTrack(stagesOf(lines, "install"), "install");
+}
+
+/** Process status of an item, for the production panel. */
+export function processReadiness(lines: StageLine[]): { ok: boolean; detail: string } {
+  try {
+    assertLabourStages(lines);
+    const making = stagesOf(lines, "making").length;
+    const install = stagesOf(lines, "install").length;
+    return {
+      ok: true,
+      detail: `${plural(making, "stage")}${install > 0 ? ` + ${plural(install, "install step")}` : ""}`,
+    };
+  } catch (e) {
+    return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function doneOf(doneByLine: Map<string, string>, key: string): Decimal {
+  return new Decimal(doneByLine.get(key) ?? "0");
+}
+
+function lastDone(lines: StageLine[], doneByLine: Map<string, string>, role: StageRole): string {
+  const stages = stagesOf(lines, role);
+  const last = stages[stages.length - 1];
+  return last ? formatDecimal(doneOf(doneByLine, last.key)) : "0";
+}
+
+/** Pcs fully made: done on the last making stage. */
+export function madeQty(lines: StageLine[], doneByLine: Map<string, string>): string {
+  return lastDone(lines, doneByLine, "making");
+}
+
+/** Pcs fully installed: done on the last install stage. */
+export function installedQty(lines: StageLine[], doneByLine: Map<string, string>): string {
+  return lastDone(lines, doneByLine, "install");
+}
+
+/**
+ * What feeds a line: the previous stage of its track; install stage 1 is
+ * fed by pcs fully made. Null on making stage 1 (only SPK qty caps it).
+ */
+function sourceDone(
+  lines: StageLine[],
+  doneByLine: Map<string, string>,
+  line: StageLine,
+): Decimal | null {
+  const stages = stagesOf(lines, line.role);
+  const idx = stages.findIndex((s) => s.key === line.key);
+  if (idx > 0) return doneOf(doneByLine, stages[idx - 1]!.key);
+  if (line.role === "install") return new Decimal(madeQty(lines, doneByLine));
+  return null;
+}
+
+/**
+ * Item-wide qty a line may still report: what feeds it minus what it
+ * already did. Null on the first making stage: only the SPK qty caps it.
+ */
+export function stageRoom(
+  lines: StageLine[],
+  doneByLine: Map<string, string>,
+  key: string,
+): Decimal | null {
+  const line = lines.find((l) => l.key === key);
+  if (!line) throw new Error("This SPK's labour line is no longer on the RAB");
+  const source = sourceDone(lines, doneByLine, line);
+  if (source === null) return null;
+  const room = source.minus(doneOf(doneByLine, key));
+  return room.isNeg() ? new Decimal(0) : room;
+}
+
+/**
+ * Pcs an install line's SPKs may hold in all: what feeds it (fully made pcs
+ * for install step 1, else the previous install step's done).
+ */
+export function installCapacity(
+  lines: StageLine[],
+  doneByLine: Map<string, string>,
+  key: string,
+): string {
+  const line = lines.find((l) => l.key === key);
+  if (!line) throw new Error("This SPK's labour line is no longer on the RAB");
+  return formatDecimal(sourceDone(lines, doneByLine, line) ?? new Decimal(0));
+}
+
+/** A report (or handover) must fit the SPK qty and what the previous stage passed on. */
+export function assertStageReport(input: {
   qtyDone: string;
   orderQty: string;
+  orderDone: string;
+  room: Decimal | null;
+  fromLabel: string;
 }): void {
-  const stage = input.stages.find((s) => s.sequence === input.stageSequence);
-  if (!stage) throw new Error("Unknown labour stage on this SPK");
-  const q = new Decimal(input.qtyDone);
-  if (q.lte(0)) throw new Error("qtyDone must be greater than 0");
-  const sorted = [...input.stages].sort((a, b) => a.sequence - b.sequence);
-  const idx = sorted.findIndex((s) => s.sequence === input.stageSequence);
-  const cap =
-    idx <= 0
-      ? new Decimal(input.orderQty)
-      : new Decimal(input.qtyByStage.get(sorted[idx - 1]!.sequence) ?? "0");
-  const already = new Decimal(input.qtyByStage.get(input.stageSequence) ?? "0");
-  const left = cap.minus(already);
-  if (q.gt(left)) {
+  assertReportQty(input.qtyDone, input.orderQty, input.orderDone);
+  if (input.room !== null && new Decimal(input.qtyDone).gt(input.room)) {
     throw new Error(
-      `qtyDone ${formatDecimal(q)} is more than the ${formatDecimal(left.isNeg() ? new Decimal(0) : left)} left on this stage`,
+      `qtyDone ${formatDecimal(new Decimal(input.qtyDone))} is more than the ${formatDecimal(input.room)} ${input.fromLabel} has passed on`,
     );
   }
+}
+
+/** The line `line` feeds: the next stage of its track; after the last making stage, install step 1. */
+function fedBy(lines: StageLine[], line: StageLine): StageLine | null {
+  const stages = stagesOf(lines, line.role);
+  const idx = stages.findIndex((s) => s.key === line.key);
+  const next = stages[idx + 1];
+  if (next) return next;
+  if (line.role === "making") return stagesOf(lines, "install")[0] ?? null;
+  return null;
+}
+
+/** Voiding `qty` on line `key` must not leave the stage it feeds ahead of it. */
+export function assertStageVoid(
+  lines: StageLine[],
+  doneByLine: Map<string, string>,
+  key: string,
+  qty: string,
+): void {
+  const line = lines.find((l) => l.key === key);
+  if (!line) return;
+  const after = doneOf(doneByLine, key).minus(qty);
+  const next = fedBy(lines, line);
+  if (next && doneOf(doneByLine, next.key).gt(after)) {
+    throw new Error(
+      next.role === line.role
+        ? "Cannot void: the next stage already reported more than this stage would have left"
+        : "Cannot void: more pcs were already installed than would be left fully made",
+    );
+  }
+}
+
+/** A labour line as the process-change check sees it. */
+export type ProcessLine = StageLine & {
+  name: string;
+  executor: "inhouse" | "vendor";
+};
+
+/**
+ * A process edit on an item that may already be in production:
+ * - lines with live SPKs keep their role and executor and are not removed
+ * - making stage 1 with live SPKs stays stage 1 (it carries the BOQ materials)
+ * - in the new order no stage has done more than what feeds it
+ */
+export function assertProcessChange(input: {
+  before: ProcessLine[];
+  after: ProcessLine[];
+  /** Line keys with live (non-cancelled) SPKs. */
+  liveKeys: Set<string>;
+  doneByLine: Map<string, string>;
+}): void {
+  const afterByKey = new Map(input.after.map((l) => [l.key, l]));
+  for (const b of input.before) {
+    if (!input.liveKeys.has(b.key)) continue;
+    const a = afterByKey.get(b.key);
+    if (!a) throw new Error(`${b.name} has live SPKs: cancel them before removing the stage`);
+    if (a.role !== b.role) throw new Error(`${b.name} has live SPKs: making / install can't change`);
+    if (a.executor !== b.executor) {
+      throw new Error(`${b.name} has live SPKs: inhouse / vendor can't change`);
+    }
+  }
+  const firstBefore = makingStages(input.before)[0];
+  if (firstBefore && input.liveKeys.has(firstBefore.key)) {
+    if (makingStages(input.after)[0]?.key !== firstBefore.key) {
+      throw new Error(
+        `${firstBefore.name} has live SPKs and carries the materials: it must stay making stage 1`,
+      );
+    }
+  }
+  const nameOf = (key: string) => afterByKey.get(key)?.name ?? "A stage";
+  assertStageOrderKept(input.after, input.doneByLine, nameOf);
+}
+
+/** In stage order, no line has done more than what feeds it. */
+export function assertStageOrderKept(
+  lines: StageLine[],
+  doneByLine: Map<string, string>,
+  nameOf: (key: string) => string,
+): void {
+  for (const line of lines) {
+    const source = sourceDone(lines, doneByLine, line);
+    if (source === null) continue;
+    const done = doneOf(doneByLine, line.key);
+    if (done.gt(source)) {
+      const stages = stagesOf(lines, line.role);
+      const idx = stages.findIndex((s) => s.key === line.key);
+      const from = idx > 0 ? nameOf(stages[idx - 1]!.key) : "fully made";
+      throw new Error(
+        `${nameOf(line.key)} already did ${formatDecimal(done)}, more than the ${formatDecimal(source)} ${from} would pass on in this order`,
+      );
+    }
+  }
+}
+
+/** Unrounded track %: Σ weight × min(stage done, makeQty) ÷ makeQty, clamped 0–100. */
+export function trackPercentExact(
+  makeQty: string,
+  lines: StageLine[],
+  doneByLine: Map<string, string>,
+  role: StageRole,
+): number {
+  const make = new Decimal(makeQty);
+  if (make.lte(0)) return 0;
+  let sum = new Decimal(0);
+  for (const s of stagesOf(lines, role)) {
+    const done = Decimal.min(doneOf(doneByLine, s.key), make);
+    sum = sum.plus(done.div(make).times(s.weightPercent ?? 0));
+  }
+  return Math.min(100, Math.max(0, sum.toNumber()));
+}
+
+function trackPercent(
+  makeQty: string,
+  lines: StageLine[],
+  doneByLine: Map<string, string>,
+  role: StageRole,
+): number {
+  return Math.round(trackPercentExact(makeQty, lines, doneByLine, role));
+}
+
+/** Item making %: Σ weight × min(stage done, makeQty) ÷ makeQty, 0–100. */
+export function itemMakingPercent(
+  makeQty: string,
+  lines: StageLine[],
+  doneByLine: Map<string, string>,
+): number {
+  return trackPercent(makeQty, lines, doneByLine, "making");
+}
+
+/** Item install %: the same over the install steps. */
+export function itemInstallPercent(
+  makeQty: string,
+  lines: StageLine[],
+  doneByLine: Map<string, string>,
+): number {
+  return trackPercent(makeQty, lines, doneByLine, "install");
 }

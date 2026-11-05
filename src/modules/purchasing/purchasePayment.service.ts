@@ -7,14 +7,13 @@ import type { ProjectRabUserRefOutDto } from "../../dto/projectRab.dto";
 import type {
   PayablePurchaseOrderOutDto,
   PaymentApprovalOutDto,
+  PaymentPayeeOutDto,
   PayPurchasePaymentInDto,
   PurchaseOrderPaymentsOutDto,
   PurchasePaymentKindDto,
   PurchasePaymentOutDto,
   PurchasePaymentStatusDto,
-  ReimbursableNotaOutDto,
-  SaveReimbursementInDto,
-  SaveVendorPaymentInDto,
+  SavePurchasePaymentInDto,
 } from "../../dto/purchasing.dto";
 import {
   PurchaseOrderRepo,
@@ -26,7 +25,7 @@ import {
   PurchasePaymentRepo,
   type PaymentApproval,
   type PurchasePaymentInterface,
-  type ReimburseItem,
+  type PurchasePaymentKind,
 } from "../../models/purchasePayment.model";
 import {
   PurchaseRealizationRepo,
@@ -35,28 +34,41 @@ import {
 import { PurchasingSeqCounterModel } from "../../models/seqCounter.model";
 import { UserModel } from "../../models/user.model";
 import { VendorRepo } from "../../models/vendor.model";
+import { VendorInvoiceRepo, type VendorInvoiceInterface } from "../../models/vendorInvoice.model";
 import { jakartaYmdString, userEmailsById } from "../../utils/shared";
 import { projectNumberParts } from "../project/projectNumber";
-import {
-  APPROVE_PERM,
-  PURCHASING_BUCKET,
-  estimatesOf,
-  userHasPermission,
-  type PoActor,
-} from "./purchaseOrder.service";
-import {
-  checkVendorStage,
-  priceStage,
-  reimbursementOutcome,
-  sumAmounts,
-  vendorPayable,
-} from "./purchasePayment.planner";
-import { realizationStatus, sumRealized } from "./purchaseRealization.planner";
+import { APPROVE_PERM, PURCHASING_BUCKET, userHasPermission, type PoActor } from "./purchaseOrder.service";
+import { checkPaymentAmount, priceStage, sumAmounts } from "./purchasePayment.planner";
+import { vendorMoney } from "./vendorMoney";
 import { notifyPaymentEvent } from "./paymentNotify";
 
 type LeanPayment = PurchasePaymentInterface & { _id: Types.ObjectId };
 type LeanOrder = PurchaseOrderInterface & { _id: Types.ObjectId };
 type LeanRealization = PurchaseRealizationInterface & { _id: Types.ObjectId };
+type LeanInvoice = VendorInvoiceInterface & { _id: Types.ObjectId };
+
+/** Someone a PO owes money to: its vendor, or a staff member for their posted NR. */
+type Payee = {
+  kind: PurchasePaymentKind;
+  payeeUserId: string | null;
+  name: string;
+  owed: string;
+  final: boolean;
+  /** Reimburse: their NR, which a payment may name. */
+  realizations: LeanRealization[];
+  /** Vendor: the PO's posted invoices, which a payment may name. */
+  invoices: LeanInvoice[];
+};
+
+function invoiceRef(i: LeanInvoice) {
+  return {
+    id: String(i._id),
+    number: i.number,
+    vendorInvoiceNumber: i.vendorInvoiceNumber ?? "",
+    invoiceDate: i.invoiceDate,
+    total: i.total,
+  };
+}
 
 const PROOF_MAX = 12;
 const PROOF_MAX_BYTES = 15 * 1024 * 1024;
@@ -105,6 +117,11 @@ async function displayName(userId: string): Promise<string> {
   return user.fullName?.trim() || user.email || "";
 }
 
+async function vendorNameOf(vendorId: Types.ObjectId): Promise<string> {
+  const vendor = await VendorRepo.model.findById(vendorId).select({ name: 1 }).lean().exec();
+  return vendor?.name ?? "Unknown vendor";
+}
+
 function assertOwner(doc: LeanPayment, actor: PoActor): void {
   if (!actor.superAdmin && String(doc.createdBy) !== actor.userId) {
     throw new Error("Only the person who made this payment request can change it");
@@ -117,6 +134,12 @@ function assertEditable(doc: LeanPayment): void {
   }
 }
 
+function assertPayableOrder(order: LeanOrder): void {
+  if (order.status !== "approved" && !(order.status === "cancelled" && order.closedPartial)) {
+    throw new Error("Payments can only be made on an approved PO");
+  }
+}
+
 /** Who a level 1 → 2 approval waits on now. */
 function awaiting(a: PaymentApproval, waiting: boolean): string | null {
   if (!waiting) return null;
@@ -124,7 +147,7 @@ function awaiting(a: PaymentApproval, waiting: boolean): string | null {
   return id ? String(id) : null;
 }
 
-/** The chosen approver of the level it waits on, still holding that permission, not the requester. */
+/** The chosen approver of the level it waits on, still holding that permission, not the requester or payee. */
 async function assertApprover(
   a: PaymentApproval,
   waiting: boolean,
@@ -142,7 +165,7 @@ async function assertApprover(
   return level;
 }
 
-/** The PO's approvers, copied onto a stage / nota at submit. */
+/** The PO's approvers, copied onto the payment at submit. */
 function approversOf(order: LeanOrder): PaymentApproval {
   if (!order.approver1Id || !order.approver2Id) {
     throw new Error(`${order.number} has no approvers to approve its payments`);
@@ -171,45 +194,58 @@ async function approvalStep(level: PurchaseOrderApprovalLevel, userId: string): 
     : { approvalLevel: null, approvedAt: now, approvedBy: by, approvedByName: name };
 }
 
-/** Posted realizations of a PO split by who paid: the vendor (invoice) or staff (reimbursed). */
-async function postedRealizations(orderId: Types.ObjectId): Promise<LeanRealization[]> {
-  return (await PurchaseRealizationRepo.model
-    .find({ purchaseOrderId: orderId, status: "posted" })
-    .lean()
-    .exec()) as LeanRealization[];
-}
-
-/** The vendor's payable on a PO, and whether it is final (fully received or closed). */
-async function payableOf(order: LeanOrder): Promise<{
-  base: string;
-  final: boolean;
-  staffRealizedTotal: string;
-  realizations: LeanRealization[];
-}> {
-  const realizations = await postedRealizations(order._id);
-  const realized = sumRealized(
-    realizations.flatMap((r) => r.lines.map((l) => ({ poLineId: String(l.poLineId), qty: l.qty }))),
-  );
-  const fullyReceived =
-    order.closedPartial === true ||
-    realizationStatus(order.lines.map((l) => ({ qty: l.qty, realized: realized.get(String(l._id)) }))) === "full";
-  const staffRealizedTotal = sumAmounts(
-    realizations.filter((r) => r.method === "staff").map((r) => ({ amount: r.total })),
-  );
-  const { base, final } = vendorPayable({
-    estimatedTotal: estimatesOf(order).total,
-    staffRealizedTotal,
-    vendorRealizedTotal: sumAmounts(
-      realizations.filter((r) => r.method === "vendor").map((r) => ({ amount: r.total })),
-    ),
-    fullyReceived,
+/**
+ * Everyone the PO owes: the vendor first (its GRs at invoice or PO price, plus
+ * goods not yet received at the PO price; see `vendorMoney.ts`), then each
+ * staff member with posted NR (their NR total). `exceptRealizationId`: as if
+ * that GR / NR were voided.
+ */
+async function payeesOf(order: LeanOrder, exceptRealizationId?: Types.ObjectId): Promise<Payee[]> {
+  const money = await vendorMoney(order, {
+    exceptRealizationId: exceptRealizationId ? String(exceptRealizationId) : undefined,
   });
-  return { base, final, staffRealizedTotal, realizations };
+  const staffNotas = money.realizations.filter((r) => r.method === "staff" && r.buyerUserId);
+  const invoices = (await VendorInvoiceRepo.model
+    .find({ purchaseOrderId: order._id, status: "posted" })
+    .sort({ invoiceDate: 1, createdAt: 1 })
+    .lean()
+    .exec()) as LeanInvoice[];
+  const payees: Payee[] = [
+    {
+      kind: "vendor",
+      payeeUserId: null,
+      name: await vendorNameOf(order.vendorId),
+      owed: money.vendorOwed,
+      final: money.final,
+      realizations: [],
+      invoices,
+    },
+  ];
+  const byBuyer = new Map<string, LeanRealization[]>();
+  for (const n of staffNotas) {
+    const key = String(n.buyerUserId);
+    byBuyer.set(key, [...(byBuyer.get(key) ?? []), n]);
+  }
+  for (const [userId, notas] of byBuyer) {
+    payees.push({
+      kind: "reimburse",
+      payeeUserId: userId,
+      name: notas[notas.length - 1]!.buyerName || (await displayName(userId)),
+      owed: sumAmounts(notas.map((n) => ({ amount: n.total }))),
+      final: true,
+      realizations: notas,
+      invoices: [],
+    });
+  }
+  return payees;
 }
 
-async function liveStages(orderId: Types.ObjectId, exceptId?: Types.ObjectId): Promise<LeanPayment[]> {
+function samePayee(p: { kind: PurchasePaymentKind; payeeUserId?: Types.ObjectId | string | null }, payee: Payee) {
+  return p.kind === payee.kind && (payee.kind === "vendor" || String(p.payeeUserId) === payee.payeeUserId);
+}
+
+async function livePayments(orderId: Types.ObjectId, exceptId?: Types.ObjectId): Promise<LeanPayment[]> {
   const query: Record<string, unknown> = {
-    kind: "vendor",
     purchaseOrderId: orderId,
     status: { $in: PURCHASE_PAYMENT_LIVE_STATUSES },
   };
@@ -217,85 +253,65 @@ async function liveStages(orderId: Types.ObjectId, exceptId?: Types.ObjectId): P
   return (await PurchasePaymentRepo.model.find(query).lean().exec()) as LeanPayment[];
 }
 
-/** A vendor stage checked against the PO; returns the fields to store. */
-async function checkedVendorFields(input: SaveVendorPaymentInDto, exceptId?: Types.ObjectId) {
+/** A payment checked against what its payee is owed on the PO; returns the fields to store. */
+async function checkedFields(
+  kind: PurchasePaymentKind,
+  input: SavePurchasePaymentInDto,
+  exceptId?: Types.ObjectId,
+) {
   const order = await requireOrder(input.purchaseOrderId);
-  if (order.status !== "approved" && !(order.status === "cancelled" && order.closedPartial)) {
-    throw new Error("Payments can only be made on an approved PO");
+  assertPayableOrder(order);
+  const payees = await payeesOf(order);
+  const payee =
+    kind === "vendor"
+      ? payees[0]!
+      : payees.find((p) => p.kind === "reimburse" && p.payeeUserId === input.payeeUserId);
+  if (!payee) {
+    const name = input.payeeUserId ? await displayName(input.payeeUserId) : "This person";
+    throw new Error(`${name} has no posted Nota Realisasi on ${order.number} to be paid back for`);
   }
-  const { base, final, realizations } = await payableOf(order);
-  const others = await liveStages(order._id, exceptId);
+  const others = (await livePayments(order._id, exceptId)).filter((p) => samePayee(p, payee));
   const priced =
-    input.stage === "pelunasan" || !input.basis
+    input.stage === "full" || !input.basis
       ? "0"
-      : priceStage({ basis: input.basis, rate: input.rate, amount: input.amount, base });
-  const { amount } = checkVendorStage({
-    stage: input.stage,
-    amount: priced,
-    base,
-    final,
-    others: others.map((o) => ({ stage: o.stage ?? "termin", amount: o.amount })),
-  });
-  const vendorReceipts = new Set(realizations.filter((r) => r.method === "vendor").map((r) => String(r._id)));
+      : priceStage({ basis: input.basis, rate: input.rate, amount: input.amount, base: payee.owed });
+  const { amount } = checkPaymentAmount({ stage: input.stage, amount: priced, owed: payee.owed, others });
+  const notas = new Set(payee.realizations.map((r) => String(r._id)));
   for (const id of input.realizationIds) {
-    if (!vendorReceipts.has(id)) throw new Error("A linked receipt is not a posted vendor receipt of this PO");
+    if (!notas.has(id)) throw new Error(`A linked document is not a posted NR of ${payee.name} on this PO`);
+  }
+  const invoices = new Set(payee.invoices.map((i) => String(i._id)));
+  for (const id of input.invoiceIds) {
+    if (!invoices.has(id)) throw new Error("A linked invoice is not a posted vendor invoice of this PO");
   }
   return {
     purchaseOrderId: order._id,
     vendorId: order.vendorId,
+    payeeUserId: payee.payeeUserId ? new Types.ObjectId(payee.payeeUserId) : null,
+    payeeName: payee.name,
     stage: input.stage,
-    basis: input.stage === "pelunasan" ? null : input.basis,
+    basis: input.stage === "full" ? null : input.basis,
     rate: input.basis === "percent" ? input.rate : null,
     realizationIds: input.realizationIds.map((id) => new Types.ObjectId(id)),
+    invoiceIds: input.invoiceIds.map((id) => new Types.ObjectId(id)),
     amount,
     dueDate: input.dueDate,
     notes: input.notes,
   };
 }
 
-/** Notas already held by another live reimbursement (a rejected nota is free again). */
-async function heldNotaIds(exceptId?: Types.ObjectId): Promise<Set<string>> {
-  const query: Record<string, unknown> = {
-    kind: "reimburse",
-    status: { $in: PURCHASE_PAYMENT_LIVE_STATUSES },
-  };
-  if (exceptId) query._id = { $ne: exceptId };
-  const docs = (await PurchasePaymentRepo.model.find(query).select({ items: 1 }).lean().exec()) as LeanPayment[];
-  return new Set(
-    docs.flatMap((d) => d.items.filter((i) => i.status !== "rejected").map((i) => String(i.realizationId))),
-  );
-}
-
-/** A reimbursement's notas checked: posted staff notas bought by the payee, not held elsewhere. */
-async function checkedReimburseFields(input: SaveReimbursementInDto, exceptId?: Types.ObjectId) {
-  const payeeName = await displayName(input.payeeUserId);
-  const notas = (await PurchaseRealizationRepo.model
-    .find({ _id: { $in: input.realizationIds.map((id) => new Types.ObjectId(id)) } })
-    .lean()
-    .exec()) as LeanRealization[];
-  if (notas.length !== input.realizationIds.length) throw new Error("A nota was not found");
-  const held = await heldNotaIds(exceptId);
-  for (const n of notas) {
-    if (n.status !== "posted") throw new Error(`${n.number} is not posted`);
-    if (n.method !== "staff") throw new Error(`${n.number} was not bought by staff`);
-    if (String(n.buyerUserId) !== input.payeeUserId) {
-      throw new Error(`${n.number} was bought by ${n.buyerName || "someone else"}, not ${payeeName}`);
-    }
-    if (held.has(String(n._id))) throw new Error(`${n.number} is already in another reimbursement`);
-  }
-  const items: ReimburseItem[] = notas.map((n) => ({
-    realizationId: n._id,
-    purchaseOrderId: n.purchaseOrderId,
-    amount: n.total,
-    status: "pending",
-  }));
+function inputOf(doc: LeanPayment): SavePurchasePaymentInDto {
   return {
-    payeeUserId: new Types.ObjectId(input.payeeUserId),
-    payeeName,
-    items,
-    amount: sumAmounts(items),
-    dueDate: input.dueDate,
-    notes: input.notes,
+    purchaseOrderId: String(doc.purchaseOrderId),
+    payeeUserId: doc.payeeUserId ? String(doc.payeeUserId) : null,
+    stage: doc.stage,
+    basis: doc.basis ?? null,
+    rate: doc.rate ?? null,
+    amount: doc.amount,
+    dueDate: doc.dueDate ?? null,
+    notes: doc.notes,
+    realizationIds: doc.realizationIds.map(String),
+    invoiceIds: (doc.invoiceIds ?? []).map(String),
   };
 }
 
@@ -323,17 +339,15 @@ export class PurchasePaymentService {
     return this.out(docs, actor);
   }
 
-  /** Vendor stages and reimbursement notas waiting on this user's signature. */
+  /** Payments waiting on this user's signature. */
   async approvals(actor: PoActor): Promise<PurchasePaymentOutDto[]> {
     const me = new Types.ObjectId(actor.userId);
     const docs = (await PurchasePaymentRepo.model
       .find({
         status: "pending_approval",
         $or: [
-          { kind: "vendor", approvalLevel: 1, approver1Id: me },
-          { kind: "vendor", approvalLevel: 2, approver2Id: me },
-          { items: { $elemMatch: { status: "pending", approvalLevel: 1, approver1Id: me } } },
-          { items: { $elemMatch: { status: "pending", approvalLevel: 2, approver2Id: me } } },
+          { approvalLevel: 1, approver1Id: me },
+          { approvalLevel: 2, approver2Id: me },
         ],
       })
       .sort({ submittedAt: 1 })
@@ -350,27 +364,48 @@ export class PurchasePaymentService {
   async forOrder(orderId: string, actor?: PoActor): Promise<PurchaseOrderPaymentsOutDto> {
     if (!Types.ObjectId.isValid(orderId)) throw new Error("Invalid PO id");
     const order = await requireOrder(orderId);
-    const { base, final, staffRealizedTotal } = await payableOf(order);
+    const payees = await payeesOf(order);
     const docs = (await PurchasePaymentRepo.model
-      .find({ kind: "vendor", purchaseOrderId: order._id })
+      .find({ purchaseOrderId: order._id })
       .sort({ createdAt: 1 })
       .lean()
       .exec()) as LeanPayment[];
     const live = docs.filter((d) => PURCHASE_PAYMENT_LIVE_STATUSES.includes(d.status));
-    const scheduled = sumAmounts(live);
+    // A payee with only cancelled history still shows if it once had payments.
+    const payeesOut: PaymentPayeeOutDto[] = payees.map((p) => {
+      const mine = live.filter((d) => samePayee(d, p));
+      const scheduled = sumAmounts(mine);
+      return {
+        kind: p.kind,
+        payeeUserId: p.payeeUserId,
+        name: p.name,
+        owed: p.owed,
+        final: p.final,
+        scheduledTotal: scheduled,
+        paidTotal: sumAmounts(mine.filter((d) => d.status === "paid")),
+        remaining: Decimal.max(new Decimal(p.owed).minus(scheduled), 0).toFixed(0),
+        realizations: p.realizations.map((r) => ({
+          id: String(r._id),
+          number: r.number,
+          purchaseDate: r.purchaseDate,
+          total: r.total,
+        })),
+        invoices: p.invoices.map(invoiceRef),
+      };
+    });
     return {
       purchaseOrderId: orderId,
-      payable: base,
-      final,
-      scheduledTotal: scheduled,
-      paidTotal: sumAmounts(live.filter((d) => d.status === "paid")),
-      remaining: Decimal.max(new Decimal(base).minus(scheduled), 0).toFixed(0),
-      staffRealizedTotal,
+      purchaseOrderNumber: order.number,
+      vendorName: payees[0]!.name,
+      payees: payeesOut,
+      owedTotal: sumAmounts(payeesOut.map((p) => ({ amount: p.owed }))),
+      paidTotal: sumAmounts(payeesOut.map((p) => ({ amount: p.paidTotal }))),
+      remaining: sumAmounts(payeesOut.map((p) => ({ amount: p.remaining }))),
       payments: await this.out(docs, actor),
     };
   }
 
-  /** Approved (or closed-partial) POs that still have unscheduled vendor payable. */
+  /** Approved (or closed-partial) POs where some payee still has an unscheduled amount. */
   async listPayable(q?: string): Promise<PayablePurchaseOrderOutDto[]> {
     const docs = (await PurchaseOrderRepo.model
       .find({
@@ -380,42 +415,34 @@ export class PurchasePaymentService {
       .limit(500)
       .lean()
       .exec()) as LeanOrder[];
-    const vendors = await VendorRepo.model
-      .find({ _id: { $in: [...new Set(docs.map((d) => String(d.vendorId)))].map((id) => new Types.ObjectId(id)) } })
-      .select({ name: 1 })
-      .lean()
-      .exec();
-    const vendorName = new Map(vendors.map((v) => [String(v._id), v.name as string]));
-    const liveByOrder = new Map<string, LeanPayment[]>();
     const liveDocs = (await PurchasePaymentRepo.model
       .find({
-        kind: "vendor",
         purchaseOrderId: { $in: docs.map((d) => d._id) },
         status: { $in: PURCHASE_PAYMENT_LIVE_STATUSES },
       })
       .lean()
       .exec()) as LeanPayment[];
+    const liveByOrder = new Map<string, LeanPayment[]>();
     for (const p of liveDocs) {
-      if (!p.purchaseOrderId) continue;
       const key = String(p.purchaseOrderId);
-      const list = liveByOrder.get(key) ?? [];
-      list.push(p);
-      liveByOrder.set(key, list);
+      liveByOrder.set(key, [...(liveByOrder.get(key) ?? []), p]);
     }
     const rows: PayablePurchaseOrderOutDto[] = [];
     for (const order of docs) {
-      const { base, final } = await payableOf(order);
+      const payees = await payeesOf(order);
       const live = liveByOrder.get(String(order._id)) ?? [];
-      const scheduled = sumAmounts(live);
-      const remaining = Decimal.max(new Decimal(base).minus(scheduled), 0).toFixed(0);
-      if (new Decimal(remaining).lte(0)) continue;
+      let remaining = new Decimal(0);
+      for (const p of payees) {
+        const left = new Decimal(p.owed).minus(sumAmounts(live.filter((d) => samePayee(d, p))));
+        remaining = remaining.plus(Decimal.max(left, 0));
+      }
+      if (remaining.lte(0)) continue;
       rows.push({
         id: String(order._id),
         number: order.number,
-        vendorName: vendorName.get(String(order.vendorId)) ?? "Unknown vendor",
-        payable: base,
-        remaining,
-        final,
+        vendorName: payees[0]!.name,
+        owed: sumAmounts(payees.map((p) => ({ amount: p.owed }))),
+        remaining: remaining.toFixed(0),
       });
     }
     const needle = q?.trim().toLowerCase();
@@ -425,38 +452,18 @@ export class PurchasePaymentService {
     );
   }
 
-  /** Posted staff notas of a buyer that are not in a live reimbursement yet. */
-  async reimbursable(payeeUserId: string, exceptId?: string): Promise<ReimbursableNotaOutDto[]> {
-    if (!Types.ObjectId.isValid(payeeUserId)) throw new Error("Invalid user id");
-    const held = await heldNotaIds(exceptId && Types.ObjectId.isValid(exceptId) ? new Types.ObjectId(exceptId) : undefined);
-    const notas = (await PurchaseRealizationRepo.model
-      .find({ status: "posted", method: "staff", buyerUserId: new Types.ObjectId(payeeUserId) })
-      .sort({ purchaseDate: 1 })
-      .lean()
-      .exec()) as LeanRealization[];
-    const free = notas.filter((n) => !held.has(String(n._id)));
-    const poNumbers = await this.poNumbers(free.map((n) => n.purchaseOrderId));
-    return free.map((n) => ({
-      realizationId: String(n._id),
-      number: n.number,
-      purchaseOrderId: String(n.purchaseOrderId),
-      purchaseOrderNumber: poNumbers.get(String(n.purchaseOrderId)) ?? "—",
-      purchaseDate: n.purchaseDate,
-      place: n.place ?? "",
-      total: n.total,
-    }));
-  }
-
-  async createVendor(input: SaveVendorPaymentInDto, actor: PoActor): Promise<PurchasePaymentOutDto> {
+  async create(
+    kind: PurchasePaymentKind,
+    input: SavePurchasePaymentInDto,
+    actor: PoActor,
+  ): Promise<PurchasePaymentOutDto> {
     const created = await withTx(async () => {
-      const fields = await checkedVendorFields(input);
+      const fields = await checkedFields(kind, input);
       return PurchasePaymentRepo.create({
         ...fields,
         number: await allocateNumber(),
-        kind: "vendor",
+        kind,
         status: "draft",
-        payeeName: "",
-        items: [],
         reference: "",
         proofs: [],
         createdBy: new Types.ObjectId(actor.userId),
@@ -465,58 +472,28 @@ export class PurchasePaymentService {
     return this.get(String(created._id), actor);
   }
 
-  async updateVendor(id: string, input: SaveVendorPaymentInDto, actor: PoActor): Promise<PurchasePaymentOutDto> {
+  async update(
+    id: string,
+    kind: PurchasePaymentKind,
+    input: SavePurchasePaymentInDto,
+    actor: PoActor,
+  ): Promise<PurchasePaymentOutDto> {
     const doc = await requirePayment(id);
-    if (doc.kind !== "vendor") throw new Error("This is not a vendor payment");
+    if (doc.kind !== kind) {
+      throw new Error(kind === "vendor" ? "This is not a vendor payment" : "This is not a reimbursement");
+    }
     assertOwner(doc, actor);
     assertEditable(doc);
     if (String(doc.purchaseOrderId) !== input.purchaseOrderId) {
       throw new Error("A payment cannot move to another PO");
     }
     await withTx(async () => {
-      const fields = await checkedVendorFields(input, doc._id);
+      const fields = await checkedFields(kind, input, doc._id);
       const updated = await PurchasePaymentRepo.findOneAndUpdate(
         { _id: doc._id, status: doc.status },
         { $set: { ...fields, ...CLEAR_APPROVAL, status: "draft" } },
       );
       if (!updated) throw new Error("Payment changed meanwhile; reload it");
-    });
-    return this.get(id, actor);
-  }
-
-  async createReimbursement(input: SaveReimbursementInDto, actor: PoActor): Promise<PurchasePaymentOutDto> {
-    const created = await withTx(async () => {
-      const fields = await checkedReimburseFields(input);
-      return PurchasePaymentRepo.create({
-        ...fields,
-        number: await allocateNumber(),
-        kind: "reimburse",
-        status: "draft",
-        realizationIds: [],
-        reference: "",
-        proofs: [],
-        createdBy: new Types.ObjectId(actor.userId),
-      });
-    });
-    return this.get(String(created._id), actor);
-  }
-
-  async updateReimbursement(
-    id: string,
-    input: SaveReimbursementInDto,
-    actor: PoActor,
-  ): Promise<PurchasePaymentOutDto> {
-    const doc = await requirePayment(id);
-    if (doc.kind !== "reimburse") throw new Error("This is not a reimbursement");
-    assertOwner(doc, actor);
-    if (doc.status !== "draft") throw new Error("Only a draft reimbursement can be changed");
-    await withTx(async () => {
-      const fields = await checkedReimburseFields(input, doc._id);
-      const updated = await PurchasePaymentRepo.findOneAndUpdate(
-        { _id: doc._id, status: "draft" },
-        { $set: fields },
-      );
-      if (!updated) throw new Error("Reimbursement is no longer a draft");
     });
     return this.get(id, actor);
   }
@@ -529,55 +506,27 @@ export class PurchasePaymentService {
     if (!removed) throw new Error("Payment not found");
   }
 
-  /** Send for approval: a vendor stage to its PO's approvers, each nota to its own PO's. */
+  /** Send for approval to the PO's level 1 → level 2 approvers. */
   async submit(id: string, actor: PoActor): Promise<PurchasePaymentOutDto> {
     const doc = await requirePayment(id);
     assertOwner(doc, actor);
     if (doc.status !== "draft") throw new Error("Only a draft can be sent for approval");
-    const base = { status: "pending_approval", submittedAt: new Date(), submittedBy: new Types.ObjectId(actor.userId) };
     await withTx(async () => {
-      if (doc.kind === "vendor") {
-        await checkedVendorFields(
-          {
-            purchaseOrderId: String(doc.purchaseOrderId),
-            stage: doc.stage ?? "termin",
-            basis: doc.basis ?? null,
-            rate: doc.rate ?? null,
-            amount: doc.amount,
-            dueDate: doc.dueDate ?? null,
-            notes: doc.notes,
-            realizationIds: doc.realizationIds.map(String),
-          },
-          doc._id,
-        );
-        const order = await requireOrder(doc.purchaseOrderId!);
-        const updated = await PurchasePaymentRepo.findOneAndUpdate(
-          { _id: doc._id, status: "draft" },
-          { $set: { ...base, ...approversOf(order) } },
-        );
-        if (!updated) throw new Error("Payment is no longer a draft");
-        return;
-      }
-      const fields = await checkedReimburseFields(
-        {
-          payeeUserId: String(doc.payeeUserId),
-          realizationIds: doc.items.map((i) => String(i.realizationId)),
-          dueDate: doc.dueDate ?? null,
-          notes: doc.notes,
-        },
-        doc._id,
-      );
-      const orders = new Map<string, LeanOrder>();
-      for (const item of fields.items) {
-        const key = String(item.purchaseOrderId);
-        if (!orders.has(key)) orders.set(key, await requireOrder(item.purchaseOrderId));
-      }
-      const items = fields.items.map((i) => ({ ...i, ...approversOf(orders.get(String(i.purchaseOrderId))!) }));
+      const fields = await checkedFields(doc.kind, inputOf(doc), doc._id);
+      const order = await requireOrder(doc.purchaseOrderId);
       const updated = await PurchasePaymentRepo.findOneAndUpdate(
         { _id: doc._id, status: "draft" },
-        { $set: { ...base, items, amount: sumAmounts(items) } },
+        {
+          $set: {
+            ...fields,
+            ...approversOf(order),
+            status: "pending_approval",
+            submittedAt: new Date(),
+            submittedBy: new Types.ObjectId(actor.userId),
+          },
+        },
       );
-      if (!updated) throw new Error("Reimbursement is no longer a draft");
+      if (!updated) throw new Error("Payment is no longer a draft");
     });
     await notifyPaymentEvent({ kind: "submitted", paymentId: id, actorUserId: actor.userId });
     return this.get(id, actor);
@@ -585,8 +534,7 @@ export class PurchasePaymentService {
 
   async approve(id: string, actor: PoActor): Promise<PurchasePaymentOutDto> {
     const doc = await requirePayment(id);
-    if (doc.kind !== "vendor") throw new Error("Approve each nota of a reimbursement");
-    const level = await assertApprover(doc, doc.status === "pending_approval", actor.userId, [String(doc.createdBy)]);
+    const level = await assertApprover(doc, doc.status === "pending_approval", actor.userId, notApprovers(doc));
     const step = await approvalStep(level, actor.userId);
     const updated = await PurchasePaymentRepo.findOneAndUpdate(
       { _id: doc._id, status: "pending_approval", approvalLevel: level },
@@ -599,8 +547,7 @@ export class PurchasePaymentService {
 
   async reject(id: string, reason: string, actor: PoActor): Promise<PurchasePaymentOutDto> {
     const doc = await requirePayment(id);
-    if (doc.kind !== "vendor") throw new Error("Reject each nota of a reimbursement");
-    const level = await assertApprover(doc, doc.status === "pending_approval", actor.userId, [String(doc.createdBy)]);
+    const level = await assertApprover(doc, doc.status === "pending_approval", actor.userId, notApprovers(doc));
     const updated = await PurchasePaymentRepo.findOneAndUpdate(
       { _id: doc._id, status: "pending_approval", approvalLevel: level },
       {
@@ -615,52 +562,6 @@ export class PurchasePaymentService {
     );
     if (!updated) throw new Error("Payment changed meanwhile; reload it");
     await notifyPaymentEvent({ kind: "rejected", paymentId: id, actorUserId: actor.userId });
-    return this.get(id, actor);
-  }
-
-  /** One nota of a reimbursement: level 1 → level 2 by its own PO's approvers. */
-  async decideItem(
-    id: string,
-    itemId: string,
-    decision: { approve: true } | { approve: false; reason: string },
-    actor: PoActor,
-  ): Promise<PurchasePaymentOutDto> {
-    const doc = await requirePayment(id);
-    if (doc.kind !== "reimburse") throw new Error("This is not a reimbursement");
-    const item = doc.items.find((i) => String(i._id) === itemId);
-    if (!item) throw new Error("Nota not found in this reimbursement");
-    const level = await assertApprover(
-      item,
-      doc.status === "pending_approval" && item.status === "pending",
-      actor.userId,
-      [String(doc.createdBy), String(doc.payeeUserId)],
-    );
-    const patch: Partial<ReimburseItem> = decision.approve
-      ? { ...(await approvalStep(level, actor.userId)), ...(level === 2 ? { status: "approved" as const } : {}) }
-      : {
-          ...CLEAR_APPROVAL,
-          status: "rejected",
-          rejectedAt: new Date(),
-          rejectedBy: new Types.ObjectId(actor.userId),
-          rejectReason: decision.reason,
-        };
-    const items = doc.items.map((i) => (String(i._id) === itemId ? { ...i, ...patch } : i));
-    const outcome = reimbursementOutcome(items);
-    const updated = await PurchasePaymentRepo.findOneAndUpdate(
-      {
-        _id: doc._id,
-        status: "pending_approval",
-        items: { $elemMatch: { _id: item._id, status: "pending", approvalLevel: level } },
-      },
-      { $set: { items, status: outcome.status, amount: outcome.amount } },
-    );
-    if (!updated) throw new Error("Reimbursement changed meanwhile; reload it");
-    await notifyPaymentEvent({
-      kind: decision.approve ? "approved_step" : "rejected",
-      paymentId: id,
-      actorUserId: actor.userId,
-      itemId,
-    });
     return this.get(id, actor);
   }
 
@@ -782,8 +683,8 @@ export class PurchasePaymentService {
     return this.get(id, actor);
   }
 
-  private async poNumbers(ids: Array<Types.ObjectId | null | undefined>): Promise<Map<string, string>> {
-    const unique = [...new Set(ids.filter(Boolean).map(String))];
+  private async poNumbers(ids: Types.ObjectId[]): Promise<Map<string, string>> {
+    const unique = [...new Set(ids.map(String))];
     if (unique.length === 0) return new Map();
     const pos = await PurchaseOrderRepo.model
       .find({ _id: { $in: unique.map((id) => new Types.ObjectId(id)) } })
@@ -796,31 +697,37 @@ export class PurchasePaymentService {
   /** As DTOs; with `actor`, also what that viewer may do (owner actions, their approval). */
   private async out(docs: LeanPayment[], actor?: PoActor): Promise<PurchasePaymentOutDto[]> {
     if (docs.length === 0) return [];
-    const realizationIds = docs.flatMap((d) => [...d.realizationIds, ...d.items.map((i) => i.realizationId)]);
-    const [poNumbers, vendors, realizations] = await Promise.all([
-      this.poNumbers(docs.flatMap((d) => [d.purchaseOrderId, ...d.items.map((i) => i.purchaseOrderId)])),
+    const [poNumbers, vendors, realizations, invoices] = await Promise.all([
+      this.poNumbers(docs.map((d) => d.purchaseOrderId)),
       VendorRepo.model
         .find({ _id: { $in: docs.map((d) => d.vendorId).filter(Boolean) } })
         .select({ name: 1 })
         .lean()
         .exec(),
       PurchaseRealizationRepo.model
-        .find({ _id: { $in: realizationIds } })
-        .select({ number: 1, purchaseDate: 1, place: 1, total: 1 })
+        .find({ _id: { $in: docs.flatMap((d) => d.realizationIds) } })
+        .select({ number: 1, purchaseDate: 1, total: 1 })
         .lean()
         .exec(),
+      VendorInvoiceRepo.model
+        .find({ _id: { $in: docs.flatMap((d) => d.invoiceIds ?? []) } })
+        .lean()
+        .exec() as Promise<LeanInvoice[]>,
     ]);
+    const invoiceById = new Map(invoices.map((i) => [String(i._id), i]));
     const vendorName = new Map(vendors.map((v) => [String(v._id), v.name]));
-    const notaById = new Map(realizations.map((r) => [String(r._id), r]));
-    const approvalUsers = (a: PaymentApproval) => [a.approver1Id, a.approver2Id, a.approved1By, a.approvedBy, a.rejectedBy];
+    const realizationById = new Map(realizations.map((r) => [String(r._id), r]));
     const names = await userEmailsById(
       docs
         .flatMap((d) => [
           d.createdBy,
           d.paidBy,
           d.cancelledBy,
-          ...approvalUsers(d),
-          ...d.items.flatMap(approvalUsers),
+          d.approver1Id,
+          d.approver2Id,
+          d.approved1By,
+          d.approvedBy,
+          d.rejectedBy,
         ])
         .filter(Boolean)
         .map(String),
@@ -842,41 +749,30 @@ export class PurchasePaymentService {
       rejectReason: a.rejectReason ?? "",
     });
     return docs.map((d) => {
-      const pending = d.status === "pending_approval";
+      const vendor = d.vendorId ? (vendorName.get(String(d.vendorId)) ?? null) : null;
       return {
-        ...approvalOut(d, pending && d.kind === "vendor"),
+        ...approvalOut(d, d.status === "pending_approval"),
         viewerIsOwner: actor !== undefined && (actor.superAdmin || String(d.createdBy) === actor.userId),
         id: String(d._id),
         number: d.number,
         kind: d.kind,
         status: d.status,
-        purchaseOrderId: d.purchaseOrderId ? String(d.purchaseOrderId) : null,
-        purchaseOrderNumber: d.purchaseOrderId ? (poNumbers.get(String(d.purchaseOrderId)) ?? null) : null,
-        vendorName: d.vendorId ? (vendorName.get(String(d.vendorId)) ?? null) : null,
-        stage: d.stage ?? null,
+        purchaseOrderId: String(d.purchaseOrderId),
+        purchaseOrderNumber: poNumbers.get(String(d.purchaseOrderId)) ?? "—",
+        vendorName: vendor,
+        stage: d.stage,
         basis: d.basis ?? null,
         rate: d.rate ?? null,
         realizations: d.realizationIds.map((rid) => {
-          const r = notaById.get(String(rid));
+          const r = realizationById.get(String(rid));
           return { id: String(rid), number: r?.number ?? "—", purchaseDate: r?.purchaseDate ?? "", total: r?.total ?? "0" };
         }),
-        payeeUserId: d.payeeUserId ? String(d.payeeUserId) : null,
-        payeeName: d.payeeName ?? "",
-        items: d.items.map((i) => {
-          const r = notaById.get(String(i.realizationId));
-          return {
-            ...approvalOut(i, pending && i.status === "pending"),
-            id: String(i._id),
-            realizationId: String(i.realizationId),
-            realizationNumber: r?.number ?? "—",
-            purchaseOrderId: String(i.purchaseOrderId),
-            purchaseOrderNumber: poNumbers.get(String(i.purchaseOrderId)) ?? "—",
-            purchaseDate: r?.purchaseDate ?? "",
-            place: r?.place ?? "",
-            amount: i.amount,
-            status: i.status,
-          };
+        invoices: (d.invoiceIds ?? []).flatMap((iid) => {
+          const i = invoiceById.get(String(iid));
+          return i ? [invoiceRef(i)] : [];
         }),
+        payeeUserId: d.payeeUserId ? String(d.payeeUserId) : null,
+        payeeName: d.payeeName || (d.kind === "vendor" ? (vendor ?? "") : ""),
         amount: d.amount,
         dueDate: d.dueDate ?? null,
         notes: d.notes ?? "",
@@ -903,36 +799,39 @@ export class PurchasePaymentService {
   }
 }
 
+/** The requester and the staff member receiving the money cannot approve it. */
+function notApprovers(doc: LeanPayment): string[] {
+  return [doc.createdBy, doc.payeeUserId].filter(Boolean).map(String);
+}
+
 export const purchasePaymentService = new PurchasePaymentService();
 
-/** Realization void guard: a reimbursed nota, or a vendor receipt under a settled PO, must stay. */
+/**
+ * Realization void guard: a GR / NR named on a live payment must stay, and
+ * voiding must not leave its payee (the vendor, or the NR's buyer) owed less
+ * than is already scheduled to them.
+ */
 export async function assertRealizationNotPaid(realization: {
   _id: Types.ObjectId;
   purchaseOrderId: Types.ObjectId;
   method: string;
+  buyerUserId?: Types.ObjectId | null;
 }): Promise<void> {
-  if (realization.method === "staff") {
-    const held = await PurchasePaymentRepo.model
-      .findOne({
-        kind: "reimburse",
-        status: { $in: PURCHASE_PAYMENT_LIVE_STATUSES },
-        items: { $elemMatch: { realizationId: realization._id, status: { $ne: "rejected" } } },
-      })
-      .select({ number: 1 })
-      .lean()
-      .exec();
-    if (held) throw new Error(`This nota is in reimbursement ${held.number}: cancel it there first`);
-    return;
+  const live = await livePayments(realization.purchaseOrderId);
+  const naming = live.find((p) => p.realizationIds.some((id) => String(id) === String(realization._id)));
+  if (naming) throw new Error(`This document is named on payment ${naming.number}: cancel it there first`);
+  const kind: PurchasePaymentKind = realization.method === "staff" ? "reimburse" : "vendor";
+  const buyer = realization.buyerUserId ? String(realization.buyerUserId) : null;
+  const scheduled = sumAmounts(
+    live.filter((p) => p.kind === kind && (kind === "vendor" || String(p.payeeUserId) === buyer)),
+  );
+  if (new Decimal(scheduled).lte(0)) return;
+  const payees = await payeesOf(await requireOrder(realization.purchaseOrderId), realization._id);
+  const payee = payees.find((p) => p.kind === kind && (kind === "vendor" || p.payeeUserId === buyer));
+  const owed = payee?.owed ?? "0";
+  if (new Decimal(scheduled).gt(owed)) {
+    throw new Error(
+      `Rp ${scheduled} is already scheduled to ${payee?.name ?? "this buyer"} on this PO; after voiding only Rp ${owed} would be owed. Cancel a payment first`,
+    );
   }
-  const settled = await PurchasePaymentRepo.model
-    .findOne({
-      kind: "vendor",
-      purchaseOrderId: realization.purchaseOrderId,
-      stage: "pelunasan",
-      status: { $in: PURCHASE_PAYMENT_LIVE_STATUSES },
-    })
-    .select({ number: 1 })
-    .lean()
-    .exec();
-  if (settled) throw new Error(`The PO is settled by pelunasan ${settled.number}: cancel it before voiding a receipt`);
 }

@@ -24,6 +24,7 @@ import {
   type ProjectRabInterface,
   type ProjectRabLine,
 } from "../../models/projectRab.model";
+import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument.model";
 import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
 import type { PurchaseCharge } from "../../models/purchaseCharge.model";
 import type { RealizationChargeInDto } from "../../dto/purchasing.dto";
@@ -50,9 +51,12 @@ import { userEmailsById, userRefsById } from "../../utils/shared";
 import {
   aggregateBoqLinesToRab,
   assertAllLinesPriced,
+  assertLabourProcess,
   collectSourceLines,
   computeLineTotal,
   isLabourLine,
+  labourExecutor,
+  labourRole,
   mergeRabPricing,
   rabQtyWaste,
   rabTotalsWithCharges,
@@ -338,6 +342,13 @@ export class ProjectRabService {
         boqs.map((row) => String(row.shopDrawingFileId)),
       )
     ).map(boqToElaborationDoc);
+    documents.push(
+      ...(await this.outsourceDocsWithoutBoq(
+        projectId,
+        new Set(documents.map((d) => d.shopDrawingItemId)),
+        new Set((change?.removedItemIds ?? []).map(String)),
+      )),
+    );
 
     documents.sort((a, b) => {
       const byName = a.shopDrawingItemName.localeCompare(b.shopDrawingItemName);
@@ -346,6 +357,52 @@ export class ProjectRabService {
     });
 
     return { documents };
+  }
+
+  /**
+   * Outsource items have no BOQ: list each one with a current shop drawing as
+   * a card with no materials, so its labour (the vendor fee) can be added.
+   */
+  private async outsourceDocsWithoutBoq(
+    projectId: string,
+    withBoq: Set<string>,
+    removed: Set<string>,
+  ): Promise<ProjectRabElaborationDocOutDto[]> {
+    const projectOid = new Types.ObjectId(projectId);
+    const items = (
+      await ProjectShopDrawingItemRepo.model
+        .find({ projectId: projectOid, isDeleted: false, makeType: "outsource" })
+        .select({ code: 1, name: 1, makeQty: 1 })
+        .lean()
+        .exec()
+    ).filter((i) => !withBoq.has(String(i._id)) && !removed.has(String(i._id)));
+    if (items.length === 0) return [];
+    const files = await ProjectShopDrawingDocumentRepo.model
+      .find({
+        projectId: projectOid,
+        itemId: { $in: items.map((i) => i._id) },
+        isCurrent: true,
+        isDeleted: { $ne: true },
+      })
+      .select({ itemId: 1, version: 1, originalFilename: 1 })
+      .lean()
+      .exec();
+    const fileByItem = new Map(files.map((f) => [String(f.itemId), f]));
+    return items.flatMap((item) => {
+      const file = fileByItem.get(String(item._id));
+      if (!file) return [];
+      return [
+        {
+          shopDrawingItemId: String(item._id),
+          shopDrawingFileId: String(file._id),
+          shopDrawingItemName: shopDrawingItemLabel(item),
+          fileVersion: file.version,
+          originalFilename: file.originalFilename,
+          makeQty: item.makeQty ?? "0",
+          blocks: [],
+        },
+      ];
+    });
   }
 
   async lock(projectId: string, userId: string): Promise<ProjectRabOutDto> {
@@ -478,7 +535,7 @@ export class ProjectRabService {
         projectId: projectOid,
         isDeleted: { $ne: true },
       })
-      .select({ _id: 1 })
+      .select({ _id: 1, makeType: 1 })
       .lean()
       .exec();
     if (!drawingItem) {
@@ -530,7 +587,9 @@ export class ProjectRabService {
         String(l.shopDrawingItemId) === drawingId,
     );
     const nextSeq =
-      siblings.reduce((max, l) => Math.max(max, l.sequence ?? 0), 0) + 1;
+      siblings
+        .filter((l) => labourRole(l) === "making")
+        .reduce((max, l) => Math.max(max, l.sequence ?? 0), 0) + 1;
     const labourLine: ProjectRabLine = {
       key,
       materialItemId: new Types.ObjectId(input.itemId),
@@ -540,6 +599,10 @@ export class ProjectRabService {
       addedAt: now,
       addedBy: userOid,
       shopDrawingItemId: new Types.ObjectId(input.shopDrawingItemId),
+      role: "making",
+      // Subcon / outsource drawings usually hand labour to a vendor; editable after.
+      executor:
+        (drawingItem.makeType ?? "inhouse") === "inhouse" ? "inhouse" : "vendor",
       sequence: nextSeq,
     };
     if (input.unitPrice !== undefined && input.unitPrice !== null) {
@@ -553,9 +616,8 @@ export class ProjectRabService {
   }
 
   /**
-   * Set process order + weight % for one drawing's labour lines.
-   * Array order becomes sequence 1..n. Does not require weights to sum to 100
-   * (that is checked when releasing an inhouse SPK).
+   * Set role, executor, sequence and weight % for one drawing's labour lines.
+   * Does not require weights to sum to 100 (checked at release).
    */
   async saveLabourProcess(
     projectId: string,
@@ -586,13 +648,17 @@ export class ProjectRabService {
         throw new Error(`Labour line not on this shop drawing: ${row.key}`);
       }
     }
-    const seqByKey = new Map(
-      input.lines.map((row, i) => [row.key, { sequence: i + 1, weightPercent: row.weightPercent }]),
-    );
+    assertLabourProcess(input.lines);
+    const rowByKey = new Map(input.lines.map((row) => [row.key, row]));
     const lines = working.map((l) => {
-      const meta = seqByKey.get(l.key);
-      if (!meta) return l;
-      return { ...l, sequence: meta.sequence, weightPercent: meta.weightPercent };
+      const row = rowByKey.get(l.key);
+      if (!row) return l;
+      const next: ProjectRabLine = { ...l, role: row.role, executor: row.executor };
+      delete next.sequence;
+      delete next.weightPercent;
+      if (row.sequence !== null) next.sequence = row.sequence;
+      if (row.weightPercent !== null) next.weightPercent = row.weightPercent;
+      return next;
     });
     return this.persistLines(projectId, doc, change, lines);
   }
@@ -615,10 +681,12 @@ export class ProjectRabService {
       : null;
     let lines = working.filter((l) => l.key !== lineKey);
     if (drawingId) {
+      // Close the gap in the removed line's track (making or install).
       const remaining = lines
         .filter(
           (l) =>
             isLabourLine(l) &&
+            labourRole(l) === labourRole(line) &&
             l.shopDrawingItemId !== undefined &&
             String(l.shopDrawingItemId) === drawingId,
         )
@@ -691,6 +759,8 @@ export class ProjectRabService {
         ...(l.shopDrawingItemId
           ? { shopDrawingItemId: l.shopDrawingItemId }
           : {}),
+        ...(l.role ? { role: l.role } : {}),
+        ...(l.executor ? { executor: l.executor } : {}),
         ...(l.sequence !== undefined ? { sequence: l.sequence } : {}),
         ...(l.weightPercent !== undefined
           ? { weightPercent: l.weightPercent }
@@ -871,6 +941,8 @@ export class ProjectRabService {
         shopDrawingItemName: drawingId
           ? (drawingNames.get(drawingId) ?? "—")
           : null,
+        role: origin === "labour" ? labourRole(line) : null,
+        executor: origin === "labour" ? labourExecutor(line) : null,
         sequence:
           typeof line.sequence === "number" && line.sequence >= 1
             ? line.sequence

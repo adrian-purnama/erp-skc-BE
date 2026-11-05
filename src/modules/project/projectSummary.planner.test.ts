@@ -4,7 +4,9 @@ import {
   allocateRealizationCost,
   buildProjectSummary,
   pickContractQuotation,
+  nextMilestone,
   pickDeadline,
+  projectDeadline,
   type SummaryInput,
   type SummaryQuotation,
 } from "./projectSummary.planner";
@@ -30,6 +32,7 @@ const base: SummaryInput = {
   orders: [],
   reportQtys: [],
   deadlines: [],
+  status: "win",
   now: new Date("2026-10-30T00:00:00Z"),
 };
 
@@ -58,6 +61,30 @@ describe("project summary", () => {
     assert.equal(pickDeadline([later, past, soon], now)?.title, "soon");
     assert.equal(pickDeadline([past], now)?.title, "past");
     assert.equal(pickDeadline([], now), null);
+  });
+
+  it("holds a tender to its calendar deadlines, a won project to its planned finish", () => {
+    const now = new Date("2026-10-30T00:00:00Z");
+    const pastTender = { at: new Date("2026-10-20T00:00:00Z"), title: "Deadline SPH" };
+    const soon = { at: new Date("2026-11-05T00:00:00Z"), title: "Site visit" };
+    const orders = [{ plannedFinish: "2026-12-01" }];
+    // Tender: the last past milestone still counts (it is overdue).
+    assert.equal(
+      projectDeadline({ status: "open", deadlines: [pastTender], orders: [], now })?.title,
+      "Deadline SPH",
+    );
+    // Won: past tender milestones stop counting; planned finish wins over SPK dates.
+    assert.equal(
+      projectDeadline({ status: "win", deadlines: [pastTender], orders, now, plannedFinishDate: "2026-12-06" })?.title,
+      "Planned finish",
+    );
+    assert.equal(
+      projectDeadline({ status: "win", deadlines: [pastTender], orders, now })?.title,
+      "SPK planned finish",
+    );
+    assert.equal(projectDeadline({ status: "win", deadlines: [pastTender], orders: [], now }), null);
+    assert.equal(nextMilestone([pastTender, soon], now)?.title, "Site visit");
+    assert.equal(nextMilestone([pastTender], now), null);
   });
 
   it("rolls up money and production", () => {

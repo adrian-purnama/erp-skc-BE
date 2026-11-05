@@ -8,6 +8,10 @@ export type ProjectCalendarEventOutDto = {
   notes: string;
   startAt: string;
   endAt: string | null;
+  /** `event`: stored, editable. `schedule`: read-only, from the project schedule. */
+  source: "event" | "schedule";
+  /** Schedule item windows only. */
+  shopDrawingItemId: string | null;
 };
 
 export type CreateProjectCalendarEventDto = {

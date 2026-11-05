@@ -2,18 +2,22 @@ import { Types } from "mongoose";
 import type { ProjectSummaryOutDto } from "../../dto/project.dto";
 import { ProductionOrderRepo } from "../../models/productionOrder.model";
 import { ProductionReportRepo } from "../../models/productionReport.model";
+import { ProjectRepo } from "../../models/project.model";
 import { ProjectCalendarEventRepo } from "../../models/projectCalendarEvent.model";
+import { ProjectScheduleRepo } from "../../models/projectSchedule.model";
 import { ProjectQuotationRepo } from "../../models/projectQuotation.model";
 import { ProjectRabRepo } from "../../models/projectRab.model";
 import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
 import { PurchaseOrderRepo } from "../../models/purchaseOrder.model";
 import { PurchaseRealizationRepo } from "../../models/purchaseRealization.model";
+import { projectScheduleService } from "./projectSchedule.service";
 import {
   allocateRealizationCost,
   buildProjectSummary,
   type SummaryInput,
   type SummaryQuotation,
   type SummaryRab,
+  type SummarySchedule,
 } from "./projectSummary.planner";
 
 function groupBy<T>(rows: T[], key: (row: T) => string): Map<string, T[]> {
@@ -27,12 +31,51 @@ function groupBy<T>(rows: T[], key: (row: T) => string): Map<string, T[]> {
   return out;
 }
 
-/** Bulk-loads list roll-ups for many projects (a fixed number of queries). */
+/** Today's S-curve reading for each project that has a schedule. */
+async function scheduleReadings(
+  ids: Types.ObjectId[],
+): Promise<Map<string, SummarySchedule>> {
+  const schedules = await ProjectScheduleRepo.model
+    .find({ projectId: { $in: ids } })
+    .select({ projectId: 1 })
+    .lean()
+    .exec();
+  const out = new Map<string, SummarySchedule>();
+  await Promise.all(
+    schedules.map(async (s) => {
+      const id = String(s.projectId);
+      try {
+        const curve = await projectScheduleService.sCurve(id, "week");
+        if (curve.points.length === 0) return;
+        out.set(id, {
+          plannedPct: curve.today.plannedPct,
+          actualPct: curve.today.actualPct,
+          deviationPct: curve.today.deviationPct,
+        });
+      } catch {
+        // A broken schedule must not break the project list.
+      }
+    }),
+  );
+  return out;
+}
+
+/** Bulk-loads list roll-ups for many projects (a fixed number of queries, plus one S-curve per scheduled project). */
 export async function summarizeProjects(
   projectIds: string[],
 ): Promise<Map<string, ProjectSummaryOutDto>> {
   const ids = projectIds.map((id) => new Types.ObjectId(id));
   const inIds = { $in: ids };
+
+  const [projects, schedules] = await Promise.all([
+    ProjectRepo.model
+      .find({ _id: inIds })
+      .select({ status: 1, plannedFinishDate: 1 })
+      .lean()
+      .exec(),
+    scheduleReadings(ids),
+  ]);
+  const projectBy = new Map(projects.map((p) => [String(p._id), p] as const));
 
   const [quotations, rabs, orders, reports, events, drawingCounts, pos] =
     await Promise.all([
@@ -44,6 +87,7 @@ export async function summarizeProjects(
           revision: 1,
           discountType: 1,
           discountValue: 1,
+          charges: 1,
           taxPercent: 1,
           "lines.qty": 1,
           "lines.unitPrice": 1,
@@ -136,7 +180,8 @@ export async function summarizeProjects(
           revision: q.revision,
           discountType: q.discountType,
           discountValue: q.discountValue,
-          taxPercent: q.taxPercent,
+          charges: q.charges ?? null,
+          taxPercent: q.taxPercent ?? null,
           lines: q.lines ?? [],
         }),
       ),
@@ -151,6 +196,9 @@ export async function summarizeProjects(
         at: e.startAt,
         title: e.title,
       })),
+      status: projectBy.get(id)?.status ?? "open",
+      plannedFinishDate: projectBy.get(id)?.plannedFinishDate ?? null,
+      schedule: schedules.get(id) ?? null,
       now,
     };
     out.set(id, buildProjectSummary(input));

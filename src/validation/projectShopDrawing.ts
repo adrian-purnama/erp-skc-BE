@@ -1,3 +1,4 @@
+import { formatDecimal, parsePositiveDecimal } from "../modules/itemMaster/itemUomConvert";
 import {
   SHOP_DRAWING_MAKE_TYPES,
   type ShopDrawingMakeType,
@@ -67,7 +68,18 @@ export type ShopDrawingItemInDto = {
   mockupApproveDate: string | null;
   /** Absent on update = keep the current one. */
   makeType?: ShopDrawingMakeType;
+  /** Outsource make qty; null clears it, absent keeps it. */
+  makeQty?: string | null;
 };
+
+/** Empty / null → null; otherwise a positive decimal. */
+export function parseShopDrawingItemMakeQty(raw: unknown): string | null {
+  if (raw === null || (typeof raw === "string" && raw.trim() === "")) return null;
+  if (typeof raw !== "string" && typeof raw !== "number") {
+    throw new Error("makeQty must be a positive number");
+  }
+  return formatDecimal(parsePositiveDecimal(String(raw).trim(), "makeQty"));
+}
 
 export function parseShopDrawingMakeType(raw: unknown): ShopDrawingMakeType | undefined {
   if (raw === undefined || raw === null || raw === "") return undefined;
@@ -104,10 +116,12 @@ export function parseCreateShopDrawingItemDto(body: unknown): ShopDrawingItemInD
     dimension?: unknown;
     mockupApproveDate?: unknown;
     makeType?: unknown;
+    makeQty?: unknown;
   };
   const makeType = parseShopDrawingMakeType(b.makeType);
   return {
     ...(makeType ? { makeType } : {}),
+    ...(b.makeQty !== undefined ? { makeQty: parseShopDrawingItemMakeQty(b.makeQty) } : {}),
     code: parseShopDrawingItemCode(b.code),
     name: parseShopDrawingItemName(b.name),
     category: parseShopDrawingItemCategory(b.category),

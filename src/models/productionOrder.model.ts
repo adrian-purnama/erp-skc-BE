@@ -1,13 +1,11 @@
 import { Schema, type Types } from "mongoose";
 import { auditedModel } from "../core/audit/auditedModel";
-
-/**
- * Follows the shop drawing item's make type. Outsource SPKs carry the vendor
- * fee as their material lines; subcon SPKs carry the BOQ materials plus the
- * fee, which can be requested once all the materials have arrived.
- */
-export const PRODUCTION_ORDER_TYPES = ["inhouse", "subcon", "outsource"] as const;
-export type ProductionOrderType = (typeof PRODUCTION_ORDER_TYPES)[number];
+import {
+  PROJECT_RAB_LABOUR_EXECUTORS,
+  PROJECT_RAB_LABOUR_ROLES,
+  type ProjectRabLabourExecutor,
+  type ProjectRabLabourRole,
+} from "./projectRab.model";
 
 export const PRODUCTION_ORDER_STATUSES = [
   "draft",
@@ -29,36 +27,40 @@ export type ProductionOrderMaterial = {
   exactQty?: string;
 };
 
-/** Inhouse process stage frozen at release from RAB labour (order + weight). */
-export type ProductionOrderLabourStage = {
-  materialItemId: Types.ObjectId;
-  itemUomId: Types.ObjectId;
-  /** Labour item name at freeze (display). */
-  name: string;
-  sequence: number;
-  weightPercent: number;
-};
-
 /** What the SPK was released with; later BOQ / file changes do not touch it. */
 export type ProductionOrderSnapshot = {
   makeQty: string;
-  boqId: Types.ObjectId;
+  /** Null on outsource items, which have no BOQ. */
+  boqId: Types.ObjectId | null;
   shopDrawingFileId: Types.ObjectId;
   shopDrawingFileVersion: number;
-  /** Null on outsource SPKs: the vendor brings its own production files. */
+  /** Null when the item has no File Produksi (optional on outsource items). */
   productionFileId: Types.ObjectId | null;
   productionFileVersion: number | null;
+  /** BOQ materials (sequence-1 making SPKs only) plus, for vendor SPKs, the fee line. */
   materials: ProductionOrderMaterial[];
-  /** Inhouse only: ordered labour stages with weights summing to 100. */
-  labourStages?: ProductionOrderLabourStage[];
+  /** Making stage weight % at release; null on install SPKs. */
+  weightPercent?: number | null;
 };
 
-/** SPK Produksi: one production run of one shop drawing item. */
+/**
+ * SPK Produksi: one RAB labour line (a making stage or install) of one shop
+ * drawing item, for a qty. Its RAB line key is
+ * `${shopDrawingItemId}:${labourItemId}:${labourUomId}`.
+ */
 export interface ProductionOrderInterface {
   projectId: Types.ObjectId;
   shopDrawingItemId: Types.ObjectId;
   number: string;
-  type: ProductionOrderType;
+  labourItemId: Types.ObjectId;
+  labourUomId: Types.ObjectId;
+  /** Labour item name (display), refreshed at release. */
+  labourName: string;
+  /** From the RAB line, refreshed at release. */
+  role: ProjectRabLabourRole;
+  executor: ProjectRabLabourExecutor;
+  /** Making stage order from the RAB line; null on install SPKs. */
+  sequence: number | null;
   qty: string;
   status: ProductionOrderStatus;
   /** YYYY-MM-DD or null. */
@@ -96,24 +98,13 @@ const materialSchema = new Schema(
   { _id: false },
 );
 
-const labourStageSchema = new Schema(
-  {
-    materialItemId: { type: Schema.Types.ObjectId, ref: "Item", required: true },
-    itemUomId: { type: Schema.Types.ObjectId, ref: "ItemUom", required: true },
-    name: { type: String, required: true, trim: true },
-    sequence: { type: Number, required: true, min: 1 },
-    weightPercent: { type: Number, required: true, min: 1, max: 100 },
-  },
-  { _id: false },
-);
-
 const snapshotSchema = new Schema(
   {
     makeQty: { type: String, required: true, trim: true },
     boqId: {
       type: Schema.Types.ObjectId,
       ref: "ProjectShopDrawingBoq",
-      required: true,
+      default: null,
     },
     shopDrawingFileId: {
       type: Schema.Types.ObjectId,
@@ -128,7 +119,7 @@ const snapshotSchema = new Schema(
     },
     productionFileVersion: { type: Number, default: null },
     materials: { type: [materialSchema], default: [] },
-    labourStages: { type: [labourStageSchema], default: undefined },
+    weightPercent: { type: Number, default: null },
   },
   { _id: false },
 );
@@ -148,12 +139,17 @@ const productionOrderSchema = new Schema<ProductionOrderInterface>(
       index: true,
     },
     number: { type: String, required: true, unique: true, trim: true },
-    type: {
+    labourItemId: { type: Schema.Types.ObjectId, ref: "Item", required: true },
+    labourUomId: { type: Schema.Types.ObjectId, ref: "ItemUom", required: true },
+    labourName: { type: String, trim: true, default: "" },
+    role: { type: String, enum: PROJECT_RAB_LABOUR_ROLES, required: true, default: "making" },
+    executor: {
       type: String,
-      enum: PRODUCTION_ORDER_TYPES,
+      enum: PROJECT_RAB_LABOUR_EXECUTORS,
       required: true,
       default: "inhouse",
     },
+    sequence: { type: Number, default: null },
     qty: { type: String, required: true, trim: true },
     status: {
       type: String,
@@ -183,6 +179,7 @@ const productionOrderSchema = new Schema<ProductionOrderInterface>(
 );
 
 productionOrderSchema.index({ projectId: 1, shopDrawingItemId: 1, status: 1 });
+productionOrderSchema.index({ shopDrawingItemId: 1, labourItemId: 1, labourUomId: 1 });
 productionOrderSchema.index({ status: 1, createdAt: -1 });
 
 export const ProductionOrderRepo = auditedModel<ProductionOrderInterface>(

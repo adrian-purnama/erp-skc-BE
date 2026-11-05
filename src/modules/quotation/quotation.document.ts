@@ -1,5 +1,6 @@
 import type { ProjectQuotationOutDto } from "../../dto/projectQuotation.dto";
 import { terbilangRupiah } from "../project/projectRabExport.planner";
+import { chargeLabel } from "./quotation.planner";
 
 export type QuotationDocumentRow =
   | {
@@ -151,12 +152,9 @@ export function buildQuotationDocument(
     });
     totals.push({ label: "DPP", amount: Number(q.totals.taxBase), emphasis: false });
   }
-  if (Number(q.taxPercent) > 0) {
-    totals.push({
-      label: `PPN ${q.taxPercent}%`,
-      amount: Number(q.totals.taxAmount),
-      emphasis: false,
-    });
+  for (const c of q.totals.charges) {
+    if (!c.enabled) continue;
+    totals.push({ label: chargeLabel(c), amount: Number(c.amount), emphasis: false });
   }
   totals.push({ label: "Total", amount: Number(q.totals.grandTotal), emphasis: true });
 

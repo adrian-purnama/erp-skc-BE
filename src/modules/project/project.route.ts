@@ -34,6 +34,34 @@ router.get(
 );
 
 router.get(
+  "/:id/schedule",
+  requireUser,
+  requirePermission({ key: "project.view" }),
+  projectController.getSchedule,
+);
+
+router.put(
+  "/:id/schedule",
+  requireUser,
+  requirePermission({ key: "project.manage" }),
+  projectController.saveSchedule,
+);
+
+router.post(
+  "/:id/schedule/baseline",
+  requireUser,
+  requirePermission({ key: "project.manage" }),
+  projectController.setScheduleBaseline,
+);
+
+router.get(
+  "/:id/s-curve",
+  requireUser,
+  requirePermission({ key: "project.view" }),
+  projectController.sCurve,
+);
+
+router.get(
   "/:id/calendar",
   requireUser,
   requirePermission({ key: "project.view" }),

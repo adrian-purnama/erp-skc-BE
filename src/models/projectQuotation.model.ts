@@ -75,6 +75,43 @@ export type ProjectQuotationContactSnapshot = {
   contact: Record<string, string>;
 };
 
+/** Extra charge after the discount: percent of the DPP, or a fixed rupiah amount. */
+export const PROJECT_QUOTATION_CHARGE_KINDS = ["percent", "fixed"] as const;
+export type ProjectQuotationChargeKind = (typeof PROJECT_QUOTATION_CHARGE_KINDS)[number];
+
+export const PROJECT_QUOTATION_CHARGE_SIGNS = ["add", "deduct"] as const;
+export type ProjectQuotationChargeSign = (typeof PROJECT_QUOTATION_CHARGE_SIGNS)[number];
+
+/**
+ * A printed extra line after the discount (PPN is one): added to, or deducted
+ * from, the total. Disabled ones are kept but not counted or printed.
+ */
+export type ProjectQuotationCharge = {
+  key: string;
+  label: string;
+  /** Absent on charges saved before deductions: add. */
+  sign?: ProjectQuotationChargeSign;
+  /** Printed reason next to the label, e.g. "pembayaran tunai". */
+  note?: string;
+  kind: ProjectQuotationChargeKind;
+  /** Percent of the DPP, or integer rupiah when fixed. */
+  value: string;
+  enabled: boolean;
+};
+
+const chargeSchema = new Schema(
+  {
+    key: { type: String, required: true, trim: true },
+    label: { type: String, required: true, trim: true },
+    sign: { type: String, enum: PROJECT_QUOTATION_CHARGE_SIGNS, default: "add" },
+    note: { type: String, trim: true, default: "" },
+    kind: { type: String, required: true, enum: PROJECT_QUOTATION_CHARGE_KINDS },
+    value: { type: String, required: true, trim: true },
+    enabled: { type: Boolean, required: true, default: true },
+  },
+  { _id: false },
+);
+
 export interface ProjectQuotationInterface {
   projectId: Types.ObjectId;
   /** 1, 2, … per project. */
@@ -87,7 +124,10 @@ export interface ProjectQuotationInterface {
   markupPercent: string;
   discountType: ProjectQuotationDiscountType;
   discountValue: string;
-  taxPercent: string;
+  /** Legacy: PPN % before extra charges; read only when `charges` is absent. */
+  taxPercent?: string;
+  /** Extra charges after the discount, in printed order. Absent on old revisions. */
+  charges?: ProjectQuotationCharge[];
   /** YYYY-MM-DD or null. */
   validUntil?: string | null;
   notes: string;
@@ -202,7 +242,8 @@ const projectQuotationSchema = new Schema<ProjectQuotationInterface>(
       default: "percent",
     },
     discountValue: { type: String, required: true, default: "0" },
-    taxPercent: { type: String, required: true, default: "11" },
+    taxPercent: { type: String, required: false },
+    charges: { type: [chargeSchema], default: undefined },
     validUntil: { type: String, required: false, default: null },
     notes: { type: String, default: "", trim: true },
     termOfPaymentId: {

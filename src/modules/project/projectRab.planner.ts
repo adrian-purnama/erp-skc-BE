@@ -5,7 +5,11 @@ import {
   parseQtyDecimal,
 } from "../itemMaster/itemUomConvert";
 import type { ItemUomRoundingMode } from "../../models/itemUom.model";
-import type { ProjectRabLineRounding } from "../../models/projectRab.model";
+import type {
+  ProjectRabLabourExecutor,
+  ProjectRabLabourRole,
+  ProjectRabLineRounding,
+} from "../../models/projectRab.model";
 import type { PurchaseCharge } from "../../models/purchaseCharge.model";
 import { priceStoredCharges } from "../purchasing/purchaseRealization.planner";
 
@@ -116,6 +120,47 @@ export function collectSourceLines(boqs: BoqLike[]): RabAggSourceLine[] {
 
 export function isLabourLine(line: { origin?: string | null }): boolean {
   return line.origin === "labour";
+}
+
+export function labourRole(line: { role?: ProjectRabLabourRole | null }): ProjectRabLabourRole {
+  return line.role ?? "making";
+}
+
+export function labourExecutor(line: {
+  executor?: ProjectRabLabourExecutor | null;
+}): ProjectRabLabourExecutor {
+  return line.executor ?? "inhouse";
+}
+
+export type LabourProcessRow = {
+  key: string;
+  role: ProjectRabLabourRole;
+  executor: ProjectRabLabourExecutor;
+  sequence: number | null;
+  weightPercent: number | null;
+};
+
+/**
+ * One drawing's labour setup: making and install are two tracks; each row
+ * carries a sequence (1..n per track, unique, no gaps) and a weight. Weights
+ * totalling 100 are checked before SPKs, not here, so rows can be tuned one by one.
+ */
+export function assertLabourProcess(rows: LabourProcessRow[]): void {
+  for (const r of rows) {
+    if (r.sequence === null || r.weightPercent === null) {
+      throw new Error("Every labour line needs a sequence and weight");
+    }
+  }
+  for (const role of ["making", "install"] as const) {
+    const track = rows.filter((r) => r.role === role);
+    const seqs = track.map((r) => r.sequence!).sort((x, y) => x - y);
+    if (seqs.some((s, i) => s !== i + 1)) {
+      const label = role === "making" ? "Making" : "Install";
+      throw new Error(
+        `${label} labour sequence must run 1 to ${track.length} with no repeats or gaps`,
+      );
+    }
+  }
 }
 
 export function assertAllLinesPriced(

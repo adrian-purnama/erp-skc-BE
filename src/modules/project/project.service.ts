@@ -57,6 +57,8 @@ type LeanProject = {
   closeReason?: ProjectCloseReason | null;
   isActive?: boolean;
   productionReleasedAt?: Date | null;
+  plannedStartDate?: string | null;
+  plannedFinishDate?: string | null;
   createdAt?: Date;
 };
 
@@ -123,6 +125,8 @@ export class ProjectService {
       productionReleasedAt: doc.productionReleasedAt
         ? doc.productionReleasedAt.toISOString()
         : null,
+      plannedStartDate: doc.plannedStartDate ?? null,
+      plannedFinishDate: doc.plannedFinishDate ?? null,
     };
   }
 
@@ -203,6 +207,8 @@ export class ProjectService {
         loseReason: input.loseReason ?? null,
         closeReason: input.closeReason ?? null,
         isActive: true,
+        plannedStartDate: input.plannedStartDate ?? null,
+        plannedFinishDate: input.plannedFinishDate ?? null,
       });
     });
 
@@ -253,6 +259,12 @@ export class ProjectService {
           ? { closeReason: patch.closeReason }
           : {}),
         ...(patch.isActive !== undefined ? { isActive: patch.isActive } : {}),
+        ...(patch.plannedStartDate !== undefined
+          ? {
+              plannedStartDate: patch.plannedStartDate,
+              plannedFinishDate: patch.plannedFinishDate ?? null,
+            }
+          : {}),
       },
     });
     if (!updated) throw new Error("Project not found");

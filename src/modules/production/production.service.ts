@@ -5,7 +5,6 @@ import type {
   CreateProductionOrderInDto,
   CreateProductionReportInDto,
   ProductionItemProgressOutDto,
-  ProductionLabourStageOutDto,
   ProductionOrderFileRefOutDto,
   ProductionOrderMaterialOutDto,
   ProductionOrderOutDto,
@@ -16,6 +15,7 @@ import type {
   ProductionProjectProgressOutDto,
   ProductionReadinessOutDto,
   ProductionReportOutDto,
+  ProductionStageProgressOutDto,
   UpdateProductionOrderInDto,
 } from "../../dto/production.dto";
 import type { ProjectRabUserRefOutDto } from "../../dto/projectRab.dto";
@@ -23,7 +23,6 @@ import { ProjectRepo } from "../../models/project.model";
 import {
   ProductionOrderRepo,
   type ProductionOrderInterface,
-  type ProductionOrderLabourStage,
   type ProductionOrderSnapshot,
   type ProductionOrderStatus,
 } from "../../models/productionOrder.model";
@@ -75,31 +74,44 @@ import { projectNumberParts } from "../project/projectNumber";
 import { projectRabChangeService } from "../project/projectRabChange.service";
 import { shopDrawingItemLabel } from "../project/projectShared";
 import { loadShopDrawingSpecs } from "../project/projectShopDrawingSpec";
-import { handoversOut, hasVendorFee, vendorFeesOut } from "./vendorWork";
+import { carriesMaterials, handoversOut, hasVendorFee, vendorFeesOut } from "./vendorWork";
+import {
+  assertOrderReportRoom,
+  assertOrderVoidRoom,
+  itemLabourLines,
+  orderLineKey,
+  projectLabourLines,
+  roomSourceLabel,
+  type LabourLineState,
+} from "./stageFlow";
 import { subconDispatchOut } from "./materialDispatch.queries";
 import {
   DEFAULT_HANDOVER_CHECKLIST,
-  assertLabourStagesForRelease,
+  allocatedQty,
+  assertLabourStages,
+  installCapacity,
+  installedQty,
+  itemInstallPercent,
   assertOrderQty,
-  assertReportQty,
-  assertStageReportQty,
   evaluateReadiness,
-  finishedQty,
+  itemMakingPercent,
+  madeQty,
   maxOrderQty,
+  needsBoq,
   needsProductionFile,
   percentOf,
   planFeeLines,
   planMaterials,
-  qtyByStage,
   scaleMaterials,
+  processReadiness,
   progressStatus,
-  weightedProgressPercent,
+  stageRoom,
   type OrderQtyRow,
   type PlannedMaterial,
   type PriorMaterialIssue,
 } from "./production.planner";
 import { loadRabUomPlan } from "../project/projectRabUomPlan";
-import { isLabourLine, rabLineKey } from "../project/projectRab.planner";
+import { rabLineKey } from "../project/projectRab.planner";
 
 /** Release refused: carries the readiness so the client can show what is missing. */
 export class ProductionNotReadyError extends Error {
@@ -124,6 +136,7 @@ type LeanItem = {
   name: string;
   category?: string | null;
   makeType?: ShopDrawingMakeType;
+  makeQty?: string | null;
 };
 type FileRef = { id: Types.ObjectId; version: number; originalFilename: string };
 
@@ -220,7 +233,7 @@ async function loadItemStates(projectId: string): Promise<ItemState[]> {
   const [items, sdFiles, productionFiles] = await Promise.all([
     ProjectShopDrawingItemRepo.model
       .find({ projectId: projectOid, isDeleted: false })
-      .select({ code: 1, name: 1, category: 1, makeType: 1 })
+      .select({ code: 1, name: 1, category: 1, makeType: 1, makeQty: 1 })
       .sort({ code: 1, name: 1 })
       .lean()
       .exec() as Promise<LeanItem[]>,
@@ -268,69 +281,27 @@ async function itemStateFor(projectId: string, itemId: string): Promise<ItemStat
   return state;
 }
 
-type OrderProgress = {
-  doneQty: string;
-  progressPercent: number;
-  byStage: Map<number, string>;
-};
+type OrderProgress = { doneQty: string; progressPercent: number };
 
-/**
- * Finished pcs + weighted % per SPK.
- * Staged inhouse: doneQty = last stage; % = weighted stages.
- * Legacy / vendor: doneQty = Σ qtyDone; % = done/qty.
- */
+/** Finished pcs + % per SPK: Σ live reports over the SPK qty. */
 async function progressByOrder(
-  orders: Array<{
-    _id: Types.ObjectId;
-    qty: string;
-    snapshot?: ProductionOrderSnapshot | null;
-  }>,
+  orders: Array<{ _id: Types.ObjectId; qty: string }>,
 ): Promise<Map<string, OrderProgress>> {
   const out = new Map<string, OrderProgress>();
   if (orders.length === 0) return out;
-  const orderIds = orders.map((o) => o._id);
-  const rows = (await ProductionReportRepo.model
-    .find({ productionOrderId: { $in: orderIds }, isVoided: false })
-    .select({ productionOrderId: 1, qtyDone: 1, stageSequence: 1 })
+  const rows = await ProductionReportRepo.model
+    .find({ productionOrderId: { $in: orders.map((o) => o._id) }, isVoided: false })
+    .select({ productionOrderId: 1, qtyDone: 1 })
     .lean()
-    .exec()) as Array<{
-    productionOrderId: Types.ObjectId;
-    qtyDone: string;
-    stageSequence?: number | null;
-  }>;
-  const reportsByOrder = new Map<
-    string,
-    Array<{ qtyDone: string; stageSequence?: number | null }>
-  >();
+    .exec();
+  const sums = new Map<string, Decimal>();
   for (const r of rows) {
     const key = String(r.productionOrderId);
-    const list = reportsByOrder.get(key) ?? [];
-    list.push({ qtyDone: r.qtyDone, stageSequence: r.stageSequence });
-    reportsByOrder.set(key, list);
+    sums.set(key, (sums.get(key) ?? new Decimal(0)).plus(r.qtyDone));
   }
   for (const o of orders) {
-    const id = String(o._id);
-    const stages = o.snapshot?.labourStages ?? [];
-    const reports = reportsByOrder.get(id) ?? [];
-    if (stages.length > 0) {
-      const byStage = qtyByStage(reports, stages);
-      out.set(id, {
-        doneQty: finishedQty(stages, byStage),
-        progressPercent: weightedProgressPercent(o.qty, stages, byStage),
-        byStage,
-      });
-    } else {
-      const sum = reports.reduce(
-        (acc, r) => acc.plus(r.qtyDone),
-        new Decimal(0),
-      );
-      const doneQty = formatDecimal(sum);
-      out.set(id, {
-        doneQty,
-        progressPercent: percentOf(doneQty, o.qty),
-        byStage: new Map(),
-      });
-    }
+    const doneQty = formatDecimal(sums.get(String(o._id)) ?? new Decimal(0));
+    out.set(String(o._id), { doneQty, progressPercent: percentOf(doneQty, o.qty) });
   }
   return out;
 }
@@ -342,66 +313,18 @@ async function doneByOrder(
   if (orderIds.length === 0) return new Map();
   const orders = (await ProductionOrderRepo.model
     .find({ _id: { $in: orderIds } })
-    .select({ qty: 1, snapshot: 1 })
+    .select({ qty: 1 })
     .lean()
-    .exec()) as Array<{
-    _id: Types.ObjectId;
-    qty: string;
-    snapshot?: ProductionOrderSnapshot | null;
-  }>;
+    .exec()) as Array<{ _id: Types.ObjectId; qty: string }>;
   const progress = await progressByOrder(orders);
   return new Map([...progress].map(([k, v]) => [k, v.doneQty]));
 }
 
-/** RAB labour on a drawing, ready to freeze as inhouse stages. */
-async function itemLabourStagesForRelease(
-  projectId: string,
-  itemId: string,
-): Promise<ProductionOrderLabourStage[]> {
-  const rab = await ProjectRabRepo.model
-    .findOne({ projectId: new Types.ObjectId(projectId) })
-    .select({ lines: 1 })
-    .lean()
-    .exec();
-  const lines = (rab?.lines ?? []).filter(
-    (l) =>
-      isLabourLine(l) &&
-      l.shopDrawingItemId !== undefined &&
-      String(l.shopDrawingItemId) === itemId,
-  );
-  if (lines.length === 0) {
-    throw new Error(
-      "Cannot release: add inhouse labour stages on this item's RAB (sequence + weight %) first",
-    );
-  }
-  const missing = lines.filter(
-    (l) => l.sequence == null || l.weightPercent == null,
-  );
-  if (missing.length > 0) {
-    throw new Error(
-      "Cannot release: set process order and weight % on every labour line for this item",
-    );
-  }
-  const sorted = [...lines].sort((a, b) => a.sequence! - b.sequence!);
-  assertLabourStagesForRelease(
-    sorted.map((l) => ({
-      sequence: l.sequence!,
-      weightPercent: l.weightPercent!,
-    })),
-  );
-  const itemIds = sorted.map((l) => String(l.materialItemId));
-  const { items } = await loadItemMeta(itemIds);
-  return sorted.map((l) => {
-    const id = String(l.materialItemId);
-    const meta = items.get(id);
-    return {
-      materialItemId: l.materialItemId,
-      itemUomId: l.itemUomId,
-      name: meta?.name?.trim() || meta?.code || "Labour",
-      sequence: l.sequence!,
-      weightPercent: l.weightPercent!,
-    };
-  });
+/** The SPK's RAB labour line, or an error when it is gone from the RAB. */
+function requireLine(lines: LabourLineState[], key: string): LabourLineState {
+  const line = lines.find((l) => l.key === key);
+  if (!line) throw new Error("This labour line is no longer on the item's RAB");
+  return line;
 }
 
 async function ordersForItem(projectId: string, itemId: string): Promise<LeanOrder[]> {
@@ -412,6 +335,42 @@ async function ordersForItem(projectId: string, itemId: string): Promise<LeanOrd
     })
     .lean()
     .exec()) as LeanOrder[];
+}
+
+/** The item's SPKs on one labour line. */
+function onLine(orders: LeanOrder[], key: string): LeanOrder[] {
+  return orders.filter((o) => orderLineKey(o) === key);
+}
+
+/** Line key → Σ done over the given SPKs. */
+function doneByLineFrom(orders: LeanOrder[], done: Map<string, string>): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const o of orders) {
+    const key = orderLineKey(o);
+    out.set(
+      key,
+      formatDecimal(new Decimal(out.get(key) ?? "0").plus(done.get(String(o._id)) ?? "0")),
+    );
+  }
+  return out;
+}
+
+/** What a line's SPKs may hold in all: makeQty for a making stage, pcs fully made for install. */
+function lineCapacity(
+  line: LabourLineState,
+  lines: LabourLineState[],
+  makeQty: string,
+  siblings: LeanOrder[],
+  done: Map<string, string>,
+): string {
+  return line.role === "install"
+    ? installCapacity(lines, doneByLineFrom(siblings, done), line.key)
+    : makeQty;
+}
+
+/** A vendor SPK's fee: its own RAB labour line. */
+function feeLine(line: LabourLineState) {
+  return { materialItemId: line.labourItemId, itemUomId: line.labourUomId, totalQty: line.totalQty };
 }
 
 /**
@@ -507,54 +466,45 @@ function makeTypeOf(item: LeanItem): ShopDrawingMakeType {
   return item.makeType ?? "inhouse";
 }
 
-/** RAB labour lines costed to the item: a subcon / outsource item's vendor fee. */
-async function itemFeeLines(
-  projectId: string,
-  itemId: string,
-): Promise<Array<{ materialItemId: string; itemUomId: string; totalQty: string }>> {
-  const rab = await ProjectRabRepo.model
-    .findOne({ projectId: new Types.ObjectId(projectId) })
-    .select({ lines: 1 })
-    .lean()
-    .exec();
-  return (rab?.lines ?? [])
-    .filter(
-      (l) =>
-        isLabourLine(l) &&
-        l.shopDrawingItemId !== undefined &&
-        String(l.shopDrawingItemId) === itemId,
-    )
-    .map((l) => ({
-      materialItemId: String(l.materialItemId),
-      itemUomId: String(l.itemUomId),
-      totalQty: l.totalQty,
-    }));
+/** Pcs to make: the BOQ's, or on an outsource item (no BOQ) its own qty. */
+function itemMakeQty(state: ItemState): string | null {
+  if (makeTypeOf(state.item) === "outsource" && state.item.makeQty) return state.item.makeQty;
+  return state.boq?.makeQty ?? null;
+}
+
+function requireMakeQty(state: ItemState): string {
+  const qty = itemMakeQty(state);
+  if (!qty) {
+    throw new Error(
+      makeTypeOf(state.item) === "outsource"
+        ? "Set this outsource item's qty first"
+        : "This item has no BOQ",
+    );
+  }
+  return qty;
 }
 
 /**
- * What an SPK of `qty` needs: BOQ materials (rounded like the RAB, after the
- * item's other SPKs) plus, for subcon / outsource, the vendor fee lines.
+ * What an SPK of `qty` needs: the BOQ materials on first-stage SPKs (rounded
+ * like the RAB, after the line's other SPKs) plus, on vendor SPKs, its own
+ * labour line as the fee.
  */
 async function planOrderMaterials(
-  type: ProductionOrderInterface["type"],
+  order: Pick<ProductionOrderInterface, "executor" | "role" | "sequence">,
   state: ItemState,
+  line: LabourLineState,
   qty: string,
   siblings: LeanOrder[],
   exceptId: string,
 ): Promise<PlannedMaterial[]> {
-  if (!state.boq) return [];
-  const projectId = String(state.boq.projectId);
-  const itemId = String(state.item._id);
-  const materials = planMaterials(
-    state.boq,
-    qty,
-    await materialOptions(state.boq, siblings, exceptId),
-  );
-  if (!hasVendorFee(type)) return materials;
-  return [
-    ...materials,
-    ...planFeeLines(await itemFeeLines(projectId, itemId), state.boq.makeQty, qty),
-  ];
+  const makeQty = itemMakeQty(state);
+  if (!makeQty) return [];
+  const materials =
+    state.boq && carriesMaterials(order)
+      ? planMaterials(state.boq, qty, await materialOptions(state.boq, siblings, exceptId))
+      : [];
+  if (!hasVendorFee(order)) return materials;
+  return [...materials, ...planFeeLines([feeLine(line)], makeQty, qty)];
 }
 
 /** POs with lines on the SPK, newest first, with this SPK's share of the total. */
@@ -615,7 +565,7 @@ export class ProductionService {
   async readiness(projectId: string): Promise<ProductionReadinessOutDto> {
     const project = await requireProject(projectId);
     const projectOid = new Types.ObjectId(projectId);
-    const [won, rab, change, states] = await Promise.all([
+    const [won, rab, change, states, labourByItem] = await Promise.all([
       ProjectQuotationRepo.model
         .findOne({ projectId: projectOid, status: "won" })
         .select({ revision: 1, quotationNumber: 1 })
@@ -624,6 +574,7 @@ export class ProductionService {
       ProjectRabRepo.model.findOne({ projectId: projectOid }).select({ status: 1 }).lean().exec(),
       projectRabChangeService.findOpenDraft(projectId),
       loadItemStates(projectId),
+      projectLabourLines(projectId),
     ]);
 
     const result = evaluateReadiness({
@@ -640,8 +591,9 @@ export class ProductionService {
         makeType: makeTypeOf(s.item),
         hasShopDrawing: s.sdFile !== null,
         hasBoq: s.boq !== null,
-        makeQty: s.boq?.makeQty ?? null,
+        makeQty: itemMakeQty(s),
         hasProductionFile: s.productionFile !== null,
+        labour: labourByItem.get(String(s.item._id)) ?? [],
       })),
     });
 
@@ -685,54 +637,94 @@ export class ProductionService {
 
   async progress(projectId: string): Promise<ProductionProjectProgressOutDto> {
     const project = await requireProject(projectId);
-    const [states, orders] = await Promise.all([
+    const [states, orders, labourByItem] = await Promise.all([
       loadItemStates(projectId),
       ProductionOrderRepo.model
         .find({ projectId: new Types.ObjectId(projectId) })
         .lean()
         .exec() as Promise<LeanOrder[]>,
+      projectLabourLines(projectId),
     ]);
     const done = await doneByOrder(orders.map((o) => o._id));
 
     let totalMake = new Decimal(0);
     let totalDone = new Decimal(0);
+    let totalWeighted = new Decimal(0);
     const items = states.map((s): ProductionItemProgressOutDto => {
       const itemId = String(s.item._id);
       const itemOrders = orders.filter((o) => String(o.shopDrawingItemId) === itemId);
       // Released SPKs remember makeQty; fall back to the live BOQ.
-      const makeQty = s.boq?.makeQty ?? itemOrders.find((o) => o.snapshot)?.snapshot?.makeQty ?? "0";
-      const max = maxOrderQty(makeQty, qtyRows(itemOrders), done);
-      const orderedQty = new Decimal(makeQty).minus(max);
-      const doneQty = itemOrders
-        .filter((o) => o.status !== "cancelled")
-        .reduce((sum, o) => sum.plus(done.get(String(o._id)) ?? "0"), new Decimal(0));
+      const makeQty =
+        itemMakeQty(s) ?? itemOrders.find((o) => o.snapshot)?.snapshot?.makeQty ?? "0";
+      const lines = labourByItem.get(itemId) ?? [];
+      const doneByLine = doneByLineFrom(itemOrders, done);
+      const made = madeQty(lines, doneByLine);
+      const stages = lines.map((l): ProductionStageProgressOutDto => {
+        const lineOrders = onLine(itemOrders, l.key);
+        const capacity = new Decimal(
+          l.role === "install" ? installCapacity(lines, doneByLine, l.key) : makeQty,
+        );
+        const ordered = allocatedQty(qtyRows(lineOrders), done);
+        const free = capacity.minus(ordered);
+        return {
+          key: l.key,
+          labourItemId: l.labourItemId,
+          labourUomId: l.labourUomId,
+          name: l.name,
+          role: l.role,
+          executor: l.executor,
+          sequence: l.sequence,
+          weightPercent: l.weightPercent,
+          orderedQty: formatDecimal(ordered),
+          doneQty: doneByLine.get(l.key) ?? "0",
+          remainingToOrder: formatDecimal(free.isNeg() ? new Decimal(0) : free),
+          orderCount: lineOrders.filter((o) => o.status !== "cancelled").length,
+        };
+      });
+      const first = stages.find((st) => st.role === "making");
+      const orderedQty = first?.orderedQty ?? "0";
+      const installed = installedQty(lines, doneByLine);
+      const percent = itemMakingPercent(makeQty, lines, doneByLine);
+      const installPercent = itemInstallPercent(makeQty, lines, doneByLine);
+      const process = processReadiness(lines);
+      const status = progressStatus({ makeQty, orderedQty, doneQty: made });
       totalMake = totalMake.plus(makeQty);
-      totalDone = totalDone.plus(doneQty);
-      const ordered = formatDecimal(orderedQty);
-      const doneText = formatDecimal(doneQty);
+      totalDone = totalDone.plus(made);
+      totalWeighted = totalWeighted.plus(new Decimal(makeQty).times(percent));
       return {
         itemId,
         code: s.item.code ?? "",
         name: s.item.name,
         label: shopDrawingItemLabel(s.item),
         category: s.item.category ?? null,
+        makeType: makeTypeOf(s.item),
         makeQty,
-        orderedQty: ordered,
-        doneQty: doneText,
-        remainingToOrder: formatDecimal(max),
-        percent: percentOf(doneText, makeQty),
-        status: progressStatus({ makeQty, orderedQty: ordered, doneQty: doneText }),
+        orderedQty,
+        doneQty: made,
+        remainingToOrder: first?.remainingToOrder ?? makeQty,
+        percent,
+        installedQty: installed,
+        installPercent,
+        processReady: process.ok,
+        processDetail: process.detail,
+        // Stages under way count as in progress before the first pc is fully made.
+        status: percent > 0 && (status === "partial" || status === "not_started") ? "in_progress" : status,
         orderCount: itemOrders.filter((o) => o.status !== "cancelled").length,
+        stages,
       };
     });
 
-    const makeText = formatDecimal(totalMake);
-    const doneText = formatDecimal(totalDone);
     return {
       projectId,
       releasedAt: iso(project.productionReleasedAt),
       items,
-      totals: { makeQty: makeText, doneQty: doneText, percent: percentOf(doneText, makeText) },
+      totals: {
+        makeQty: formatDecimal(totalMake),
+        doneQty: formatDecimal(totalDone),
+        percent: totalMake.gt(0)
+          ? Math.round(totalWeighted.div(totalMake).toNumber())
+          : 0,
+      },
     };
   }
 
@@ -800,6 +792,14 @@ export class ProductionService {
       .lean()
       .exec()) as LeanReport[];
 
+    const [lines, siblings] = await Promise.all([
+      itemLabourLines(projectId, itemId),
+      ordersForItem(projectId, itemId),
+    ]);
+    const key = orderLineKey(order);
+    const line = lines.find((l) => l.key === key) ?? null;
+    const lineSiblings = onLine(siblings, key);
+
     let makeQty: string;
     let planned: PlannedMaterial[];
     let sdFile: FileRef | null;
@@ -842,38 +842,28 @@ export class ProductionService {
         : null;
     } else {
       const state = await itemStateFor(projectId, itemId).catch(() => null);
-      makeQty = state?.boq?.makeQty ?? "0";
-      // Draft preview: rounded as if released now, after the item's released SPKs.
-      planned = state
-        ? await planOrderMaterials(
-            order.type,
-            state,
-            order.qty,
-            await ordersForItem(projectId, itemId),
-            String(order._id),
-          )
-        : [];
+      makeQty = (state ? itemMakeQty(state) : null) ?? "0";
+      // Draft preview: as if released now (the RAB line decides role and stage), rounded after the line's released SPKs.
+      planned =
+        state && line
+          ? await planOrderMaterials(
+              { executor: line.executor, role: line.role, sequence: line.sequence },
+              state,
+              line,
+              order.qty,
+              lineSiblings,
+              String(order._id),
+            )
+          : [];
       sdFile = state?.sdFile ?? null;
       productionFile = state?.productionFile ?? null;
     }
 
-    const siblings = await ordersForItem(projectId, itemId);
     const progress = await progressByOrder(siblings);
     const done = new Map([...progress].map(([k, v]) => [k, v.doneQty]));
-    const max = maxOrderQty(makeQty, qtyRows(siblings), done, String(order._id));
-    const stages = order.snapshot?.labourStages ?? [];
-    const thisProgress = progress.get(String(order._id));
-    const byStage = thisProgress?.byStage ?? new Map<number, string>();
-    const labourStagesOut: ProductionLabourStageOutDto[] = [...stages]
-      .sort((a, b) => a.sequence - b.sequence)
-      .map((s) => ({
-        sequence: s.sequence,
-        name: s.name,
-        weightPercent: s.weightPercent,
-        materialItemId: String(s.materialItemId),
-        itemUomId: String(s.itemUomId),
-        qtyDone: byStage.get(s.sequence) ?? "0",
-      }));
+    const capacity = line ? lineCapacity(line, lines, makeQty, siblings, done) : makeQty;
+    const max = maxOrderQty(capacity, qtyRows(lineSiblings), done, String(order._id));
+    const room = line ? stageRoom(lines, doneByLineFrom(siblings, done), key) : null;
 
     const userIds = [
       order.createdBy,
@@ -904,19 +894,18 @@ export class ProductionService {
       shopDrawingFile: fileRefOut(sdFile),
       productionFile: fileRefOut(productionFile),
       maxQty: formatDecimal(max),
+      reportRoom: room ? formatDecimal(room) : null,
+      reportRoomFrom: room ? roomSourceLabel(lines, key) : null,
       purchaseOrders: await purchaseOrdersFor(order._id),
-      handovers: hasVendorFee(order.type) ? await handoversOut(order._id) : [],
+      handovers: hasVendorFee(order) ? await handoversOut(order._id) : [],
       defaultHandoverChecklist: [...DEFAULT_HANDOVER_CHECKLIST],
       vendorFees: await vendorFeesOut(order),
       ...(await subconDispatchOut(order)),
-      labourStages: labourStagesOut,
       reports: reports.map((r): ProductionReportOutDto => ({
         id: String(r._id),
         productionOrderId: String(r.productionOrderId),
         handoverId: r.handoverId ? String(r.handoverId) : null,
         qtyDone: r.qtyDone,
-        stageSequence:
-          typeof r.stageSequence === "number" ? r.stageSequence : null,
         reportDate: r.reportDate,
         notes: r.notes ?? "",
         reportedBy: ref(r.reportedBy),
@@ -938,18 +927,37 @@ export class ProductionService {
       throw new Error("Release the project to production before creating an SPK");
     }
     const state = await itemStateFor(input.projectId, input.shopDrawingItemId);
-    if (!state.boq) throw new Error("This item has no BOQ");
-    const type = makeTypeOf(state.item);
+    const makeQty = requireMakeQty(state);
+    const lines = await itemLabourLines(input.projectId, input.shopDrawingItemId);
+    const key = `${input.shopDrawingItemId}:${input.labourItemId}:${input.labourUomId}`;
+    const line = requireLine(lines, key);
+    try {
+      assertLabourStages(lines);
+    } catch (e) {
+      throw new Error(`Cannot create SPK: ${e instanceof Error ? e.message : String(e)}`);
+    }
 
     const created = await withTx(async () => {
       const siblings = await ordersForItem(input.projectId, input.shopDrawingItemId);
       const done = await doneByOrder(siblings.map((o) => o._id));
-      assertOrderQty(input.qty, maxOrderQty(state.boq!.makeQty, qtyRows(siblings), done));
+      assertOrderQty(
+        input.qty,
+        maxOrderQty(
+          lineCapacity(line, lines, makeQty, siblings, done),
+          qtyRows(onLine(siblings, key)),
+          done,
+        ),
+      );
       return ProductionOrderRepo.create({
         projectId: new Types.ObjectId(input.projectId),
         shopDrawingItemId: new Types.ObjectId(input.shopDrawingItemId),
         number: await allocateOrderNumber(),
-        type,
+        labourItemId: new Types.ObjectId(input.labourItemId),
+        labourUomId: new Types.ObjectId(input.labourUomId),
+        labourName: line.name,
+        role: line.role,
+        executor: line.executor,
+        sequence: line.sequence,
         qty: input.qty,
         status: "draft",
         plannedStart: input.plannedStart,
@@ -991,35 +999,41 @@ export class ProductionService {
       const projectId = String(order.projectId);
       const itemId = String(order.shopDrawingItemId);
       const state = await itemStateFor(projectId, itemId);
-      if (!state.boq) throw new Error("This item has no BOQ");
+      const makeQty = requireMakeQty(state);
+      const lines = await itemLabourLines(projectId, itemId);
+      const key = orderLineKey(order);
+      const line = requireLine(lines, key);
       const siblings = await ordersForItem(projectId, itemId);
+      const lineSiblings = onLine(siblings, key);
       const done = await doneByOrder(siblings.map((o) => o._id));
       assertOrderQty(
         input.qty!,
-        maxOrderQty(state.boq.makeQty, qtyRows(siblings), done, id),
+        maxOrderQty(
+          lineCapacity(line, lines, makeQty, siblings, done),
+          qtyRows(lineSiblings),
+          done,
+          id,
+        ),
       );
       if (order.snapshot) {
         // A released SPK keeps its frozen per-unit materials; totals follow the qty, rounded again.
-        // Vendor fee lines are re-spread from the RAB so a full-qty SPK gets the exact fee qty.
-        const fee = hasVendorFee(order.type) ? await itemFeeLines(projectId, itemId) : [];
-        const feeKeys = new Set(fee.map((l) => rabLineKey(l.materialItemId, l.itemUomId)));
-        const rows =
-          order.type === "outsource"
-            ? await planOrderMaterials(order.type, state, input.qty!, siblings, id)
-            : [
-                ...scaleMaterials(
-                  order.snapshot.materials
-                    .map((m) => ({
-                      materialItemId: String(m.materialItemId),
-                      itemUomId: String(m.itemUomId),
-                      qtyPerUnit: m.qtyPerUnit,
-                    }))
-                    .filter((m) => !feeKeys.has(rabLineKey(m.materialItemId, m.itemUomId))),
-                  input.qty!,
-                  await materialOptions(state.boq, siblings, id),
-                ),
-                ...planFeeLines(fee, state.boq.makeQty, input.qty!),
-              ];
+        // Its vendor fee is re-spread from the RAB line so a full-qty SPK gets the exact fee qty.
+        const fee = feeLine(line);
+        const feeKey = rabLineKey(fee.materialItemId, fee.itemUomId);
+        const rows = [
+          ...scaleMaterials(
+            order.snapshot.materials
+              .map((m) => ({
+                materialItemId: String(m.materialItemId),
+                itemUomId: String(m.itemUomId),
+                qtyPerUnit: m.qtyPerUnit,
+              }))
+              .filter((m) => rabLineKey(m.materialItemId, m.itemUomId) !== feeKey),
+            input.qty!,
+            state.boq ? await materialOptions(state.boq, lineSiblings, id) : {},
+          ),
+          ...(hasVendorFee(order) ? planFeeLines([fee], makeQty, input.qty!) : []),
+        ];
         snapshot = {
           ...order.snapshot,
           materials: rows.map((m) => ({
@@ -1100,30 +1114,36 @@ export class ProductionService {
     const state = await itemStateFor(projectId, itemId);
     const missing = [
       !state.sdFile && "shop drawing file",
-      !state.boq && "BOQ",
-      !state.productionFile && needsProductionFile(order.type) && "File Produksi",
+      !state.boq && needsBoq(makeTypeOf(state.item)) && "BOQ",
+      !itemMakeQty(state) && !needsBoq(makeTypeOf(state.item)) && "qty",
+      !state.productionFile && needsProductionFile(makeTypeOf(state.item)) && "File Produksi",
     ].filter(Boolean);
     if (missing.length > 0) {
       throw new Error(`Cannot release: this item has no ${missing.join(", ")}`);
     }
-    const boq = state.boq!;
-    const siblings = await ordersForItem(projectId, itemId);
-    const done = await doneByOrder(siblings.map((o) => o._id));
-    assertOrderQty(order.qty, maxOrderQty(boq.makeQty, qtyRows(siblings), done, id));
-
-    if (hasVendorFee(order.type) && (await itemFeeLines(projectId, itemId)).length === 0) {
-      throw new Error(
-        "Cannot release: add the vendor fee as a RAB labour line on this item first",
-      );
+    const lines = await itemLabourLines(projectId, itemId);
+    try {
+      assertLabourStages(lines);
+    } catch (e) {
+      throw new Error(`Cannot release: ${e instanceof Error ? e.message : String(e)}`);
     }
-    const labourStages =
-      order.type === "inhouse"
-        ? await itemLabourStagesForRelease(projectId, itemId)
-        : [];
-    const materials = await planOrderMaterials(order.type, state, order.qty, siblings, id);
+    const key = orderLineKey(order);
+    const line = requireLine(lines, key);
+    const makeQty = requireMakeQty(state);
+    const siblings = await ordersForItem(projectId, itemId);
+    const lineSiblings = onLine(siblings, key);
+    const done = await doneByOrder(siblings.map((o) => o._id));
+    assertOrderQty(
+      order.qty,
+      maxOrderQty(lineCapacity(line, lines, makeQty, siblings, done), qtyRows(lineSiblings), done, id),
+    );
+
+    // The RAB line decides role, done-by and stage order at release.
+    const live = { role: line.role, executor: line.executor, sequence: line.sequence };
+    const materials = await planOrderMaterials(live, state, line, order.qty, lineSiblings, id);
     const snapshot: ProductionOrderSnapshot = {
-      makeQty: boq.makeQty,
-      boqId: boq._id,
+      makeQty,
+      boqId: state.boq?._id ?? null,
       shopDrawingFileId: state.sdFile!.id,
       shopDrawingFileVersion: state.sdFile!.version,
       productionFileId: state.productionFile?.id ?? null,
@@ -1135,12 +1155,14 @@ export class ProductionService {
         exactQty: m.exactQty,
         qty: m.qty,
       })),
-      ...(labourStages.length > 0 ? { labourStages } : {}),
+      weightPercent: line.weightPercent,
     };
     const updated = await ProductionOrderRepo.findOneAndUpdate(
       { _id: order._id, status: "draft" },
       {
         $set: {
+          ...live,
+          labourName: line.name,
           status: "released",
           releasedAt: new Date(),
           releasedBy: new Types.ObjectId(userId),
@@ -1217,47 +1239,20 @@ export class ProductionService {
     if (!ACTIVE_STATUSES.includes(order.status)) {
       throw new Error("Reports can only be added to a released or in-progress SPK");
     }
-    if (hasVendorFee(order.type)) {
+    if (hasVendorFee(order)) {
       throw new Error("A vendor's output is recorded with a handover, not a report");
     }
     if (input.reportDate > jakartaYmdString()) {
       throw new Error("reportDate cannot be in the future");
     }
-    const stages = order.snapshot?.labourStages ?? [];
-    if (stages.length > 0) {
-      if (input.stageSequence == null) {
-        throw new Error("Pick which labour stage this report finishes");
-      }
-    } else if (input.stageSequence != null) {
-      throw new Error("This SPK has no labour stages; omit stageSequence");
-    }
     await withTx(async () => {
-      if (stages.length > 0) {
-        const live = (await ProductionReportRepo.model
-          .find({ productionOrderId: order._id, isVoided: false })
-          .select({ qtyDone: 1, stageSequence: 1 })
-          .lean()
-          .exec()) as Array<{ qtyDone: string; stageSequence?: number | null }>;
-        const byStage = qtyByStage(live, stages);
-        assertStageReportQty({
-          stages,
-          qtyByStage: byStage,
-          stageSequence: input.stageSequence!,
-          qtyDone: input.qtyDone,
-          orderQty: order.qty,
-        });
-      } else {
-        const already = (await doneByOrder([order._id])).get(orderId) ?? "0";
-        assertReportQty(input.qtyDone, order.qty, already);
-      }
+      const already = (await doneByOrder([order._id])).get(orderId) ?? "0";
+      await assertOrderReportRoom(order, input.qtyDone, already);
       await ProductionReportRepo.create({
         projectId: order.projectId,
         productionOrderId: order._id,
         shopDrawingItemId: order.shopDrawingItemId,
         qtyDone: input.qtyDone,
-        ...(input.stageSequence != null
-          ? { stageSequence: input.stageSequence }
-          : { stageSequence: null }),
         reportDate: input.reportDate,
         notes: input.notes,
         reportedBy: new Types.ObjectId(userId),
@@ -1283,6 +1278,7 @@ export class ProductionService {
     if (!ACTIVE_STATUSES.includes(order.status)) {
       throw new Error("Reports on a completed or cancelled SPK cannot be voided");
     }
+    await assertOrderVoidRoom(order, report.qtyDone);
     const updated = await ProductionReportRepo.findOneAndUpdate(
       { _id: report._id, isVoided: false },
       {
@@ -1328,7 +1324,12 @@ export class ProductionService {
       return {
         id: String(o._id),
         number: o.number,
-        type: o.type,
+        labourItemId: String(o.labourItemId),
+        labourUomId: String(o.labourUomId),
+        labourName: o.labourName,
+        role: o.role,
+        executor: o.executor,
+        sequence: o.sequence ?? null,
         status: o.status,
         projectId: String(o.projectId),
         projectNumber: project?.projectNumber ?? "—",
@@ -1352,12 +1353,6 @@ export class ProductionService {
 }
 
 export const productionService = new ProductionService();
-
-const PRODUCTION_TYPE_LABELS: Record<string, string> = {
-  inhouse: "Inhouse",
-  subcon: "Subcon",
-  outsource: "Outsource",
-};
 
 /** Company profile logo from Admin › Config (live, not a snapshot). */
 export async function loadCompanyLogo(): Promise<QuotationLogo | null> {
@@ -1454,9 +1449,8 @@ export async function exportProductionOrderPdf(
     ? (await userDisplayNames([order.releasedBy.id])).get(order.releasedBy.id)
     : undefined;
 
-  // Subcon / outsource: the SPK goes out to the vendor once its fee PO is approved.
-  const outsource = order.type === "outsource";
-  const vendorWork = hasVendorFee(order.type);
+  // Vendor SPK: it goes out to the vendor once its fee PO is approved.
+  const vendorWork = hasVendorFee(order);
   const approvedVendors = [
     ...new Set(
       order.purchaseOrders
@@ -1469,11 +1463,13 @@ export async function exportProductionOrderPdf(
     : vendorWork && approvedVendors.length === 0
       ? " (MENUNGGU PO DISETUJUI)"
       : "";
-  const title = outsource
-    ? "SURAT PERINTAH KERJA OUTSOURCE"
-    : order.type === "subcon"
-      ? "SURAT PERINTAH KERJA SUBKON"
+  const title = vendorWork
+    ? "SURAT PERINTAH KERJA VENDOR"
+    : order.role === "install"
+      ? "SURAT PERINTAH KERJA INSTALASI"
       : "SURAT PERINTAH KERJA PRODUKSI";
+  const stage =
+    order.role === "install" ? "Instalasi" : order.sequence ? `Tahap ${order.sequence}` : "-";
 
   const data: SpkPdfData = {
     companyName,
@@ -1491,7 +1487,8 @@ export async function exportProductionOrderPdf(
       right: [
         ["No. SPK", order.number],
         ["Tanggal", formatLongDate(issuedAt)],
-        ["Jenis", PRODUCTION_TYPE_LABELS[order.type] ?? order.type],
+        ["Pekerjaan", `${order.labourName || "-"} (${stage})`],
+        ["Dikerjakan", vendorWork ? "Vendor" : "Inhouse"],
         ["Status", isDraft ? "Draft" : order.status === "cancelled" ? "Dibatalkan" : "Dirilis"],
       ],
     },
@@ -1509,9 +1506,9 @@ export async function exportProductionOrderPdf(
     ],
     files: [
       fileRow("Shop drawing", "sd", order.shopDrawingFile),
-      ...(outsource && !order.productionFile
-        ? []
-        : [fileRow("File Produksi", "production", order.productionFile)]),
+      ...(order.productionFile
+        ? [fileRow("File Produksi", "production", order.productionFile)]
+        : []),
     ],
     materials: order.materials.map((m) => ({
       code: m.materialCode,

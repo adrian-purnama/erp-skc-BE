@@ -50,6 +50,10 @@ export interface ProjectInterface {
   /** Set once the project is released to production (all SD ready, quotation won). */
   productionReleasedAt?: Date | null;
   productionReleasedBy?: import("mongoose").Types.ObjectId | null;
+  /** Planned project start (YYYY-MM-DD, Jakarta); the S-curve's day 1. */
+  plannedStartDate?: string | null;
+  /** Planned project finish (YYYY-MM-DD, Jakarta). */
+  plannedFinishDate?: string | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -134,6 +138,8 @@ const projectSchema = new Schema<ProjectInterface>(
       ref: "User",
       default: null,
     },
+    plannedStartDate: { type: String, default: null },
+    plannedFinishDate: { type: String, default: null },
   },
   { timestamps: true },
 );

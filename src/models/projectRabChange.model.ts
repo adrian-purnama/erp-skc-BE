@@ -19,6 +19,10 @@ export const PROJECT_RAB_CHANGE_STATUSES = [
 ] as const;
 export type ProjectRabChangeStatus = (typeof PROJECT_RAB_CHANGE_STATUSES)[number];
 
+/** Who started a change: by hand on the RAB, or a Production process save (auto-committed). */
+export const PROJECT_RAB_CHANGE_SOURCES = ["manual", "production"] as const;
+export type ProjectRabChangeSource = (typeof PROJECT_RAB_CHANGE_SOURCES)[number];
+
 /** Working / historical BOQ snapshot inside a RAB change. */
 export type ProjectRabChangeBoqSnapshot = {
   shopDrawingItemId: Types.ObjectId;
@@ -41,6 +45,8 @@ export interface ProjectRabChangeInterface {
   projectId: Types.ObjectId;
   reason: string;
   status: ProjectRabChangeStatus;
+  /** Absent on older records: manual. */
+  source?: ProjectRabChangeSource;
   openedBy: Types.ObjectId;
   openedAt: Date;
   committedBy?: Types.ObjectId;
@@ -116,6 +122,7 @@ const projectRabChangeSchema = new Schema<ProjectRabChangeInterface>(
       required: true,
     },
     reason: { type: String, required: true, trim: true },
+    source: { type: String, required: false, enum: PROJECT_RAB_CHANGE_SOURCES },
     status: {
       type: String,
       required: true,

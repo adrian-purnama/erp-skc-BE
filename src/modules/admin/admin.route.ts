@@ -63,6 +63,12 @@ router.get(
   requirePermission({ key: "admin.user.view" }),
   adminController.searchUsers,
 );
+router.post(
+  "/users",
+  requireUser,
+  requirePermission({ key: "admin.user.manage" }),
+  adminController.createUser,
+);
 router.get(
   "/users/:id",
   requireUser,

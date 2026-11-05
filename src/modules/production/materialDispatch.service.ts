@@ -27,6 +27,7 @@ import { companyLetterhead, loadCompanyLogo, productionService } from "./product
 import { PRODUCTION_BUCKET } from "./productionHandover.service";
 import { buildDispatchPdf } from "./materialDispatch.pdf";
 import { dispatchable, dispatchVendorOf, type LeanDispatch } from "./materialDispatch.queries";
+import { sendsMaterialToVendor } from "./vendorWork";
 
 const PHOTO_MAX = 12;
 const PHOTO_MAX_BYTES = 15 * 1024 * 1024;
@@ -58,7 +59,9 @@ async function requireDispatch(id: string): Promise<LeanDispatch> {
 async function requireSubconOrder(orderId: string | Types.ObjectId): Promise<LeanOrder> {
   const order = (await ProductionOrderRepo.model.findById(orderId).lean().exec()) as LeanOrder | null;
   if (!order) throw new Error("SPK not found");
-  if (order.type !== "subcon") throw new Error("Material is only sent to the vendor on a subcon SPK");
+  if (!sendsMaterialToVendor(order)) {
+    throw new Error("Material is only sent to the vendor on a first-stage vendor SPK");
+  }
   if (!ACTIVE_STATUSES.includes(order.status)) {
     throw new Error("Material can only be sent on a released or in-progress SPK");
   }
