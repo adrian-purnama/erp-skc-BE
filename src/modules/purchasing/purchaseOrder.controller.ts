@@ -47,16 +47,17 @@ export class PurchaseOrderController {
     );
   };
 
-  /** POs the signed-in user created. */
+  /** POs the signed-in user created; a super admin gets every PO. */
   mine = async (req: Request, res: Response) => {
-    return handle(res, "Failed to list PO", "PO retrieved", async () =>
-      purchaseOrderService.list({
-        createdBy: (await actor(req)).userId,
+    return handle(res, "Failed to list PO", "PO retrieved", async () => {
+      const me = await actor(req);
+      return purchaseOrderService.list({
+        createdBy: me.superAdmin ? undefined : me.userId,
         status: parsePurchaseOrderStatusFilter(queryString(req.query.status)),
         requestId: parseOptionalQueryId(queryString(req.query.requestId), "requestId"),
         q: queryString(req.query.q),
-      }),
-    );
+      });
+    });
   };
 
   /** POs waiting on the signed-in user's approval (level 1 or 2). */

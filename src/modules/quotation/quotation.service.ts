@@ -45,6 +45,7 @@ import { appConfigService } from "../appConfig/AppConfig.service";
 import { projectRabChangeService } from "../project/projectRabChange.service";
 import { rabChargeFactor, type BoqLike } from "../project/projectRab.planner";
 import { liveCurrentFiles } from "../project/projectCurrentFiles";
+import { parseQtyDecimal } from "../itemMaster/itemUomConvert";
 import { filterCountedBoqs, sumLineTotals } from "../project/projectRabChange.planner";
 import { loadRabUomPlan } from "../project/projectRabUomPlan";
 import type { QuotationLogo } from "./quotation.logo";
@@ -912,17 +913,48 @@ export class QuotationService {
       }
     >;
     // Same rule as the RAB: only each item's current file version is quoted.
-    const boqs = filterCountedBoqs(allBoqs, await liveCurrentFiles(projectId));
-    if (boqs.length === 0) return [];
+    const current = await liveCurrentFiles(projectId);
+    const boqs = filterCountedBoqs(allBoqs, current);
+
+    // Outsource items have no BOQ: quote each one with a shop drawing and a
+    // qty as its own line (cost = its labour, the vendor fee), like the RAB.
+    const withBoq = new Set(boqs.map((b) => String(b.shopDrawingItemId)));
+    const fileByItem = new Map(
+      current.map((c) => [String(c.shopDrawingItemId), c.shopDrawingFileId]),
+    );
+    const outsource = (
+      await ProjectShopDrawingItemRepo.model
+        .find({
+          projectId: new Types.ObjectId(projectId),
+          isDeleted: false,
+          makeType: "outsource",
+        })
+        .select({ makeQty: 1 })
+        .lean()
+        .exec()
+    ).flatMap((item) => {
+      const fileId = fileByItem.get(String(item._id));
+      if (withBoq.has(String(item._id)) || !fileId) return [];
+      if (!item.makeQty || parseQtyDecimal(item.makeQty).lte(0)) return [];
+      return [
+        {
+          shopDrawingItemId: item._id,
+          shopDrawingFileId: fileId,
+          makeQty: item.makeQty,
+        },
+      ];
+    });
+    const quoted = [...boqs, ...outsource];
+    if (quoted.length === 0) return [];
 
     const [items, files] = await Promise.all([
       ProjectShopDrawingItemRepo.model
-        .find({ _id: { $in: boqs.map((b) => b.shopDrawingItemId) } })
+        .find({ _id: { $in: quoted.map((b) => b.shopDrawingItemId) } })
         .select({ code: 1, name: 1 })
         .lean()
         .exec(),
       ProjectShopDrawingDocumentRepo.model
-        .find({ _id: { $in: boqs.map((b) => b.shopDrawingFileId) } })
+        .find({ _id: { $in: quoted.map((b) => b.shopDrawingFileId) } })
         .select({ version: 1 })
         .lean()
         .exec(),
@@ -930,7 +962,7 @@ export class QuotationService {
     const itemById = new Map(items.map((i) => [String(i._id), i]));
     const versionById = new Map(files.map((f) => [String(f._id), f.version]));
 
-    return boqs.map((b) => ({
+    return quoted.map((b) => ({
       ...b,
       shopDrawingItemId: String(b.shopDrawingItemId),
       shopDrawingFileId: String(b.shopDrawingFileId),

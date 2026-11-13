@@ -111,6 +111,26 @@ describe("project summary", () => {
     assert.equal(summary.deadlineTitle, "SPK planned finish");
   });
 
+  it("counts non-tax RAB charges in the budget and margin", () => {
+    const summary = buildProjectSummary({
+      ...base,
+      quotations: [quotation("won", 1, "1000")],
+      rab: {
+        status: "locked",
+        lines: [{ totalQty: "3", unitPrice: "400" }],
+        charges: [
+          { category: "tax", label: "PPN", kind: "percent", rate: "11", amount: "132" },
+          { category: "delivery", label: "Delivery", kind: "fixed", rate: null, amount: "100" },
+          { category: "other", label: "Others", kind: "percent", rate: "10", amount: "0" },
+        ],
+      },
+      productionPercent: 60,
+    });
+    assert.equal(summary.rabTotal, "1420");
+    assert.equal(summary.plannedMargin, "580");
+    assert.equal(summary.productionPercent, 60);
+  });
+
   it("splits realization charges by line value per project", () => {
     const out = allocateRealizationCost({
       lines: [

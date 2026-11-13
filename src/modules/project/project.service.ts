@@ -15,6 +15,7 @@ import {
   type ProjectLoseReason,
   type ProjectStatus,
 } from "../../models/project.model";
+import { ProjectQuotationRepo } from "../../models/projectQuotation.model";
 import { escapeRegex } from "../../utils/shared";
 import { allocateProjectNumber } from "./projectNumber";
 import { assertProjectExists } from "./projectShared";
@@ -61,6 +62,17 @@ type LeanProject = {
   plannedFinishDate?: string | null;
   createdAt?: Date;
 };
+
+/** A project is a win only through its won quotation, never by hand. */
+async function assertHasWonQuotation(projectId: string): Promise<void> {
+  const won = await ProjectQuotationRepo.model.exists({
+    projectId: new Types.ObjectId(projectId),
+    status: "won",
+  });
+  if (!won) {
+    throw new Error("Status Win is set by marking the project's quotation as won");
+  }
+}
 
 function normalizeStatus(doc: LeanProject): {
   status: ProjectStatus;
@@ -190,6 +202,9 @@ export class ProjectService {
 
   async create(input: CreateProjectDto): Promise<ProjectDetailOutDto> {
     await this.assertCustomerExists(input.customerId);
+    if (input.status === "win") {
+      throw new Error("Status Win is set by marking the project's quotation as won");
+    }
 
     const created = await withTx(async (session) => {
       const projectNumber = await allocateProjectNumber({ session });
@@ -225,6 +240,14 @@ export class ProjectService {
 
     if (patch.customerId !== undefined) {
       await this.assertCustomerExists(patch.customerId);
+    }
+    if (patch.status === "win") {
+      const current = await ProjectRepo.model
+        .findById(id)
+        .select({ status: 1 })
+        .lean()
+        .exec();
+      if ((current?.status ?? "open") !== "win") await assertHasWonQuotation(id);
     }
     if (patch.status === "open" || patch.status === "lose") {
       const current = await ProjectRepo.model

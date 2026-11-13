@@ -10,6 +10,7 @@ import { ProjectRabRepo } from "../../models/projectRab.model";
 import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
 import { PurchaseOrderRepo } from "../../models/purchaseOrder.model";
 import { PurchaseRealizationRepo } from "../../models/purchaseRealization.model";
+import { productionService } from "../production/production.service";
 import { projectScheduleService } from "./projectSchedule.service";
 import {
   allocateRealizationCost,
@@ -60,6 +61,24 @@ async function scheduleReadings(
   return out;
 }
 
+/**
+ * The Production page's weighted total for each project with SPKs, so the
+ * dashboard and the production pages show the same number.
+ */
+async function productionPercentReadings(ids: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  await Promise.all(
+    ids.map(async (id) => {
+      try {
+        out.set(id, (await productionService.progress(id)).totals.percent);
+      } catch {
+        // A broken item must not break the project list.
+      }
+    }),
+  );
+  return out;
+}
+
 /** Bulk-loads list roll-ups for many projects (a fixed number of queries, plus one S-curve per scheduled project). */
 export async function summarizeProjects(
   projectIds: string[],
@@ -97,7 +116,13 @@ export async function summarizeProjects(
         .exec(),
       ProjectRabRepo.model
         .find({ projectId: inIds })
-        .select({ projectId: 1, status: 1, "lines.totalQty": 1, "lines.unitPrice": 1 })
+        .select({
+          projectId: 1,
+          status: 1,
+          "lines.totalQty": 1,
+          "lines.unitPrice": 1,
+          charges: 1,
+        })
         .lean()
         .exec(),
       ProductionOrderRepo.model
@@ -169,6 +194,8 @@ export async function summarizeProjects(
   );
   const realizationsBy = groupBy(realizationCosts, (c) => c.projectId);
 
+  const productionPercents = await productionPercentReadings([...ordersBy.keys()]);
+
   const now = new Date();
   const out = new Map<string, ProjectSummaryOutDto>();
   for (const id of projectIds) {
@@ -186,12 +213,17 @@ export async function summarizeProjects(
         }),
       ),
       rab: rab
-        ? ({ status: rab.status, lines: rab.lines ?? [] } satisfies SummaryRab)
+        ? ({
+            status: rab.status,
+            lines: rab.lines ?? [],
+            charges: rab.charges ?? [],
+          } satisfies SummaryRab)
         : null,
       realizationTotals: (realizationsBy.get(id) ?? []).map((c) => c.amount),
       shopDrawingCount: drawingsBy.get(id) ?? 0,
       orders: ordersBy.get(id) ?? [],
       reportQtys: (reportsBy.get(id) ?? []).map((r) => r.qtyDone),
+      productionPercent: productionPercents.get(id) ?? null,
       deadlines: (eventsBy.get(id) ?? []).map((e) => ({
         at: e.startAt,
         title: e.title,

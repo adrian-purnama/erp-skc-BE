@@ -22,7 +22,7 @@ const SECTION_FILL = "#F2F2F2";
  * No · Kode · Keterangan · Ukuran · Qty · Satuan · Harga/Unit · Total — sums to
  * A4 content width.
  */
-const COLS = [22, 34, 138, 84, 28, 42, 77, 90] as const;
+const COLS = [22, 48, 124, 84, 28, 42, 77, 90] as const;
 const ALIGN: Array<"left" | "center" | "right"> = [
   "center",
   "center",

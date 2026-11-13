@@ -74,7 +74,13 @@ import { projectNumberParts } from "../project/projectNumber";
 import { projectRabChangeService } from "../project/projectRabChange.service";
 import { shopDrawingItemLabel } from "../project/projectShared";
 import { loadShopDrawingSpecs } from "../project/projectShopDrawingSpec";
-import { carriesMaterials, handoversOut, hasVendorFee, vendorFeesOut } from "./vendorWork";
+import {
+  carriesMaterials,
+  handoversOut,
+  hasVendorFee,
+  materialsNotArrived,
+  vendorFeesOut,
+} from "./vendorWork";
 import {
   assertOrderReportRoom,
   assertOrderVoidRoom,
@@ -897,6 +903,9 @@ export class ProductionService {
       reportRoom: room ? formatDecimal(room) : null,
       reportRoomFrom: room ? roomSourceLabel(lines, key) : null,
       purchaseOrders: await purchaseOrdersFor(order._id),
+      materialsNotArrived: ACTIVE_STATUSES.includes(order.status)
+        ? await materialsNotArrived(order)
+        : [],
       handovers: hasVendorFee(order) ? await handoversOut(order._id) : [],
       defaultHandoverChecklist: [...DEFAULT_HANDOVER_CHECKLIST],
       vendorFees: await vendorFeesOut(order),
@@ -1190,6 +1199,12 @@ export class ProductionService {
         `Only ${formatDecimal(done)} of ${order.qty} finished: add a note to close it short`,
       );
     }
+    const notArrived = await materialsNotArrived(order);
+    if (notArrived.length > 0 && !note.trim()) {
+      throw new Error(
+        `Material not fully received (${notArrived.join(", ")}): add a note saying what was used instead`,
+      );
+    }
     const updated = await ProductionOrderRepo.findOneAndUpdate(
       { _id: order._id, status: { $in: ACTIVE_STATUSES } },
       {
@@ -1326,9 +1341,10 @@ export class ProductionService {
         number: o.number,
         labourItemId: String(o.labourItemId),
         labourUomId: String(o.labourUomId),
-        labourName: o.labourName,
-        role: o.role,
-        executor: o.executor,
+        // SPKs from before the per-labour design have no labour line.
+        labourName: o.labourName ?? "",
+        role: o.role ?? "making",
+        executor: o.executor ?? "inhouse",
         sequence: o.sequence ?? null,
         status: o.status,
         projectId: String(o.projectId),
@@ -1402,6 +1418,12 @@ export function ymdLong(ymd: string | null): string {
 }
 
 /** SPK as a printable PDF; drafts print as DRAFT with no issuer signature. */
+/** A qty short enough to print: 3 decimals, or 3 significant digits below 1. */
+function printQty(qty: string): string {
+  const d = new Decimal(qty || "0");
+  return (d.abs().lt(1) ? d.toSignificantDigits(3) : d.toDecimalPlaces(3)).toFixed();
+}
+
 export async function exportProductionOrderPdf(
   id: string,
 ): Promise<{ buffer: Buffer; filename: string; contentType: string }> {
@@ -1513,7 +1535,7 @@ export async function exportProductionOrderPdf(
     materials: order.materials.map((m) => ({
       code: m.materialCode,
       name: m.materialName,
-      perUnit: m.qtyPerUnit,
+      perUnit: printQty(m.qtyPerUnit),
       total: m.qty,
       uom: m.uomSymbol,
     })),

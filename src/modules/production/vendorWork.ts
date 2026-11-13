@@ -316,6 +316,32 @@ export async function postedReceiptsByKey(
 }
 
 /**
+ * Names of a released SPK's materials (not the vendor fee) whose posted
+ * receipts, at us or straight to the vendor, are still below the SPK's need.
+ */
+export async function materialsNotArrived(order: LeanOrder): Promise<string[]> {
+  if (!order.snapshot || !carriesMaterials(order)) return [];
+  const all = order.snapshot.materials.map((m) => ({
+    materialItemId: String(m.materialItemId),
+    itemUomId: String(m.itemUomId),
+    qty: m.qty,
+  }));
+  const labour = await labourItemIds(all.map((m) => m.materialItemId));
+  const materials = all.filter((m) => !labour.has(m.materialItemId));
+  if (materials.length === 0) return [];
+  const receipts = await postedReceiptsByKey(order._id);
+  const zero = new Decimal(0);
+  const short = materials.filter((m) => {
+    const key = feeKey(m.materialItemId, m.itemUomId);
+    const received = (receipts.atUs.get(key) ?? zero).plus(receipts.direct.get(key) ?? zero);
+    return received.lt(m.qty);
+  });
+  if (short.length === 0) return [];
+  const { items } = await loadItemMeta(short.map((m) => m.materialItemId));
+  return short.map((m) => items.get(m.materialItemId)?.name ?? "Material");
+}
+
+/**
  * A receipt may go straight to the vendor when every line is material (not
  * the fee) of a subcon SPK that already has an approved fee PO. Returns the
  * vendors it would reach, or null when it may not.

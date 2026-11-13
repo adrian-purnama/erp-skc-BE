@@ -684,7 +684,8 @@ export class PurchasePaymentService {
   }
 
   private async poNumbers(ids: Types.ObjectId[]): Promise<Map<string, string>> {
-    const unique = [...new Set(ids.map(String))];
+    // Payments from before the per-PO design have no PO.
+    const unique = [...new Set(ids.map(String))].filter((id) => Types.ObjectId.isValid(id));
     if (unique.length === 0) return new Map();
     const pos = await PurchaseOrderRepo.model
       .find({ _id: { $in: unique.map((id) => new Types.ObjectId(id)) } })
@@ -705,7 +706,7 @@ export class PurchasePaymentService {
         .lean()
         .exec(),
       PurchaseRealizationRepo.model
-        .find({ _id: { $in: docs.flatMap((d) => d.realizationIds) } })
+        .find({ _id: { $in: docs.flatMap((d) => d.realizationIds ?? []) } })
         .select({ number: 1, purchaseDate: 1, total: 1 })
         .lean()
         .exec(),
@@ -757,13 +758,13 @@ export class PurchasePaymentService {
         number: d.number,
         kind: d.kind,
         status: d.status,
-        purchaseOrderId: String(d.purchaseOrderId),
+        purchaseOrderId: d.purchaseOrderId ? String(d.purchaseOrderId) : "",
         purchaseOrderNumber: poNumbers.get(String(d.purchaseOrderId)) ?? "—",
         vendorName: vendor,
-        stage: d.stage,
+        stage: d.stage ?? "partial",
         basis: d.basis ?? null,
         rate: d.rate ?? null,
-        realizations: d.realizationIds.map((rid) => {
+        realizations: (d.realizationIds ?? []).map((rid) => {
           const r = realizationById.get(String(rid));
           return { id: String(rid), number: r?.number ?? "—", purchaseDate: r?.purchaseDate ?? "", total: r?.total ?? "0" };
         }),
@@ -784,7 +785,7 @@ export class PurchasePaymentService {
         paidDate: d.paidDate ?? null,
         method: d.method ?? null,
         reference: d.reference ?? "",
-        proofs: d.proofs.map((p) => ({
+        proofs: (d.proofs ?? []).map((p) => ({
           id: String(p._id),
           originalFilename: p.originalFilename,
           contentType: p.contentType,

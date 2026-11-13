@@ -10,6 +10,8 @@ import {
   type QuotationDiscountType,
 } from "../quotation/quotation.planner";
 import { percentOf } from "../production/production.planner";
+import { priceStoredCharges } from "../purchasing/purchaseRealization.planner";
+import type { PurchaseCharge } from "../../models/purchaseCharge.model";
 import { computeLineTotal, sumGrandTotal } from "./projectRab.planner";
 import type { ProjectSummaryOutDto } from "../../dto/project.dto";
 
@@ -27,6 +29,8 @@ export type SummaryQuotation = {
 export type SummaryRab = {
   status: "draft" | "locked";
   lines: Array<{ totalQty: string; unitPrice?: string | null }>;
+  /** RAB additional costs (tax, delivery, others). */
+  charges?: PurchaseCharge[] | null;
 };
 
 export type SummaryDeadline = { at: Date; title: string };
@@ -45,6 +49,11 @@ export type SummaryInput = {
   shopDrawingCount: number;
   orders: Array<{ qty: string; plannedFinish?: string | null }>;
   reportQtys: string[];
+  /**
+   * Weighted production % from the item processes (the Production page's
+   * total); without it the summary falls back to done ÷ SPK qty.
+   */
+  productionPercent?: number | null;
   deadlines: SummaryDeadline[];
   /** Project status: tender (`open`) deadlines come from the calendar. */
   status: string;
@@ -153,6 +162,21 @@ export function projectDeadline(input: {
     : null;
 }
 
+/**
+ * RAB budget compared with the contract before tax: priced lines plus the
+ * additional costs that are not tax (delivery, others). Null when no line is priced.
+ */
+export function rabBudget(rab: SummaryRab): string | null {
+  const subtotal = sumGrandTotal(
+    rab.lines.map((l) => computeLineTotal(l.totalQty, l.unitPrice)),
+  );
+  if (subtotal === null) return null;
+  const extra = priceStoredCharges(subtotal, rab.charges ?? [])
+    .charges.filter((c) => c.category !== "tax")
+    .reduce((acc, c) => acc.add(c.amount), new Decimal(0));
+  return formatDecimal(parseQtyDecimal(subtotal).add(extra));
+}
+
 export function buildProjectSummary(input: SummaryInput): ProjectSummaryOutDto {
   const quotation = pickContractQuotation(input.quotations);
   const totals = quotation
@@ -164,11 +188,7 @@ export function buildProjectSummary(input: SummaryInput): ProjectSummaryOutDto {
       })
     : null;
 
-  const rabTotal = input.rab
-    ? sumGrandTotal(
-        input.rab.lines.map((l) => computeLineTotal(l.totalQty, l.unitPrice)),
-      )
-    : null;
+  const rabTotal = input.rab ? rabBudget(input.rab) : null;
 
   const plannedMargin =
     totals && rabTotal !== null
@@ -195,7 +215,7 @@ export function buildProjectSummary(input: SummaryInput): ProjectSummaryOutDto {
     shopDrawingCount: input.shopDrawingCount,
     productionOrderedQty: ordered,
     productionDoneQty: done,
-    productionPercent: percentOf(done, ordered),
+    productionPercent: input.productionPercent ?? percentOf(done, ordered),
     deadline: deadline ? deadline.at.toISOString() : null,
     deadlineTitle: deadline ? deadline.title : null,
     nextMilestone: milestone ? milestone.at.toISOString() : null,
