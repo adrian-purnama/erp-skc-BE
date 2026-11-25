@@ -5,7 +5,7 @@ import ExcelJS from "exceljs";
 import type { ProjectQuotationOutDto } from "../../dto/projectQuotation.dto";
 import { buildQuotationDocument } from "./quotation.document";
 import { buildQuotationWorkbook } from "./quotation.xlsx";
-import { fitBox, readLogoImageInfo } from "./quotation.logo";
+import { fitBox, readLogoImageInfo } from "../../utils/document/logo";
 import { buildQuotationPdf } from "./quotation.pdf";
 
 /** Build a valid 2×1 RGB PNG. */

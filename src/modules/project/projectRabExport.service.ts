@@ -1,45 +1,25 @@
 import ExcelJS from "exceljs";
 import { Types } from "mongoose";
-import { FolderRepo } from "../../models/folder.model";
-import { ItemRepo } from "../../models/item.model";
-import { VendorRepo } from "../../models/vendor.model";
-import type { PurchaseCharge } from "../../models/purchaseCharge.model";
+import type { PurchaseCharge } from "../../models/charge.schema";
 import type { ProjectRabLine } from "../../models/projectRab.model";
 import { ProjectRabRepo } from "../../models/projectRab.model";
 import { ProjectRepo } from "../../models/project.model";
 import { logger } from "../../core/logger";
-import { userEmailsById } from "../../utils/shared";
-import { folderPathUp } from "../itemMaster/folderPath";
-import { loadItemMeta } from "../itemMaster/itemMeta";
-import {
-  buildExportFilename,
-  buildSections,
-  exportChargeRows,
-  lineAmount,
-  missingPriceLines,
-  sanitizeExcelText,
-  sumLineAmounts,
-  terbilangRupiah,
-  toLetter,
-  type ExportLineIn,
-  type ExportSection,
-} from "./projectRabExport.planner";
+import { userEmailsById } from "../auth";
+import { getItemFolderPaths, getItemRefs, loadItemMeta } from "../itemMaster";
+import { buildExportFilename, buildSections, exportChargeRows, lineAmount, missingPriceLines, sumLineAmounts, type ExportLineIn, type ExportSection } from "./projectRabExport.planner";
+import { sanitizeExcelText, terbilangRupiah, toLetter } from "../../utils/document/text";
 import { rabLineKey } from "./projectRab.planner";
 import { projectRabChangeService } from "./projectRabChange.service";
 import { assertProjectExists } from "./projectShared";
 import { projectRabService, shopDrawingItemNames } from "./projectRab.service";
+import { getVendorNames } from "../vendor";
 
 export type RabExportKind = "formal" | "data";
 
 export type RabExportResult = {
   buffer: Buffer;
   filename: string;
-};
-
-type FolderLean = {
-  _id: Types.ObjectId;
-  name: string;
-  parentId?: Types.ObjectId | null;
 };
 
 const FONT = "Arial";
@@ -65,69 +45,15 @@ function num(raw: string | null | undefined): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-async function folderPathByItemId(
-  itemIds: string[],
-): Promise<Map<string, string[]>> {
-  const items = (await ItemRepo.model
-    .find({ _id: { $in: itemIds.map((id) => new Types.ObjectId(id)) } })
-    .select({ folderId: 1, vendorIds: 1 })
-    .lean()
-    .exec()) as Array<{
-    _id: Types.ObjectId;
-    folderId?: Types.ObjectId | null;
-    vendorIds?: Types.ObjectId[];
-  }>;
-  const folders = (await FolderRepo.model.find().lean().exec()) as FolderLean[];
-  const byId = new Map(folders.map((f) => [String(f._id), f]));
-
-  const out = new Map<string, string[]>();
-  for (const it of items) {
-    const nodes = await folderPathUp(
-      it.folderId ? String(it.folderId) : null,
-      async (id) => {
-        const folder = byId.get(id);
-        return folder
-          ? {
-              parentId: folder.parentId ? String(folder.parentId) : null,
-              value: folder.name,
-            }
-          : null;
-      },
-    );
-    out.set(
-      String(it._id),
-      nodes.map((node) => node.value),
-    );
-  }
-  return out;
-}
-
 async function vendorNameByItemId(
   itemIds: string[],
 ): Promise<Map<string, string | null>> {
-  const items = (await ItemRepo.model
-    .find({ _id: { $in: itemIds.map((id) => new Types.ObjectId(id)) } })
-    .select({ vendorIds: 1 })
-    .lean()
-    .exec()) as Array<{ _id: Types.ObjectId; vendorIds?: Types.ObjectId[] }>;
-  const vendorIds = [
-    ...new Set(
-      items.flatMap((i) => (i.vendorIds ?? []).map((v) => String(v))),
-    ),
-  ];
-  const vendors =
-    vendorIds.length === 0
-      ? []
-      : ((await VendorRepo.model
-          .find({ _id: { $in: vendorIds.map((id) => new Types.ObjectId(id)) } })
-          .select({ name: 1 })
-          .lean()
-          .exec()) as Array<{ _id: Types.ObjectId; name: string }>);
-  const vNames = new Map(vendors.map((v) => [String(v._id), v.name]));
+  const items = [...(await getItemRefs(itemIds)).values()];
+  const vNames = await getVendorNames([...new Set(items.flatMap((i) => i.vendorIds))]);
   const out = new Map<string, string | null>();
   for (const it of items) {
-    const first = it.vendorIds?.[0] ? String(it.vendorIds[0]) : null;
-    out.set(String(it._id), first ? (vNames.get(first) ?? null) : null);
+    const first = it.vendorIds[0] ?? null;
+    out.set(it.id, first ? (vNames.get(first) ?? null) : null);
   }
   return out;
 }
@@ -320,7 +246,7 @@ export class ProjectRabExportService {
 
     const itemIds = [...new Set(rawLines.map((l) => l.materialItemId))];
     const [paths, vendors] = await Promise.all([
-      folderPathByItemId(itemIds),
+      getItemFolderPaths(itemIds),
       vendorNameByItemId(itemIds),
     ]);
 

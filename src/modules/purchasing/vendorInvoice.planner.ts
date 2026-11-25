@@ -1,6 +1,6 @@
 import Decimal from "decimal.js";
 import { lineAmount } from "./purchaseOrder.planner";
-import { priceStoredCharges, type ChargeCategory } from "./purchaseRealization.planner";
+import { priceStoredCharges, type ChargeCategory } from "../../utils/charges";
 
 /**
  * Pure money rule for vendor purchases (no DB). Vendor receipts (GR) carry no

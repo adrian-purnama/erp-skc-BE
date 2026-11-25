@@ -2,13 +2,9 @@ import { Types } from "mongoose";
 import type { ItemUomInDto, ItemUomOutDto } from "../../dto/itemMaster.dto";
 import { ItemRepo } from "../../models/item.model";
 import { ItemUomRepo, type ItemUomInterface } from "../../models/itemUom.model";
-import { UOM_DEFAULT_DECIMALS, UomRepo } from "../../models/uom.model";
-import { defaultFormulasOr } from "../uom/uomFormula";
-import {
-  parsePositiveDecimal,
-  rescaleFactorsForNewBase,
-  type RescaleRow,
-} from "./itemUomConvert";
+import { defaultFormulasOr, getUomsByIds, UOM_DEFAULT_DECIMALS, type UomRefDto } from "../uom";
+import { rescaleFactorsForNewBase, type RescaleRow } from "./itemUomConvert";
+import { parsePositiveDecimal } from "../../utils/decimal";
 
 type ItemUomLean = ItemUomInterface & { _id: Types.ObjectId };
 
@@ -34,6 +30,16 @@ function toOut(doc: ItemUomLean, uomMeta?: UomMeta): ItemUomOutDto {
     formulas: defaultFormulasOr(uomMeta?.formulas),
     uomDecimals: uomMeta?.decimals ?? UOM_DEFAULT_DECIMALS,
   };
+}
+
+/** The UoM fields an item UoM row shows, formulas defaulted. */
+function uomMetaById(uoms: Map<string, UomRefDto>) {
+  return new Map(
+    [...uoms].map(([id, u]) => [
+      id,
+      { symbol: u.symbol, name: u.name, formulas: defaultFormulasOr(u.formulas), decimals: u.decimals },
+    ]),
+  );
 }
 
 function validateRowShape(rows: ItemUomInDto[]): void {
@@ -138,22 +144,7 @@ export class ItemUomService {
       .exec()) as ItemUomLean[];
     if (docs.length === 0) return byItem;
 
-    const uomIds = [...new Set(docs.map((d) => String(d.uomId)))];
-    const uoms = await UomRepo.model
-      .find({ _id: { $in: uomIds } })
-      .lean()
-      .exec();
-    const meta = new Map(
-      uoms.map((u) => [
-        String(u._id),
-        {
-          symbol: u.symbol,
-          name: u.name,
-          formulas: defaultFormulasOr(u.formulas),
-          decimals: u.decimals,
-        },
-      ]),
-    );
+    const meta = uomMetaById(await getUomsByIds(docs.map((d) => String(d.uomId))));
 
     for (const doc of docs) {
       const key = String(doc.itemId);
@@ -216,11 +207,8 @@ export class ItemUomService {
     }));
 
     const uomIds = normalized.map((r) => new Types.ObjectId(r.uomId));
-    const found = await UomRepo.model
-      .find({ _id: { $in: uomIds } })
-      .lean()
-      .exec();
-    if (found.length !== uomIds.length) {
+    const found = await getUomsByIds(normalized.map((r) => r.uomId));
+    if (found.size !== uomIds.length) {
       throw new Error("One or more UOMs were not found");
     }
 
@@ -279,17 +267,7 @@ export class ItemUomService {
       $set: { baseUomId: new Types.ObjectId(baseRow.uomId) },
     });
 
-    const meta = new Map(
-      found.map((u) => [
-        String(u._id),
-        {
-          symbol: u.symbol,
-          name: u.name,
-          formulas: defaultFormulasOr(u.formulas),
-          decimals: u.decimals,
-        },
-      ]),
-    );
+    const meta = uomMetaById(found);
     return results
       .sort((a, b) => a.sortOrder - b.sortOrder)
       .map((doc) => toOut(doc, meta.get(String(doc.uomId))));

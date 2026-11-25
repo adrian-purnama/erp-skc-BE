@@ -1,29 +1,17 @@
 import Decimal from "decimal.js";
-import {
-  formatDecimal,
-  parseQtyDecimal,
-} from "../itemMaster/itemUomConvert";
-import {
-  computeTotals,
-  quotationCharges,
-  type QuotationCharge,
-  type QuotationDiscountType,
-} from "../quotation/quotation.planner";
-import { percentOf } from "../production/production.planner";
-import { priceStoredCharges } from "../purchasing/purchaseRealization.planner";
-import type { PurchaseCharge } from "../../models/purchaseCharge.model";
+import { formatDecimal, parseQtyDecimal, percentOf } from "../../utils/decimal";
+import { priceStoredCharges } from "../../utils/charges";
+import type { PurchaseCharge } from "../../models/charge.schema";
 import { computeLineTotal, sumGrandTotal } from "./projectRab.planner";
 import type { ProjectSummaryOutDto } from "../../dto/project.dto";
 
+/** A won / issued quotation with its money computed by the quotation module. */
 export type SummaryQuotation = {
   status: string;
   revision: number;
-  discountType: QuotationDiscountType;
-  discountValue: string;
-  /** Extra charges (PPN, …); old revisions have only `taxPercent`. */
-  charges?: QuotationCharge[] | null;
-  taxPercent?: string | null;
-  lines: Array<{ qty: string; unitPrice: string; costUnitPrice: string }>;
+  /** Total before tax (after discount and non-tax charges). */
+  taxBase: string;
+  grandTotal: string;
 };
 
 export type SummaryRab = {
@@ -180,12 +168,7 @@ export function rabBudget(rab: SummaryRab): string | null {
 export function buildProjectSummary(input: SummaryInput): ProjectSummaryOutDto {
   const quotation = pickContractQuotation(input.quotations);
   const totals = quotation
-    ? computeTotals({
-        lines: quotation.lines,
-        discountType: quotation.discountType,
-        discountValue: quotation.discountValue,
-        charges: quotationCharges(quotation),
-      })
+    ? { taxBase: quotation.taxBase, grandTotal: quotation.grandTotal }
     : null;
 
   const rabTotal = input.rab ? rabBudget(input.rab) : null;

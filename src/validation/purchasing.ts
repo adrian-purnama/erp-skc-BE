@@ -1,27 +1,5 @@
 import { Types } from "mongoose";
-import type {
-  CancelPurchaseRequestInDto,
-  CreatePurchaseRequestInDto,
-  PayPurchasePaymentInDto,
-  PurchasePaymentKindDto,
-  PurchasePaymentStatusDto,
-  PurchaseOrderLineInDto,
-  PurchaseOrderStatusDto,
-  PurchaseRabLineInDto,
-  PurchaseRabStatusDto,
-  PurchaseRequestLineInDto,
-  PurchaseRequestStatusDto,
-  PurchaseRealizationStatusDto,
-  ReasonInDto,
-  RealizationChargeInDto,
-  SavePurchaseOrdersInDto,
-  SavePurchaseRabInDto,
-  SaveRealizationInDto,
-  SavePurchasePaymentInDto,
-  SaveVendorInvoiceInDto,
-  VendorInvoiceStatusDto,
-  UpdatePurchaseRequestInDto,
-} from "../dto/purchasing.dto";
+import type { CancelPurchaseRequestInDto, CreatePurchaseRequestInDto, PayPurchasePaymentInDto, PurchasePaymentKindDto, PurchasePaymentStatusDto, PurchaseOrderLineInDto, PurchaseOrderStatusDto, PurchaseRabLineInDto, PurchaseRabStatusDto, PurchaseRequestLineInDto, PurchaseRequestStatusDto, PurchaseRealizationStatusDto, ReasonInDto, SavePurchaseOrdersInDto, SavePurchaseRabInDto, SaveRealizationInDto, SavePurchasePaymentInDto, SaveVendorInvoiceInDto, VendorInvoiceStatusDto, UpdatePurchaseRequestInDto } from "../dto/purchasing.dto";
 import { PURCHASE_ORDER_STATUSES } from "../models/purchaseOrder.model";
 import {
   PURCHASE_PAYMENT_KINDS,
@@ -33,19 +11,14 @@ import { PURCHASE_RAB_STATUSES } from "../models/purchaseRab.model";
 import { PURCHASE_REALIZATION_STATUSES } from "../models/purchaseRealization.model";
 import { PURCHASE_REQUEST_STATUSES } from "../models/purchaseRequest.model";
 import { asRecord } from "./asRecord";
-import { parseProductionQty } from "./production";
-import {
-  CHARGE_CATEGORIES,
-  inferChargeCategory,
-  type ChargeCategory,
-} from "../modules/purchasing/purchaseRealization.planner";
+import { parsePositiveQty } from "./qty";
+import { parseChargeList, parseRupiah } from "./charge";
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 const NOTES_MAX = 2000;
 const LINE_NOTE_MAX = 300;
 const REASON_MAX = 500;
 const LINES_MAX = 200;
-const CHARGES_MAX = 20;
 
 function parseObjectId(raw: unknown, field: string): string {
   if (typeof raw !== "string" || !Types.ObjectId.isValid(raw)) {
@@ -77,7 +50,7 @@ function parseLine(raw: unknown, index: number): PurchaseRequestLineInDto {
   return {
     materialItemId: parseObjectId(row.materialItemId, `${at}.materialItemId`),
     itemUomId: parseObjectId(row.itemUomId, `${at}.itemUomId`),
-    qty: parseProductionQty(row.qty, `${at}.qty`),
+    qty: parsePositiveQty(row.qty, `${at}.qty`),
     note: parseText(row.note, `${at}.note`, LINE_NOTE_MAX),
   };
 }
@@ -147,20 +120,12 @@ function parseOptionalYmd(raw: unknown, field: string): string | null {
 }
 
 /** Positive whole rupiah as digits. */
-function parseRupiah(raw: unknown, field: string): string {
-  const text = typeof raw === "number" ? String(raw) : raw;
-  if (typeof text !== "string" || !/^\d+$/.test(text.trim())) {
-    throw new Error(`${field} must be a whole rupiah amount`);
-  }
-  return String(BigInt(text.trim()));
-}
-
 function parseOrderLine(raw: unknown, index: number): PurchaseOrderLineInDto {
   const row = asRecord(raw);
   const at = `lines[${index}]`;
   return {
     requestLineId: parseObjectId(row.requestLineId, `${at}.requestLineId`),
-    qty: parseProductionQty(row.qty, `${at}.qty`),
+    qty: parsePositiveQty(row.qty, `${at}.qty`),
     unitPrice: parseRupiah(row.unitPrice, `${at}.unitPrice`),
     note: parseText(row.note, `${at}.note`, LINE_NOTE_MAX),
   };
@@ -251,7 +216,7 @@ export function parseSaveRealizationDto(body: unknown): SaveRealizationInDto {
       const at = `lines[${i}]`;
       return {
         poLineId: parseObjectId(line.poLineId, `${at}.poLineId`),
-        qty: parseProductionQty(line.qty, `${at}.qty`),
+        qty: parsePositiveQty(line.qty, `${at}.qty`),
         // A vendor GR is goods only; its price comes from the invoice or the PO.
         unitPrice: row.method === "vendor" ? "0" : parseRupiah(line.unitPrice, `${at}.unitPrice`),
         note: parseText(line.note, `${at}.note`, LINE_NOTE_MAX),
@@ -259,38 +224,6 @@ export function parseSaveRealizationDto(body: unknown): SaveRealizationInDto {
     }),
     charges: row.method === "vendor" ? [] : parseChargeList(row.charges),
   };
-}
-
-/** Tax / delivery / other charges (realization, PO estimate, RAB budget); absent = none. */
-export function parseChargeList(raw: unknown): RealizationChargeInDto[] {
-  const charges = raw ?? [];
-  if (!Array.isArray(charges)) throw new Error("charges must be a list");
-  if (charges.length > CHARGES_MAX) throw new Error(`At most ${CHARGES_MAX} charges`);
-  return charges.map(parseRealizationCharge);
-}
-
-function parseRealizationCharge(raw: unknown, index: number): RealizationChargeInDto {
-  const row = asRecord(raw);
-  const at = `charges[${index}]`;
-  const label = parseText(row.label, `${at}.label`, 100);
-  if (!label) throw new Error(`${at}.label is required`);
-  // Older clients send no category: take it from the name.
-  let category = inferChargeCategory(label);
-  if (row.category !== undefined && row.category !== null && row.category !== "") {
-    if (!(CHARGE_CATEGORIES as readonly unknown[]).includes(row.category)) {
-      throw new Error(`${at}.category must be one of: ${CHARGE_CATEGORIES.join(", ")}`);
-    }
-    category = row.category as ChargeCategory;
-  }
-  if (row.kind === "percent") {
-    const rate = parseProductionQty(row.rate, `${at}.rate`);
-    if (Number(rate) > 100) throw new Error(`${at}.rate must be at most 100`);
-    return { category, label, kind: "percent", rate, amount: "0" };
-  }
-  if (row.kind === "fixed") {
-    return { category, label, kind: "fixed", rate: null, amount: parseRupiah(row.amount, `${at}.amount`) };
-  }
-  throw new Error(`${at}.kind must be percent or fixed`);
 }
 
 export function parseRealizationStatusFilter(
@@ -311,7 +244,7 @@ function parseRabLine(raw: unknown, index: number): PurchaseRabLineInDto {
   return {
     materialItemId: parseObjectId(row.materialItemId, `${at}.materialItemId`),
     itemUomId: parseObjectId(row.itemUomId, `${at}.itemUomId`),
-    qty: parseProductionQty(row.qty, `${at}.qty`),
+    qty: parsePositiveQty(row.qty, `${at}.qty`),
     unitPrice: parseRupiah(row.unitPrice, `${at}.unitPrice`),
     note: parseText(row.note, `${at}.note`, LINE_NOTE_MAX),
   };

@@ -26,11 +26,11 @@ import {
   ProjectRabRepo,
   type ProjectRabLine,
 } from "../../models/projectRab.model";
-import type { PurchaseCharge } from "../../models/purchaseCharge.model";
+import type { PurchaseCharge } from "../../models/charge.schema";
 import { ProjectShopDrawingBoqRepo } from "../../models/projectShopDrawingBoq.model";
 import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument.model";
 import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
-import { loadItemMeta } from "../itemMaster/itemMeta";
+import { loadItemMeta } from "../itemMaster";
 import { fileVersionsById, liveCurrentFiles } from "./projectCurrentFiles";
 import {
   diffBoqFiles,
@@ -46,7 +46,7 @@ import {
   type LeanBoqDoc,
 } from "./projectRabChange.planner";
 import { assertProjectExists, shopDrawingItemLabel } from "./projectShared";
-import { userEmailsById, userRefsById } from "../../utils/shared";
+import { userEmailsById, userRefsById } from "../auth";
 import { logger } from "../../core/logger";
 import {
   assertAllLinesPriced,
@@ -59,11 +59,8 @@ import {
 } from "./projectRab.planner";
 import { loadRabUomPlan } from "./projectRabUomPlan";
 import { purgeShopDrawingItem } from "./projectShopDrawingPurge";
-import { ProductionOrderRepo } from "../../models/productionOrder.model";
-import { ProductionReportRepo } from "../../models/productionReport.model";
-import { allocatedQty } from "../production/production.planner";
-import { formatDecimal, parseQtyDecimal } from "../itemMaster/itemUomConvert";
-import { assertProcessKept } from "../production/stageFlow";
+import { productionPort } from "./project.ports";
+import { parseQtyDecimal } from "../../utils/decimal";
 
 export { syncRabLinesFromBoqs } from "./projectRabChange.planner";
 
@@ -97,61 +94,28 @@ async function heldByItem(projectId: string): Promise<{
   items: Map<string, { label: string; heldQty: string }>;
   lines: ProductionHeldLine[];
 }> {
-  const orders = await ProductionOrderRepo.model
-    .find({ projectId: new Types.ObjectId(projectId), status: { $ne: "cancelled" } })
-    .select({
-      shopDrawingItemId: 1,
-      labourItemId: 1,
-      labourUomId: 1,
-      labourName: 1,
-      role: 1,
-      executor: 1,
-      status: 1,
-      qty: 1,
-    })
+  const held = await productionPort().heldLabourLines(projectId);
+  if (held.length === 0) return { items: new Map(), lines: [] };
+  const items = await ProjectShopDrawingItemRepo.model
+    .find({ _id: { $in: held.map((l) => new Types.ObjectId(l.shopDrawingItemId)) } })
+    .select({ code: 1, name: 1 })
     .lean()
     .exec();
-  if (orders.length === 0) return { items: new Map(), lines: [] };
-  const [reports, items] = await Promise.all([
-    ProductionReportRepo.model
-      .find({ productionOrderId: { $in: orders.map((o) => o._id) }, isVoided: false })
-      .select({ productionOrderId: 1, qtyDone: 1 })
-      .lean()
-      .exec(),
-    ProjectShopDrawingItemRepo.model
-      .find({ _id: { $in: orders.map((o) => o.shopDrawingItemId) } })
-      .select({ code: 1, name: 1 })
-      .lean()
-      .exec(),
-  ]);
-  const done = new Map<string, string>();
-  for (const r of reports) {
-    const key = String(r.productionOrderId);
-    done.set(key, formatDecimal(parseQtyDecimal(done.get(key) ?? "0").add(r.qtyDone)));
-  }
   const labelById = new Map(items.map((i) => [String(i._id), shopDrawingItemLabel(i)]));
-  const lineKey = (o: (typeof orders)[number]) =>
-    `${String(o.shopDrawingItemId)}:${String(o.labourItemId)}:${String(o.labourUomId)}`;
   const heldItems = new Map<string, { label: string; heldQty: string }>();
   const heldLines = new Map<string, ProductionHeldLine>();
-  for (const key of new Set(orders.map(lineKey))) {
-    const lineOrders = orders.filter((o) => lineKey(o) === key);
-    const first = lineOrders[0]!;
-    const itemId = String(first.shopDrawingItemId);
+  for (const line of held) {
+    const itemId = line.shopDrawingItemId;
     const label = labelById.get(itemId) ?? "Shop drawing item";
-    const held = allocatedQty(
-      lineOrders.map((o) => ({ id: String(o._id), status: o.status, qty: o.qty })),
-      done,
-    );
     const prev = heldItems.get(itemId);
-    if (!prev || held.gt(prev.heldQty)) {
-      heldItems.set(itemId, { label, heldQty: formatDecimal(held) });
+    if (!prev || parseQtyDecimal(line.heldQty).gt(prev.heldQty)) {
+      heldItems.set(itemId, { label, heldQty: line.heldQty });
     }
-    heldLines.set(key, {
-      key,
-      label: `${label} · ${first.labourName || "labour"}`,
-      role: first.role,
-      executor: first.executor,
+    heldLines.set(line.key, {
+      key: line.key,
+      label: `${label} · ${line.labourName || "labour"}`,
+      role: line.role,
+      executor: line.executor,
     });
   }
   return { items: heldItems, lines: [...heldLines.values()] };
@@ -556,7 +520,7 @@ export class ProjectRabChangeService {
     assertAllLinesPriced(synced, "before commit");
     await assertProductionKept(projectId, counted, removedItemIds, synced);
     try {
-      await assertProcessKept(projectId, rab.lines as ProjectRabLine[], synced, removedItemIds);
+      await productionPort().assertProcessKept(projectId, rab.lines as ProjectRabLine[], synced, removedItemIds);
     } catch (e) {
       throw new Error(`Cannot commit: ${e instanceof Error ? e.message : String(e)}`);
     }

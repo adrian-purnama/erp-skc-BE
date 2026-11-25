@@ -1,8 +1,8 @@
 import { Types } from "mongoose";
-import { ItemRepo } from "../../models/item.model";
 import type { ShopDrawingBoqMountingType } from "../../models/projectShopDrawingBoq.model";
 import { ProjectShopDrawingBoqRepo } from "../../models/projectShopDrawingBoq.model";
 import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument.model";
+import { getItemRefs } from "../itemMaster";
 
 type SpecLine = { materialItemId?: unknown };
 
@@ -127,12 +127,8 @@ export async function loadShopDrawingSpecs(
     .exec()) as Array<SpecBoq & { shopDrawingItemId: Types.ObjectId }>;
 
   const materialIds = [...new Set(boqs.flatMap(collectMaterialIds))];
-  const items = await ItemRepo.model
-    .find({ _id: { $in: materialIds.map((id) => new Types.ObjectId(id)) } })
-    .select({ name: 1 })
-    .lean()
-    .exec();
-  const nameById = new Map(items.map((i) => [String(i._id), i.name]));
+  const items = await getItemRefs(materialIds);
+  const nameById = new Map([...items].map(([id, i]) => [id, i.name]));
 
   for (const boq of boqs) {
     out.set(String(boq.shopDrawingItemId), buildShopDrawingSpecLines(boq, nameById));

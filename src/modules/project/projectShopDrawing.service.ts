@@ -13,7 +13,6 @@ import {
   ProjectShopDrawingItemRepo,
   type ShopDrawingMakeType,
 } from "../../models/projectShopDrawingItem.model";
-import { ProductionOrderRepo } from "../../models/productionOrder.model";
 import {
   assertShopDrawingFile,
   type ShopDrawingItemInDto,
@@ -29,8 +28,8 @@ import {
   type VersionedFileDoc,
   type VersionedFileExtras,
 } from "./versionedProjectFile.service";
-import { formatDecimal } from "../itemMaster/itemUomConvert";
-import { heldQtyOnItem } from "../production/stageFlow";
+import { formatDecimal } from "../../utils/decimal";
+import { productionPort } from "./project.ports";
 
 /** Locked RAB with no open change — version switch needs a change first. */
 async function assertCanSwitchShopDrawingCurrent(
@@ -186,7 +185,7 @@ function toItemMeta(item: LeanItem, descriptions: string[] = []): ItemMetaOut {
 
 /** An outsource item's qty may not drop below what its labour lines' SPKs hold. */
 async function assertMakeQtyKeepsSpks(itemId: string, makeQty: string | null): Promise<void> {
-  const held = await heldQtyOnItem(new Types.ObjectId(itemId));
+  const held = await productionPort().heldQtyOnItem(new Types.ObjectId(itemId));
   if (held.lte(0)) return;
   if (makeQty === null || held.gt(makeQty)) {
     throw new Error(
@@ -197,12 +196,7 @@ async function assertMakeQtyKeepsSpks(itemId: string, makeQty: string | null): P
 
 /** SPKs are typed by the item, so the type is fixed while live ones exist. */
 async function assertMakeTypeChangeable(itemId: string): Promise<void> {
-  const live = await ProductionOrderRepo.model
-    .countDocuments({
-      shopDrawingItemId: new Types.ObjectId(itemId),
-      status: { $ne: "cancelled" },
-    })
-    .exec();
+  const live = await productionPort().countLiveOrdersForShopDrawingItem(itemId);
   if (live > 0) {
     throw new Error(
       "This item already has SPKs: cancel or delete them before changing who makes it",

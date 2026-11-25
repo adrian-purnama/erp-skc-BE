@@ -1,11 +1,15 @@
 import { Request, Response } from "express";
 import { getUserPermissions } from "../../core/permissions/resolve.service";
 import { fail, ok } from "../../dto/httpResponse";
-import { LoginInDto } from "../../dto/login.dto";
-import { registerInDto } from "../../dto/register.dto";
-import { normalizeEmail } from "../../utils/email";
+import type { LoginInDto } from "../../dto/login.dto";
 import { parseUpdateProfileDto } from "../../validation/profile";
 import { parseSaveDashboardMetricsDto } from "../../validation/dashboardMetrics";
+import {
+  parseLoginDto,
+  parseRegisterDto,
+  parseResetPasswordDto,
+  parseSendOtpDto,
+} from "../../validation/auth";
 import { AuthService } from "./auth.service";
 
 export class AuthController {
@@ -13,21 +17,14 @@ export class AuthController {
 
   sendOtp = async (req: Request, res: Response) => {
     try {
-      const email = normalizeEmail(req.body?.email);
-
-      if (!email) {
-        return fail(res, null, "Invalid email");
-      }
-
-      const isResetPassword = Boolean(req.body?.isResetPassword);
-
-      const sent = await this.authService.sendOtp({ email, isResetPassword });
+      const input = parseSendOtpDto(req.body);
+      const sent = await this.authService.sendOtp(input);
 
       if (!sent) {
         return fail(res, null, "Failed to send OTP", 500);
       }
 
-      return ok(res, "OTP sent", { email });
+      return ok(res, "OTP sent", { email: input.email });
     } catch (error) {
       return fail(res, error, "Failed to send OTP");
     }
@@ -35,20 +32,7 @@ export class AuthController {
 
   register = async (req: Request, res: Response) => {
     try {
-      const email = normalizeEmail(req.body?.email);
-      const otp = typeof req.body?.otp === "string" ? req.body.otp.trim() : "";
-      const password =
-        typeof req.body?.password === "string" ? req.body.password : "";
-
-      if (!email) {
-        return fail(res, null, "Invalid email");
-      }
-
-      if (!otp || !password) {
-        return fail(res, null, "OTP and password are required");
-      }
-
-      const input: registerInDto = { email, otp, password };
+      const input = parseRegisterDto(req.body);
       const data = await this.authService.register(input);
 
       return ok(res, "Registered successfully", data, 201);
@@ -58,21 +42,13 @@ export class AuthController {
   };
 
   login = async (req: Request, res: Response) => {
+    let input: LoginInDto;
     try {
-      const email = normalizeEmail(req.body?.email);
-      const password =
-        typeof req.body?.password === "string" ? req.body.password : "";
-      const rememberMe = Boolean(req.body?.rememberMe);
-
-      if (!email) {
-        return fail(res, null, "Invalid email");
-      }
-
-      if (!password) {
-        return fail(res, null, "Password is required");
-      }
-
-      const input: LoginInDto = { email, password, rememberMe };
+      input = parseLoginDto(req.body);
+    } catch (error) {
+      return fail(res, error, "Login failed");
+    }
+    try {
       const data = await this.authService.login(input);
 
       return ok(res, "Logged in successfully", data);
@@ -160,24 +136,8 @@ export class AuthController {
 
   resetPassword = async (req: Request, res: Response) => {
     try {
-      const email = normalizeEmail(req.body?.email);
-      const otp = typeof req.body?.otp === "string" ? req.body.otp.trim() : "";
-      const password =
-        typeof req.body?.password === "string" ? req.body.password : "";
-
-      if (!email) {
-        return fail(res, null, "Invalid email");
-      }
-
-      if (!otp || !password) {
-        return fail(res, null, "OTP and password are required");
-      }
-
-      const data = await this.authService.resetPassword({
-        email,
-        otp,
-        password,
-      });
+      const input = parseResetPasswordDto(req.body);
+      const data = await this.authService.resetPassword(input);
 
       return ok(res, "Password reset successfully", data);
     } catch (error) {

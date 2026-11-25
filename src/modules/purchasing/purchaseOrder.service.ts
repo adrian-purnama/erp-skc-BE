@@ -1,29 +1,10 @@
 import Decimal from "decimal.js";
 import { Types } from "mongoose";
 import { withTx } from "../../core/audit/context";
-import type {
-  OpenRequestLineOutDto,
-  PurchaseChargeAmountsDto,
-  PurchaseOrderLineOutDto,
-  RealizationChargeInDto,
-  PurchaseOrderOutDto,
-  PurchaseOrderRabCompareLineOutDto,
-  PurchaseOrderRabCompareOutDto,
-  PurchaseOrderStatusDto,
-  PurchaseOrderSummaryOutDto,
-  PurchasingOptionOutDto,
-  SavePurchaseOrderInDto,
-  SavePurchaseOrdersInDto,
-  SavePurchaseOrdersOutDto,
-  VendorPriceOutDto,
-} from "../../dto/purchasing.dto";
-import { getUserPermissions } from "../../core/permissions/resolve.service";
-import { RoleModel } from "../../models/role.model";
+import type { OpenRequestLineOutDto, PurchaseOrderLineOutDto, PurchaseOrderOutDto, PurchaseOrderRabCompareLineOutDto, PurchaseOrderRabCompareOutDto, PurchaseOrderStatusDto, PurchaseOrderSummaryOutDto, PurchasingOptionOutDto, SavePurchaseOrderInDto, SavePurchaseOrdersInDto, SavePurchaseOrdersOutDto, VendorPriceOutDto } from "../../dto/purchasing.dto";
+import type { PurchaseChargeAmountsDto, RealizationChargeInDto } from "../../dto/charge.dto";
+import { userHasPermission, usersWithPermission } from "../../core/permissions/resolve.service";
 import type { ProjectRabUserRefOutDto } from "../../dto/projectRab.dto";
-import { ProductionOrderRepo } from "../../models/productionOrder.model";
-import { ProjectRepo } from "../../models/project.model";
-import { ProjectRabRepo } from "../../models/projectRab.model";
-import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
 import { PurchaseRabRepo } from "../../models/purchaseRab.model";
 import {
   PURCHASE_ORDER_HOLDING_QUERY,
@@ -39,15 +20,19 @@ import {
   type PurchaseRequestLine,
 } from "../../models/purchaseRequest.model";
 import { PurchasingSeqCounterModel } from "../../models/seqCounter.model";
-import { TermOfPaymentRepo } from "../../models/termOfPayment.model";
-import { UserModel } from "../../models/user.model";
-import { VendorRepo } from "../../models/vendor.model";
-import { userEmailsById } from "../../utils/shared";
-import { loadItemMeta } from "../itemMaster/itemMeta";
-import { formatDecimal } from "../itemMaster/itemUomConvert";
-import { projectNumberParts } from "../project/projectNumber";
-import { rabLineKey, rabRowsForPurchasing } from "../project/projectRab.planner";
-import { shopDrawingItemLabel } from "../project/projectShared";
+import { getUserRef, userEmailsById } from "../auth";
+import { loadItemMeta } from "../itemMaster";
+import { formatDecimal } from "../../utils/decimal";
+import { numberingPeriod } from "../../utils/numbering";
+import {
+  getProjectRab,
+  getProjectRefs,
+  getShopDrawingItemRefs,
+  listProjectRabs,
+  rabLineKey,
+  rabRowsForPurchasing,
+  shopDrawingItemLabel,
+} from "../project";
 import {
   checkOrderLines,
   lineAmount,
@@ -57,25 +42,20 @@ import {
 } from "./purchaseOrder.planner";
 import { liveOrderLines } from "./purchaseOrderLines";
 import { PurchaseRealizationRepo } from "../../models/purchaseRealization.model";
-import {
-  chargesByCategory,
-  checkRealizationCharges,
-  priceStoredCharges,
-  realizationStatus,
-  sumRealized,
-  type ChargeCategory,
-} from "./purchaseRealization.planner";
-import type { PurchaseCharge } from "../../models/purchaseCharge.model";
+import { realizationStatus, sumRealized } from "./purchaseRealization.planner";
+import { chargesByCategory, checkRealizationCharges, priceStoredCharges, type ChargeCategory } from "../../utils/charges";
+import type { PurchaseCharge } from "../../models/charge.schema";
 import QRCode from "qrcode";
 import { env } from "../../core/env";
 import { buildPoPdf, type PoPdfData } from "./purchaseOrder.pdf";
+import { companyLetterhead, loadCompanyLogo } from "../appConfig";
 import {
-  companyLetterhead,
-  loadCompanyLogo,
+  formatExportYmd,
+  formatLongDate,
+  safeFilenamePart,
+  splitLines,
   ymdLong,
-} from "../production/production.service";
-import { formatExportYmd, safeFilenamePart } from "../project/projectRabExport.planner";
-import { formatLongDate, splitLines } from "../quotation/quotation.document";
+} from "../../utils/document/text";
 import { notifyPurchaseOrderEvent } from "./purchasingNotify";
 import { PurchasePaymentRepo } from "../../models/purchasePayment.model";
 import {
@@ -88,6 +68,9 @@ import {
   setCurrentQuotation,
   uploadQuotation as uploadQuotationVersion,
 } from "./purchaseOrderQuotation.service";
+import { getVendorNames, getVendorRef, listActiveVendors } from "../vendor";
+import { getTermOfPayment, listActiveTermsOfPayment } from "../termOfPayment";
+import { productionPort } from "./purchasing.ports";
 
 type LeanOrder = PurchaseOrderInterface & { _id: Types.ObjectId };
 type LeanRequest = PurchaseRequestInterface & { _id: Types.ObjectId };
@@ -147,27 +130,6 @@ export const APPROVE_PERM: Record<PurchaseOrderApprovalLevel, string> = {
   2: "purchasing.approve2",
 };
 
-/** Active users whose roles grant `key` (or everything). */
-export async function usersWithPermission(key: string) {
-  const roles = await RoleModel.find({ effectivePermissions: { $in: [key, "*"] } })
-    .select({ key: 1 })
-    .lean()
-    .exec();
-  if (roles.length === 0) return [];
-  return UserModel.find({ roles: { $in: roles.map((r) => r.key) }, isBlocked: { $ne: true } })
-    .select({ fullName: 1, email: 1 })
-    .sort({ fullName: 1, email: 1 })
-    .lean()
-    .exec();
-}
-
-export async function userHasPermission(userId: string, key: string): Promise<boolean> {
-  const user = await UserModel.findById(userId).select({ roles: 1, isBlocked: 1 }).lean().exec();
-  if (!user || user.isBlocked) return false;
-  const perms = await getUserPermissions({ id: String(user._id), roles: user.roles ?? [] });
-  return perms.has(key) || perms.has("*");
-}
-
 /** Two different people, neither the PO creator, each allowed to approve their level. */
 async function assertApprovers(approver1Id: string, approver2Id: string, creatorId: string): Promise<void> {
   if (approver1Id === approver2Id) {
@@ -204,12 +166,12 @@ function iso(d: Date | null | undefined): string | null {
 }
 
 async function allocateOrderNumber(): Promise<string> {
-  const parts = projectNumberParts();
+  const parts = numberingPeriod();
   const scopeKey = `po:${parts.scopeKey}`;
   const counter = await PurchasingSeqCounterModel.findOneAndUpdate(
     { scopeKey },
     { $inc: { nextSeq: 1 }, $setOnInsert: { scopeKey } },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: "after" },
   ).exec();
   if (!counter || counter.nextSeq < 1) throw new Error("Failed to allocate PO number");
   return `PO/${parts.roman}/${parts.year}/${String(counter.nextSeq).padStart(4, "0")}`;
@@ -223,8 +185,7 @@ async function requireOrder(id: string): Promise<LeanOrder> {
 }
 
 async function displayName(userId: string): Promise<string> {
-  const user = await UserModel.findById(userId).select({ fullName: 1, email: 1 }).lean().exec();
-  return user?.fullName?.trim() || user?.email || "";
+  return (await getUserRef(userId))?.name ?? "";
 }
 
 /** SPP lines by line id, with their SPP. */
@@ -274,11 +235,7 @@ type ScopeBudget = { label: string; lines: Map<string, RabBudget> };
 /** Per budget scope: its label and RAB unit price / qty per material×UOM. */
 async function rabBudgets(scopes: Array<string | null>): Promise<Map<string, ScopeBudget>> {
   const [projectRabs, purchaseRabs] = await Promise.all([
-    ProjectRabRepo.model
-      .find({ projectId: { $in: scopeIds(scopes, "project") } })
-      .select({ projectId: 1, lines: 1 })
-      .lean()
-      .exec(),
+    listProjectRabs(scopeIds(scopes, "project")),
     PurchaseRabRepo.model
       .find({ _id: { $in: scopeIds(scopes, "rab") } })
       .select({ number: 1, title: 1, lines: 1 })
@@ -385,12 +342,7 @@ async function priceHistory(keys: string[]): Promise<Map<string, VendorPriceOutD
     }
   }
   const vendorIds = [...new Set([...rows.values()].flatMap((m) => [...m.keys()]))];
-  const vendors = await VendorRepo.model
-    .find({ _id: { $in: vendorIds.map((id) => new Types.ObjectId(id)) } })
-    .select({ name: 1 })
-    .lean()
-    .exec();
-  const vendorName = new Map(vendors.map((v) => [String(v._id), v.name]));
+  const vendorName = await getVendorNames(vendorIds);
   return new Map(
     [...rows].map(([key, byVendor]) => [
       key,
@@ -424,30 +376,16 @@ async function describeEntries(
   const lineKeys = entries.map((e) =>
     rabLineKey(String(e.line.materialItemId), String(e.line.itemUomId)),
   );
-  const [projects, spks, meta, budgets, ordered, history] = await Promise.all([
-    ProjectRepo.model
-      .find({ _id: { $in: projectIds.map((id) => new Types.ObjectId(id)) } })
-      .select({ name: 1, projectNumber: 1 })
-      .lean()
-      .exec(),
-    ProductionOrderRepo.model
-      .find({ _id: { $in: spkIds.map((id) => new Types.ObjectId(id)) } })
-      .select({ number: 1, shopDrawingItemId: 1 })
-      .lean()
-      .exec(),
+  const [projectById, spks, meta, budgets, ordered, history] = await Promise.all([
+    getProjectRefs(projectIds),
+    productionPort().getSpks(spkIds),
     loadItemMeta(entries.map((e) => String(e.line.materialItemId))),
     rabBudgets(scopes),
     scopeOrderedQty(scopes, exceptOrderId),
     priceHistory(lineKeys),
   ]);
-  const items = await ProjectShopDrawingItemRepo.model
-    .find({ _id: { $in: spks.map((o) => o.shopDrawingItemId) } })
-    .select({ code: 1, name: 1 })
-    .lean()
-    .exec();
-  const projectById = new Map(projects.map((p) => [String(p._id), p]));
+  const itemById = await getShopDrawingItemRefs(spks.map((o) => o.shopDrawingItemId));
   const spkById = new Map(spks.map((o) => [String(o._id), o]));
-  const itemById = new Map(items.map((i) => [String(i._id), i]));
 
   const out = new Map<string, LineBase>();
   for (const { request, line } of entries) {
@@ -504,31 +442,22 @@ function sortLines<T extends { materialName: string; requestNumber: string }>(ro
 
 export class PurchaseOrderService {
   async vendorOptions(): Promise<PurchasingOptionOutDto[]> {
-    const vendors = await VendorRepo.model
-      .find({ isActive: { $ne: false } })
-      .select({ name: 1, address: 1 })
-      .sort({ name: 1 })
-      .lean()
-      .exec();
-    return vendors.map((v) => ({ id: String(v._id), label: v.name, detail: v.address ?? "" }));
+    const vendors = await listActiveVendors();
+    return vendors.map((v) => ({ id: v.id, label: v.name, detail: v.address }));
   }
 
   async termOptions(): Promise<PurchasingOptionOutDto[]> {
-    const terms = await TermOfPaymentRepo.model
-      .find({ isActive: { $ne: false } })
-      .sort({ termOfPayment: 1 })
-      .lean()
-      .exec();
-    return terms.map((t) => ({ id: String(t._id), label: t.termOfPayment, detail: "" }));
+    const terms = await listActiveTermsOfPayment();
+    return terms.map((t) => ({ id: t.id, label: t.label, detail: "" }));
   }
 
   /** Users who may be picked as level 1 / level 2 approver. */
   async approverOptions(level: PurchaseOrderApprovalLevel): Promise<PurchasingOptionOutDto[]> {
     const users = await usersWithPermission(APPROVE_PERM[level]);
     return users.map((u) => ({
-      id: String(u._id),
-      label: u.fullName?.trim() || u.email || "",
-      detail: u.email ?? "",
+      id: u.id,
+      label: u.fullName || u.email,
+      detail: u.email,
     }));
   }
 
@@ -633,9 +562,7 @@ export class PurchaseOrderService {
       await liveOrderLines([...new Set(doc.lines.map((l) => String(l.requestId)))], id),
     );
     const [term, names] = await Promise.all([
-      doc.termOfPaymentId
-        ? TermOfPaymentRepo.model.findById(doc.termOfPaymentId).select({ termOfPayment: 1 }).lean().exec()
-        : Promise.resolve(null),
+      getTermOfPayment(doc.termOfPaymentId),
       userEmailsById(
         [
           doc.submittedBy,
@@ -705,7 +632,7 @@ export class PurchaseOrderService {
     return {
       ...summary!,
       termOfPaymentId: doc.termOfPaymentId ? String(doc.termOfPaymentId) : null,
-      termOfPayment: term?.termOfPayment ?? "",
+      termOfPayment: term?.label ?? "",
       notes: doc.notes ?? "",
       lines: sortLines(lines),
       rabTotal: rabTotal.toFixed(0),
@@ -1150,13 +1077,11 @@ export class PurchaseOrderService {
   ) {
     await assertApprovers(input.approver1Id, input.approver2Id, creatorId);
     const [vendor, term] = await Promise.all([
-      VendorRepo.model.findById(input.vendorId).select({ isActive: 1 }).lean().exec(),
-      input.termOfPaymentId
-        ? TermOfPaymentRepo.model.findById(input.termOfPaymentId).select({ _id: 1 }).lean().exec()
-        : Promise.resolve(null),
+      getVendorRef(input.vendorId),
+      input.termOfPaymentId ? getTermOfPayment(input.termOfPaymentId) : Promise.resolve(null),
     ]);
     if (!vendor) throw new Error("Vendor not found");
-    if (vendor.isActive === false) throw new Error("Vendor is inactive");
+    if (!vendor.isActive) throw new Error("Vendor is inactive");
     if (input.termOfPaymentId && !term) throw new Error("Term of payment not found");
 
     const entries = await requestEntries(input.lines.map((l) => l.requestLineId));
@@ -1246,10 +1171,7 @@ export class PurchaseOrderService {
       }
     } else if (scope?.startsWith("project:")) {
       const projectId = scope.slice(8);
-      const r = await ProjectRabRepo.model
-        .findOne({ projectId: new Types.ObjectId(projectId) })
-        .lean()
-        .exec();
+      const r = await getProjectRab(projectId);
       if (r) {
         rabRows = rabRowsForPurchasing(r.lines);
         rabCharges = r.charges ?? [];
@@ -1400,17 +1322,9 @@ export class PurchaseOrderService {
     const scopes = docs.flatMap((d) => d.lines.map((l) => budgetScope(l)));
     const requestIds = [...new Set(docs.map(requestOf).filter(Boolean))];
     const docIds = docs.map((d) => d._id);
-    const [vendors, projects, requests, names, budgets, receipts, paidPayments] = await Promise.all([
-      VendorRepo.model
-        .find({ _id: { $in: vendorIds.map((id) => new Types.ObjectId(id)) } })
-        .select({ name: 1 })
-        .lean()
-        .exec(),
-      ProjectRepo.model
-        .find({ _id: { $in: projectIds.map((id) => new Types.ObjectId(id)) } })
-        .select({ projectNumber: 1, name: 1 })
-        .lean()
-        .exec(),
+    const [vendorName, projectById, requests, names, budgets, receipts, paidPayments] = await Promise.all([
+      getVendorNames(vendorIds),
+      getProjectRefs(projectIds),
       PurchaseRequestRepo.model
         .find({ _id: { $in: requestIds.map((id) => new Types.ObjectId(id)) } })
         .select({ number: 1, projectId: 1, purchaseRabId: 1 })
@@ -1441,8 +1355,6 @@ export class PurchaseOrderService {
       const key = String(p.purchaseOrderId);
       paidByOrder.set(key, (paidByOrder.get(key) ?? new Decimal(0)).plus(p.amount));
     }
-    const vendorName = new Map(vendors.map((v) => [String(v._id), v.name]));
-    const projectById = new Map(projects.map((p) => [String(p._id), p]));
     const requestById = new Map(requests.map((r) => [String(r._id), r]));
     const projectOf = (d: LeanOrder) =>
       String(requestById.get(requestOf(d))?.projectId ?? d.lines[0]?.projectId ?? "");
@@ -1528,7 +1440,7 @@ export async function exportPurchaseOrderPdf(
   const order = await purchaseOrderService.get(id);
   const doc = await requireOrder(id);
   const [vendor, request] = await Promise.all([
-    VendorRepo.model.findById(order.vendorId).select({ name: 1, address: 1, npwp: 1 }).lean().exec(),
+    getVendorRef(order.vendorId),
     PurchaseRequestRepo.model.findById(doc.requestId).select({ createdBy: 1, neededDate: 1 }).lean().exec(),
   ]);
   const creatorName = doc.createdBy ? await displayName(String(doc.createdBy)) : "";

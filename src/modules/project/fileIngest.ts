@@ -1,8 +1,7 @@
 import { createHash } from "crypto";
 import { Types } from "mongoose";
-import { deleteFileIfExists } from "../../core/gridfs";
 import { als } from "../../core/audit/context";
-import { uploadDedupedBlob } from "./projectShared";
+import { deleteFileIfExists, uploadDedupedBlob } from "../../core/gridfs";
 
 export type IngestedProjectFile = {
   gridFsId: Types.ObjectId;
@@ -30,6 +29,7 @@ export async function ingestProjectFile(
     force: opts.force,
     metadata: { ...opts.metadata, originalFilename: file.originalname, contentHash },
     findExistingIds: () => opts.findExistingIds(contentHash),
+    bucket: "project",
   });
   return { gridFsId, contentHash, linked, createdNewBlob };
 }

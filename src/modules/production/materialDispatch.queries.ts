@@ -11,13 +11,13 @@ import {
   type MaterialDispatchInterface,
 } from "../../models/materialDispatch.model";
 import type { ProductionOrderInterface } from "../../models/productionOrder.model";
-import { PurchaseOrderRepo } from "../../models/purchaseOrder.model";
-import { VendorRepo } from "../../models/vendor.model";
-import { userEmailsById } from "../../utils/shared";
-import { formatDecimal } from "../itemMaster/itemUomConvert";
-import { labourItemIds, loadItemMeta } from "../itemMaster/itemMeta";
+import { userEmailsById } from "../auth";
+import { formatDecimal } from "../../utils/decimal";
+import { labourItemIds, loadItemMeta } from "../itemMaster";
+import { getPurchaseOrderNumbers } from "../purchasing";
 import type { DispatchableMaterial } from "./production.planner";
 import { approvedFeeOrders, postedReceiptsByKey, sendsMaterialToVendor } from "./vendorWork";
+import { getVendorNames, getVendorRef } from "../vendor";
 
 /** Subcon material dispatch reads, shared by the SPK detail and the dispatch service. */
 
@@ -131,7 +131,7 @@ export async function dispatchVendorOf(
   if (!sendsMaterialToVendor(order)) return null;
   const [fee] = await approvedFeeOrders(order._id);
   if (!fee) return null;
-  const vendor = await VendorRepo.model.findById(fee.vendorId).select({ name: 1 }).lean().exec();
+  const vendor = await getVendorRef(fee.vendorId);
   return {
     vendorId: fee.vendorId,
     vendorName: vendor?.name ?? "Unknown vendor",
@@ -147,14 +147,10 @@ export async function dispatchesOut(orderId: Types.ObjectId): Promise<MaterialDi
     .lean()
     .exec()) as LeanDispatch[];
   if (docs.length === 0) return [];
-  const [meta, vendors, pos, names] = await Promise.all([
+  const [meta, vendorName, poNumber, names] = await Promise.all([
     loadItemMeta(docs.flatMap((d) => d.lines.map((l) => String(l.materialItemId)))),
-    VendorRepo.model.find({ _id: { $in: docs.map((d) => d.vendorId) } }).select({ name: 1 }).lean().exec(),
-    PurchaseOrderRepo.model
-      .find({ _id: { $in: docs.map((d) => d.feePurchaseOrderId) } })
-      .select({ number: 1 })
-      .lean()
-      .exec(),
+    getVendorNames(docs.map((d) => d.vendorId)),
+    getPurchaseOrderNumbers(docs.map((d) => (d.feePurchaseOrderId ? String(d.feePurchaseOrderId) : null))),
     userEmailsById(
       docs
         .flatMap((d) => [d.createdBy, d.approvedBy, d.rejectedBy, d.sentBy, d.cancelledBy, d.voidedBy])
@@ -162,8 +158,6 @@ export async function dispatchesOut(orderId: Types.ObjectId): Promise<MaterialDi
         .map(String),
     ),
   ]);
-  const vendorName = new Map(vendors.map((v) => [String(v._id), v.name]));
-  const poNumber = new Map(pos.map((p) => [String(p._id), p.number]));
   const ref = (oid: Types.ObjectId | null | undefined): ProjectRabUserRefOutDto | null =>
     oid ? { id: String(oid), name: names.get(String(oid)) ?? String(oid) } : null;
   return docs.map((d) => ({

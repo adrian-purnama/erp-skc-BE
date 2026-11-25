@@ -32,15 +32,16 @@ import {
   type PurchaseRealizationInterface,
 } from "../../models/purchaseRealization.model";
 import { PurchasingSeqCounterModel } from "../../models/seqCounter.model";
-import { UserModel } from "../../models/user.model";
-import { VendorRepo } from "../../models/vendor.model";
 import { VendorInvoiceRepo, type VendorInvoiceInterface } from "../../models/vendorInvoice.model";
-import { jakartaYmdString, userEmailsById } from "../../utils/shared";
-import { projectNumberParts } from "../project/projectNumber";
-import { APPROVE_PERM, PURCHASING_BUCKET, userHasPermission, type PoActor } from "./purchaseOrder.service";
+import { getUserRef, userEmailsById } from "../auth";
+import { jakartaYmdString } from "../../utils/time";
+import { numberingPeriod } from "../../utils/numbering";
+import { APPROVE_PERM, PURCHASING_BUCKET, type PoActor } from "./purchaseOrder.service";
+import { userHasPermission } from "../../core/permissions/resolve.service";
 import { checkPaymentAmount, priceStage, sumAmounts } from "./purchasePayment.planner";
 import { vendorMoney } from "./vendorMoney";
 import { notifyPaymentEvent } from "./paymentNotify";
+import { getVendorNames, getVendorRef } from "../vendor";
 
 type LeanPayment = PurchasePaymentInterface & { _id: Types.ObjectId };
 type LeanOrder = PurchaseOrderInterface & { _id: Types.ObjectId };
@@ -87,12 +88,12 @@ function iso(d: Date | null | undefined): string | null {
 }
 
 async function allocateNumber(): Promise<string> {
-  const parts = projectNumberParts();
+  const parts = numberingPeriod();
   const scopeKey = `pay:${parts.scopeKey}`;
   const counter = await PurchasingSeqCounterModel.findOneAndUpdate(
     { scopeKey },
     { $inc: { nextSeq: 1 }, $setOnInsert: { scopeKey } },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: "after" },
   ).exec();
   if (!counter || counter.nextSeq < 1) throw new Error("Failed to allocate payment number");
   return `PAY/${parts.roman}/${parts.year}/${String(counter.nextSeq).padStart(4, "0")}`;
@@ -112,13 +113,13 @@ async function requireOrder(id: string | Types.ObjectId): Promise<LeanOrder> {
 }
 
 async function displayName(userId: string): Promise<string> {
-  const user = await UserModel.findById(userId).select({ fullName: 1, email: 1 }).lean().exec();
+  const user = await getUserRef(userId);
   if (!user) throw new Error("User not found");
-  return user.fullName?.trim() || user.email || "";
+  return user.name;
 }
 
 async function vendorNameOf(vendorId: Types.ObjectId): Promise<string> {
-  const vendor = await VendorRepo.model.findById(vendorId).select({ name: 1 }).lean().exec();
+  const vendor = await getVendorRef(vendorId);
   return vendor?.name ?? "Unknown vendor";
 }
 
@@ -698,13 +699,9 @@ export class PurchasePaymentService {
   /** As DTOs; with `actor`, also what that viewer may do (owner actions, their approval). */
   private async out(docs: LeanPayment[], actor?: PoActor): Promise<PurchasePaymentOutDto[]> {
     if (docs.length === 0) return [];
-    const [poNumbers, vendors, realizations, invoices] = await Promise.all([
+    const [poNumbers, vendorName, realizations, invoices] = await Promise.all([
       this.poNumbers(docs.map((d) => d.purchaseOrderId)),
-      VendorRepo.model
-        .find({ _id: { $in: docs.map((d) => d.vendorId).filter(Boolean) } })
-        .select({ name: 1 })
-        .lean()
-        .exec(),
+      getVendorNames(docs.map((d) => d.vendorId)),
       PurchaseRealizationRepo.model
         .find({ _id: { $in: docs.flatMap((d) => d.realizationIds ?? []) } })
         .select({ number: 1, purchaseDate: 1, total: 1 })
@@ -716,7 +713,6 @@ export class PurchasePaymentService {
         .exec() as Promise<LeanInvoice[]>,
     ]);
     const invoiceById = new Map(invoices.map((i) => [String(i._id), i]));
-    const vendorName = new Map(vendors.map((v) => [String(v._id), v.name]));
     const realizationById = new Map(realizations.map((r) => [String(r._id), r]));
     const names = await userEmailsById(
       docs

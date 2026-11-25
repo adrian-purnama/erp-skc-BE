@@ -4,7 +4,7 @@ import type {
   ProjectRabLabourRole,
   ProjectRabLineRounding,
 } from "../models/projectRab.model";
-import type { RealizationChargeInDto, RealizationChargeOutDto } from "./purchasing.dto";
+import type { RealizationChargeInDto, RealizationChargeOutDto } from "./charge.dto";
 
 export type PatchProjectRabLineInDto = {
   /** Null or empty clears the line price (and tarif ref). */

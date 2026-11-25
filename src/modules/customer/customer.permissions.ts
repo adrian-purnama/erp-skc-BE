@@ -1,4 +1,4 @@
-import type { PermissionDef } from "../admin/admin.permissions";
+import type { PermissionDef } from "../../core/permissions/types";
 
 export const CUSTOMER_PERMS = [
   { key: "customer.view", label: "View customers" },

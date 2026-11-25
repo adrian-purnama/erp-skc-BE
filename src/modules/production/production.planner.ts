@@ -7,14 +7,18 @@ import type {
 import type { ProductionHandoverCheck } from "../../models/productionHandover.model";
 import type { ProductionOrderStatus } from "../../models/productionOrder.model";
 import type { ShopDrawingMakeType } from "../../models/projectShopDrawingItem.model";
-import { formatDecimal } from "../itemMaster/itemUomConvert";
+import { formatDecimal } from "../../utils/decimal";
 import {
+  type BoqLike,
   collectSourceLines,
   rabLineKey,
-  roundRabQty,
-  type BoqLike,
   type RabUomPlan,
-} from "../project/projectRab.planner";
+  roundRabQty,
+  type StageLine,
+  type StageRole,
+  stagesOf,
+  trackPercentExact,
+} from "../project";
 
 /** Pure rules for releasing a project and sizing SPKs (no DB). */
 
@@ -405,30 +409,6 @@ export function progressStatus(input: {
   return "not_started";
 }
 
-export function percentOf(done: string, total: string): number {
-  const t = new Decimal(total);
-  if (t.lte(0)) return 0;
-  const p = new Decimal(done).div(t).times(100);
-  return Math.min(100, Math.max(0, Math.round(p.toNumber())));
-}
-
-/** One RAB labour line of an item, as the SPK stage rules see it. */
-export type StageLine = {
-  key: string;
-  role: "making" | "install";
-  sequence: number | null;
-  weightPercent: number | null;
-};
-
-type StageRole = StageLine["role"];
-
-/** One track's lines (making or install) in stage order, unsequenced last. */
-export function stagesOf<T extends StageLine>(lines: T[], role: StageRole): T[] {
-  return lines
-    .filter((l) => l.role === role)
-    .sort((a, b) => (a.sequence ?? 9999) - (b.sequence ?? 9999));
-}
-
 /** Making lines in stage order (unsequenced last). */
 export function makingStages<T extends StageLine>(lines: T[]): T[] {
   return stagesOf(lines, "making");
@@ -658,23 +638,6 @@ export function assertStageOrderKept(
       );
     }
   }
-}
-
-/** Unrounded track %: Σ weight × min(stage done, makeQty) ÷ makeQty, clamped 0–100. */
-export function trackPercentExact(
-  makeQty: string,
-  lines: StageLine[],
-  doneByLine: Map<string, string>,
-  role: StageRole,
-): number {
-  const make = new Decimal(makeQty);
-  if (make.lte(0)) return 0;
-  let sum = new Decimal(0);
-  for (const s of stagesOf(lines, role)) {
-    const done = Decimal.min(doneOf(doneByLine, s.key), make);
-    sum = sum.plus(done.div(make).times(s.weightPercent ?? 0));
-  }
-  return Math.min(100, Math.max(0, sum.toNumber()));
 }
 
 function trackPercent(

@@ -1,10 +1,6 @@
 import { Types } from "mongoose";
-import {
-  ItemUomRepo,
-  type ItemUomRoundingMode,
-} from "../../models/itemUom.model";
-import { UOM_DEFAULT_DECIMALS, UomRepo } from "../../models/uom.model";
-import { formatDecimal, parsePositiveDecimal } from "../itemMaster/itemUomConvert";
+import type { ItemUomRoundingMode } from "../../models/itemUom.model";
+import { formatDecimal, parsePositiveDecimal } from "../../utils/decimal";
 import {
   collectSourceLines,
   rabLineKey,
@@ -13,6 +9,8 @@ import {
   type RabRounding,
   type RabUomPlan,
 } from "./projectRab.planner";
+import { getItemUomRows } from "../itemMaster";
+import { UOM_DEFAULT_DECIMALS } from "../uom";
 
 type LeanItemUom = {
   _id: Types.ObjectId;
@@ -77,18 +75,19 @@ export async function loadRabUomPlan(boqs: BoqLike[]): Promise<RabUomPlan> {
   if (sources.length === 0) return plan;
 
   const itemIds = [...new Set(sources.map((s) => s.materialItemId))];
-  const itemUoms = (await ItemUomRepo.model
-    .find({ itemId: { $in: itemIds.map((id) => new Types.ObjectId(id)) } })
-    .lean()
-    .exec()) as LeanItemUom[];
-
-  const uomIds = [...new Set(itemUoms.map((r) => String(r.uomId)))];
-  const uoms = (await UomRepo.model
-    .find({ _id: { $in: uomIds.map((id) => new Types.ObjectId(id)) } })
-    .select({ decimals: 1 })
-    .lean()
-    .exec()) as LeanUomRule[];
-  const uomById = new Map(uoms.map((u) => [String(u._id), u]));
+  const rows = await getItemUomRows(itemIds);
+  const itemUoms: LeanItemUom[] = rows.map((r) => ({
+    _id: new Types.ObjectId(r.id),
+    itemId: new Types.ObjectId(r.itemId),
+    uomId: new Types.ObjectId(r.uomId),
+    isBase: r.isBase,
+    conversionFactor: r.conversionFactor,
+    decimals: r.decimals,
+    ...(r.rounding ? { rounding: r.rounding } : {}),
+  }));
+  const uomById = new Map<string, Pick<LeanUomRule, "decimals">>(
+    rows.map((r) => [r.uomId, r.uomDecimals === undefined ? {} : { decimals: r.uomDecimals }]),
+  );
 
   const byId = new Map(itemUoms.map((r) => [String(r._id), r]));
   const rowsByItem = new Map<string, LeanItemUom[]>();

@@ -16,18 +16,23 @@ import {
   type ProductionOrderStatus,
 } from "../../models/productionOrder.model";
 import { ProductionSeqCounterModel } from "../../models/seqCounter.model";
-import { UserModel } from "../../models/user.model";
-import { jakartaYmdString } from "../../utils/shared";
-import { projectNumberParts } from "../project/projectNumber";
-import { formatExportYmd, safeFilenamePart } from "../project/projectRabExport.planner";
-import { formatLongDate, splitLines } from "../quotation/quotation.document";
+import { jakartaYmdString } from "../../utils/time";
+import { numberingPeriod } from "../../utils/numbering";
+import {
+  formatExportYmd,
+  formatLongDate,
+  safeFilenamePart,
+  splitLines,
+} from "../../utils/document/text";
 import { notifyDispatchEvent } from "./productionNotify";
 import { checkDispatchLines } from "./production.planner";
-import { companyLetterhead, loadCompanyLogo, productionService } from "./production.service";
+import { productionService } from "./production.service";
+import { companyLetterhead, loadCompanyLogo } from "../appConfig";
 import { PRODUCTION_BUCKET } from "./productionHandover.service";
 import { buildDispatchPdf } from "./materialDispatch.pdf";
 import { dispatchable, dispatchVendorOf, type LeanDispatch } from "./materialDispatch.queries";
 import { sendsMaterialToVendor } from "./vendorWork";
+import { getUserRef } from "../auth";
 
 const PHOTO_MAX = 12;
 const PHOTO_MAX_BYTES = 15 * 1024 * 1024;
@@ -37,12 +42,12 @@ const ACTIVE_STATUSES: ProductionOrderStatus[] = ["released", "in_progress"];
 type LeanOrder = ProductionOrderInterface & { _id: Types.ObjectId };
 
 async function allocateNumber(): Promise<string> {
-  const parts = projectNumberParts();
+  const parts = numberingPeriod();
   const scopeKey = `sj:${parts.scopeKey}`;
   const counter = await ProductionSeqCounterModel.findOneAndUpdate(
     { scopeKey },
     { $inc: { nextSeq: 1 }, $setOnInsert: { scopeKey } },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: "after" },
   ).exec();
   if (!counter || counter.nextSeq < 1) throw new Error("Failed to allocate surat jalan number");
   return `SJ/${parts.roman}/${parts.year}/${String(counter.nextSeq).padStart(4, "0")}`;
@@ -86,8 +91,7 @@ function plainLines(doc: LeanDispatch): SaveMaterialDispatchInDto["lines"] {
 }
 
 async function displayName(userId: string): Promise<string> {
-  const user = await UserModel.findById(userId).select({ fullName: 1, email: 1 }).lean().exec();
-  return user?.fullName?.trim() || user?.email || "";
+  return (await getUserRef(userId))?.name ?? "";
 }
 
 /** One status change, refused when the dispatch moved meanwhile. */

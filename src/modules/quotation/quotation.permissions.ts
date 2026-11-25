@@ -1,4 +1,4 @@
-import type { PermissionDef } from "../admin/admin.permissions";
+import type { PermissionDef } from "../../core/permissions/types";
 
 export const QUOTATION_PERMS = [
   { key: "quotation.view", label: "View quotations" },

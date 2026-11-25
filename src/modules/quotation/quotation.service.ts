@@ -17,38 +17,36 @@ import type {
   PublicQuotationOutDto,
   UpdateProjectQuotationInDto,
 } from "../../dto/projectQuotation.dto";
-import { CustomerRepo } from "../../models/customer.model";
-import { ProjectRepo } from "../../models/project.model";
 import {
   ProjectQuotationRepo,
   type ProjectQuotationContactSnapshot,
   type ProjectQuotationInterface,
   type ProjectQuotationLine,
 } from "../../models/projectQuotation.model";
+import { type ProjectRabInterface } from "../../models/projectRab.model";
 import {
-  ProjectRabRepo,
-  type ProjectRabInterface,
-} from "../../models/projectRab.model";
-import { ProjectShopDrawingBoqRepo } from "../../models/projectShopDrawingBoq.model";
-import { loadShopDrawingSpecs } from "../project/projectShopDrawingSpec";
-import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument.model";
-import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
-import { TermOfPaymentRepo } from "../../models/termOfPayment.model";
-import { UserModel } from "../../models/user.model";
+  fileVersionsById,
+  filterCountedBoqs,
+  getProjectRab,
+  getProjectRef,
+  getShopDrawingItemRefs,
+  listLiveShopDrawingItems,
+  listShopDrawingBoqs,
+  liveCurrentFiles,
+  loadRabUomPlan,
+  loadShopDrawingSpecs,
+  markProjectWon,
+  projectRabChangeService,
+  type ProjectRefDto,
+  rabChargeFactor,
+  sumLineTotals,
+} from "../project";
 import { logger } from "../../core/logger";
-import {
-  addJakartaDays,
-  jakartaYmdString,
-  userEmailsById,
-} from "../../utils/shared";
-import { appConfigService } from "../appConfig/AppConfig.service";
-import { projectRabChangeService } from "../project/projectRabChange.service";
-import { rabChargeFactor, type BoqLike } from "../project/projectRab.planner";
-import { liveCurrentFiles } from "../project/projectCurrentFiles";
-import { parseQtyDecimal } from "../itemMaster/itemUomConvert";
-import { filterCountedBoqs, sumLineTotals } from "../project/projectRabChange.planner";
-import { loadRabUomPlan } from "../project/projectRabUomPlan";
-import type { QuotationLogo } from "./quotation.logo";
+import { getUserRef, userEmailsById } from "../auth";
+import { addJakartaDays, jakartaYmdString } from "../../utils/time";
+import { appConfigService } from "../appConfig";
+import { parseQtyDecimal } from "../../utils/decimal";
+import type { DocumentLogo } from "../../utils/document/logo";
 import {
   isVerifyTokenShape,
   newVerifyToken,
@@ -68,6 +66,8 @@ import {
   type PlannerLine,
   type SeedBoq,
 } from "./quotation.planner";
+import { getCustomerRef } from "../customer";
+import { getTermOfPayment } from "../termOfPayment";
 
 const LOGO_BUCKET = "quotation";
 const PUBLIC_BUCKET = "public";
@@ -105,16 +105,7 @@ function verifyUrlFor(token: string): string {
 
 type LeanQuotation = ProjectQuotationInterface & { _id: Types.ObjectId };
 type LeanRab = ProjectRabInterface & { _id: Types.ObjectId };
-type LeanProject = {
-  _id: Types.ObjectId;
-  projectNumber: string;
-  customerId: Types.ObjectId;
-  customerContact: {
-    name?: string;
-    gender?: string;
-    contact?: Map<string, string> | Record<string, string>;
-  };
-};
+type LeanProject = ProjectRefDto;
 
 /** Shop drawing item metadata shown on a quotation line. */
 type LineItemMeta = {
@@ -337,15 +328,12 @@ export class QuotationService {
         set.termOfPaymentId = null;
         set.termOfPaymentText = "";
       } else {
-        const top = await TermOfPaymentRepo.model
-          .findById(input.termOfPaymentId)
-          .lean()
-          .exec();
-        if (!top || top.isActive === false) {
+        const top = await getTermOfPayment(input.termOfPaymentId);
+        if (!top || !top.isActive) {
           throw new Error("Term of payment must be an active master entry");
         }
-        set.termOfPaymentId = top._id;
-        set.termOfPaymentText = top.termOfPayment;
+        set.termOfPaymentId = new Types.ObjectId(top.id);
+        set.termOfPaymentText = top.label;
       }
     }
 
@@ -572,9 +560,7 @@ export class QuotationService {
         },
       )) as LeanQuotation | null;
       if (!updated) throw new Error("Failed to mark quotation as won");
-      await ProjectRepo.findByIdAndUpdate(String(doc.projectId), {
-        $set: { status: "win", loseReason: null, closeReason: null },
-      });
+      await markProjectWon(String(doc.projectId));
       return updated;
     });
     return this.toOut(won);
@@ -585,11 +571,7 @@ export class QuotationService {
     const doc = await this.findById(id);
     if (!doc) throw new Error("Quotation not found");
     if (doc.status !== "won") throw new Error("Quotation is not marked as won");
-    const project = await ProjectRepo.model
-      .findById(doc.projectId)
-      .select({ productionReleasedAt: 1 })
-      .lean()
-      .exec();
+    const project = await getProjectRef(doc.projectId);
     if (project?.productionReleasedAt) {
       throw new Error(
         "Project is released to production: the won quotation cannot be undone",
@@ -612,11 +594,7 @@ export class QuotationService {
   }
 
   private async issuerFullName(userId: string): Promise<string> {
-    const issuer = await UserModel.findById(userId)
-      .select({ fullName: 1 })
-      .lean()
-      .exec();
-    const name = issuer?.fullName?.trim() ?? "";
+    const name = (await getUserRef(userId))?.fullName ?? "";
     if (!name) throw new QuotationFullNameRequiredError();
     return name;
   }
@@ -744,7 +722,7 @@ export class QuotationService {
   }
 
   /** Issued: the captured copy. Draft: the live AppConfig company profile. */
-  async loadLogo(doc: LeanQuotation): Promise<QuotationLogo | null> {
+  async loadLogo(doc: LeanQuotation): Promise<DocumentLogo | null> {
     if (isLegacyIssued(doc)) {
       doc = await this.backfillLogo(doc);
     }
@@ -871,11 +849,7 @@ export class QuotationService {
 
   private async requireProject(projectId: string): Promise<LeanProject> {
     if (!Types.ObjectId.isValid(projectId)) throw new Error("Invalid project id");
-    const project = (await ProjectRepo.model
-      .findById(projectId)
-      .select({ projectNumber: 1, customerId: 1, customerContact: 1 })
-      .lean()
-      .exec()) as LeanProject | null;
+    const project = await getProjectRef(projectId);
     if (!project) throw new Error("Project not found");
     return project;
   }
@@ -886,10 +860,7 @@ export class QuotationService {
     revision: number;
     blockedReason: string | null;
   }> {
-    const rab = (await ProjectRabRepo.model
-      .findOne({ projectId: new Types.ObjectId(projectId) })
-      .lean()
-      .exec()) as LeanRab | null;
+    const rab: LeanRab | null = await getProjectRab(projectId);
     const change = await projectRabChangeService.findOpenDraft(projectId);
     const revision =
       await projectRabChangeService.latestCommittedRevision(projectId);
@@ -903,15 +874,7 @@ export class QuotationService {
   }
 
   private async loadSeedBoqs(projectId: string): Promise<SeedBoq[]> {
-    const allBoqs = (await ProjectShopDrawingBoqRepo.model
-      .find({ projectId: new Types.ObjectId(projectId) })
-      .lean()
-      .exec()) as Array<
-      BoqLike & {
-        shopDrawingItemId: Types.ObjectId;
-        shopDrawingFileId: Types.ObjectId;
-      }
-    >;
+    const allBoqs = await listShopDrawingBoqs(projectId);
     // Same rule as the RAB: only each item's current file version is quoted.
     const current = await liveCurrentFiles(projectId);
     const boqs = filterCountedBoqs(allBoqs, current);
@@ -923,22 +886,14 @@ export class QuotationService {
       current.map((c) => [String(c.shopDrawingItemId), c.shopDrawingFileId]),
     );
     const outsource = (
-      await ProjectShopDrawingItemRepo.model
-        .find({
-          projectId: new Types.ObjectId(projectId),
-          isDeleted: false,
-          makeType: "outsource",
-        })
-        .select({ makeQty: 1 })
-        .lean()
-        .exec()
+      await listLiveShopDrawingItems(projectId, { makeType: "outsource", sorted: false })
     ).flatMap((item) => {
-      const fileId = fileByItem.get(String(item._id));
-      if (withBoq.has(String(item._id)) || !fileId) return [];
+      const fileId = fileByItem.get(item.id);
+      if (withBoq.has(item.id) || !fileId) return [];
       if (!item.makeQty || parseQtyDecimal(item.makeQty).lte(0)) return [];
       return [
         {
-          shopDrawingItemId: item._id,
+          shopDrawingItemId: new Types.ObjectId(item.id),
           shopDrawingFileId: fileId,
           makeQty: item.makeQty,
         },
@@ -947,20 +902,10 @@ export class QuotationService {
     const quoted = [...boqs, ...outsource];
     if (quoted.length === 0) return [];
 
-    const [items, files] = await Promise.all([
-      ProjectShopDrawingItemRepo.model
-        .find({ _id: { $in: quoted.map((b) => b.shopDrawingItemId) } })
-        .select({ code: 1, name: 1 })
-        .lean()
-        .exec(),
-      ProjectShopDrawingDocumentRepo.model
-        .find({ _id: { $in: quoted.map((b) => b.shopDrawingFileId) } })
-        .select({ version: 1 })
-        .lean()
-        .exec(),
+    const [itemById, versionById] = await Promise.all([
+      getShopDrawingItemRefs(quoted.map((b) => b.shopDrawingItemId)),
+      fileVersionsById(quoted.map((b) => b.shopDrawingFileId)),
     ]);
-    const itemById = new Map(items.map((i) => [String(i._id), i]));
-    const versionById = new Map(files.map((f) => [String(f._id), f.version]));
 
     return quoted.map((b) => ({
       ...b,
@@ -975,13 +920,10 @@ export class QuotationService {
 
   private async loadSnapshots(project: LeanProject): Promise<Snapshots> {
     const config = appConfigService.getAppConfig();
-    const customer = await CustomerRepo.model
-      .findById(project.customerId)
-      .lean()
-      .exec();
+    const customer = await getCustomerRef(project.customerId);
     if (!customer) throw new Error("Project customer not found");
 
-    const raw = project.customerContact ?? {};
+    const raw: Partial<NonNullable<LeanProject["customerContact"]>> = project.customerContact ?? {};
     const contact: ProjectQuotationContactSnapshot = {
       name: raw.name ?? "",
       gender: raw.gender === "female" ? "female" : "male",
@@ -998,10 +940,10 @@ export class QuotationService {
         branchOfficeAddresses: [...config.branchOfficeAddresses],
       },
       customer: {
-        customerId: customer._id,
+        customerId: new Types.ObjectId(customer.id),
         name: customer.name,
-        address: customer.address ?? "",
-        npwp: customer.npwp ?? "",
+        address: customer.address,
+        npwp: customer.npwp,
       },
       contact,
     };
@@ -1064,21 +1006,17 @@ export class QuotationService {
       .filter((id): id is Types.ObjectId => Boolean(id));
     if (itemIds.length === 0) return doc.lines.map(() => NO_ITEM_META);
     const [items, specs] = await Promise.all([
-      ProjectShopDrawingItemRepo.model
-        .find({ _id: { $in: itemIds } })
-        .select({ category: 1, code: 1, dimension: 1 })
-        .lean()
-        .exec(),
+      getShopDrawingItemRefs(itemIds),
       loadShopDrawingSpecs(itemIds),
     ]);
     const byId = new Map(
-      items.map((i): [string, LineItemMeta] => [
-        String(i._id),
+      [...items.values()].map((i): [string, LineItemMeta] => [
+        i.id,
         {
-          category: i.category ?? null,
-          code: i.code ?? "",
-          descriptions: specs.get(String(i._id)) ?? [],
-          dimension: i.dimension ?? "",
+          category: i.category,
+          code: i.code,
+          descriptions: specs.get(i.id) ?? [],
+          dimension: i.dimension,
         },
       ]),
     );

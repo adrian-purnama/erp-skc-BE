@@ -16,8 +16,9 @@ import type {
   VoidProductionReportInDto,
 } from "../dto/production.dto";
 import { PRODUCTION_ORDER_STATUSES } from "../models/productionOrder.model";
-import { formatDecimal } from "../modules/itemMaster/itemUomConvert";
+import { formatDecimal } from "../utils/decimal";
 import { asRecord } from "./asRecord";
+import { parsePositiveQty } from "./qty";
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 const NOTES_MAX = 2000;
@@ -28,24 +29,6 @@ function parseObjectId(raw: unknown, field: string): string {
     throw new Error(`${field} is required`);
   }
   return raw;
-}
-
-/** Positive decimal qty, returned in canonical form. */
-export function parseProductionQty(raw: unknown, field = "qty"): string {
-  const text = typeof raw === "number" ? String(raw) : raw;
-  if (typeof text !== "string" || !text.trim()) {
-    throw new Error(`${field} is required`);
-  }
-  let d: Decimal;
-  try {
-    d = new Decimal(text.trim());
-  } catch {
-    throw new Error(`${field} must be a number`);
-  }
-  if (!d.isFinite() || d.lte(0)) {
-    throw new Error(`${field} must be greater than 0`);
-  }
-  return formatDecimal(d);
 }
 
 function parseOptionalYmd(raw: unknown, field: string): string | null {
@@ -114,7 +97,7 @@ export function parseCreateProductionOrderDto(
     shopDrawingItemId: parseObjectId(row.shopDrawingItemId, "shopDrawingItemId"),
     labourItemId: parseObjectId(row.labourItemId, "labourItemId"),
     labourUomId: parseObjectId(row.labourUomId, "labourUomId"),
-    qty: parseProductionQty(row.qty),
+    qty: parsePositiveQty(row.qty),
     plannedStart,
     plannedFinish,
     picUserId: parseOptionalUserId(row.picUserId, "picUserId"),
@@ -127,7 +110,7 @@ export function parseUpdateProductionOrderDto(
 ): UpdateProductionOrderInDto {
   const row = asRecord(body);
   const out: UpdateProductionOrderInDto = {};
-  if (row.qty !== undefined) out.qty = parseProductionQty(row.qty);
+  if (row.qty !== undefined) out.qty = parsePositiveQty(row.qty);
   if (row.plannedStart !== undefined) {
     out.plannedStart = parseOptionalYmd(row.plannedStart, "plannedStart");
   }
@@ -164,7 +147,7 @@ export function parseCreateProductionReportDto(
 ): CreateProductionReportInDto {
   const row = asRecord(body);
   return {
-    qtyDone: parseProductionQty(row.qtyDone, "qtyDone"),
+    qtyDone: parsePositiveQty(row.qtyDone, "qtyDone"),
     reportDate: parseRequiredYmd(row.reportDate, "reportDate"),
     notes: parseText(row.notes, "notes", NOTES_MAX),
   };
@@ -219,7 +202,7 @@ export function parseSaveProductionHandoverDto(
   const row = asRecord(body);
   return {
     handoverDate: parseRequiredYmd(row.handoverDate, "handoverDate"),
-    qty: parseProductionQty(row.qty),
+    qty: parsePositiveQty(row.qty),
     deliveryNoteNumber: parseText(row.deliveryNoteNumber, "deliveryNoteNumber", 100),
     receivedByUserId: parseOptionalUserId(row.receivedByUserId, "receivedByUserId"),
     notes: parseText(row.notes, "notes", NOTES_MAX),
@@ -318,7 +301,7 @@ export function parseSaveProductionProcessDto(body: unknown): SaveProductionProc
       ...base,
       labourItemId: parseObjectId(line.labourItemId, `Stage ${i + 1} labour item`),
       labourUomId: parseObjectId(line.labourUomId, `Stage ${i + 1} UOM`),
-      totalQty: parseProductionQty(line.totalQty, `Stage ${i + 1} qty`),
+      totalQty: parsePositiveQty(line.totalQty, `Stage ${i + 1} qty`),
       unitPrice: parseUnitPrice(line.unitPrice, `Stage ${i + 1} unit price`),
     };
   });

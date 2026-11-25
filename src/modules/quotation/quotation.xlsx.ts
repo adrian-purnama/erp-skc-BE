@@ -1,13 +1,8 @@
 import ExcelJS from "exceljs";
-import { sanitizeExcelText } from "../project/projectRabExport.planner";
-import { splitLines, type QuotationDocument } from "./quotation.document";
-import {
-  fitBox,
-  readLogoImageInfo,
-  VERIFY_NOTE,
-  type QuotationLogo,
-  type QuotationVerifyMark,
-} from "./quotation.logo";
+import { sanitizeExcelText, splitLines } from "../../utils/document/text";
+import { type QuotationDocument } from "./quotation.document";
+import { VERIFY_NOTE, type QuotationVerifyMark } from "./quotation.logo";
+import { fitBox, readLogoImageInfo, type DocumentLogo } from "../../utils/document/logo";
 
 const FONT = "Arial";
 const RP_FORMAT = '"Rp" #,##0';
@@ -41,7 +36,7 @@ const LETTERHEAD_TEXT_COL = 4;
 
 export function buildQuotationWorkbook(
   doc: QuotationDocument,
-  logo: QuotationLogo | null,
+  logo: DocumentLogo | null,
   verify: QuotationVerifyMark | null = null,
 ): ExcelJS.Workbook {
   const wb = new ExcelJS.Workbook();

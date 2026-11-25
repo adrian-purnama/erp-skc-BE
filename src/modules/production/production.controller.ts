@@ -27,7 +27,7 @@ import {
 import { exportHandoverPdf, productionHandoverService } from "./productionHandover.service";
 import { exportDispatchPdf, materialDispatchService } from "./materialDispatch.service";
 import { productionProcessService } from "./productionProcess.service";
-import { projectRabService } from "../project/projectRab.service";
+import { projectRabService } from "../project";
 
 function userId(req: Request): string {
   if (!req.user?._id) throw new Error("Unauthorized");

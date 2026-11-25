@@ -15,34 +15,32 @@ import {
   type PurchaseRabInterface,
   type PurchaseRabLine,
 } from "../../models/purchaseRab.model";
-import { PurchaseRequestRepo, type PurchaseRequestStatus } from "../../models/purchaseRequest.model";
+import { PurchaseRequestRepo } from "../../models/purchaseRequest.model";
 import { PurchasingSeqCounterModel } from "../../models/seqCounter.model";
-import { userEmailsById } from "../../utils/shared";
-import { loadItemMeta } from "../itemMaster/itemMeta";
-import { formatDecimal } from "../itemMaster/itemUomConvert";
-import { projectNumberParts } from "../project/projectNumber";
+import { userEmailsById } from "../auth";
+import { loadItemMeta } from "../itemMaster";
+import { formatDecimal } from "../../utils/decimal";
+import { numberingPeriod } from "../../utils/numbering";
 import { lineAmount, sumOrdered } from "./purchaseOrder.planner";
 import { liveOrderLines } from "./purchaseOrderLines";
 import { assertUomsMatch } from "./purchasing.service";
-import { checkRealizationCharges, priceStoredCharges } from "./purchaseRealization.planner";
+import { checkRealizationCharges, priceStoredCharges } from "../../utils/charges";
 import { materialKey } from "./purchasing.planner";
+import { LIVE_REQUEST_STATUSES } from "./purchasing.public";
 
 type LeanRab = PurchaseRabInterface & { _id: Types.ObjectId };
-
-/** SPP statuses that still hold qty against their RAB. */
-const LIVE_REQUEST_STATUSES: PurchaseRequestStatus[] = ["draft", "submitted"];
 
 function iso(d: Date | null | undefined): string | null {
   return d ? d.toISOString() : null;
 }
 
 async function allocateRabNumber(): Promise<string> {
-  const parts = projectNumberParts();
+  const parts = numberingPeriod();
   const scopeKey = `prab:${parts.scopeKey}`;
   const counter = await PurchasingSeqCounterModel.findOneAndUpdate(
     { scopeKey },
     { $inc: { nextSeq: 1 }, $setOnInsert: { scopeKey } },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: "after" },
   ).exec();
   if (!counter || counter.nextSeq < 1) throw new Error("Failed to allocate RAB number");
   return `RAB/${parts.roman}/${parts.year}/${String(counter.nextSeq).padStart(4, "0")}`;

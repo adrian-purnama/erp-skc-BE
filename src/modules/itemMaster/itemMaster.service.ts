@@ -21,7 +21,6 @@ import { env } from "../../core/env";
 import { FolderRepo, type FolderInterface } from "../../models/folder.model";
 import { ItemRepo, type ItemInterface } from "../../models/item.model";
 import { ItemSeqCounterModel } from "../../models/seqCounter.model";
-import { VendorRepo } from "../../models/vendor.model";
 import {
   allocateUniqueFolderCode,
   buildItemId,
@@ -34,6 +33,7 @@ import { itemTarifService } from "./itemTarif.service";
 import { convertItemQty } from "./itemUomConvert";
 import { itemUomService } from "./itemUom.service";
 import { folderPathUp } from "./folderPath";
+import { assertVendorsActive } from "../vendor";
 
 type FolderLean = FolderInterface & { _id: Types.ObjectId };
 type ItemLean = ItemInterface & { _id: Types.ObjectId };
@@ -89,31 +89,6 @@ async function assertCategoriesExist(categoryIds: string[]): Promise<void> {
   );
 }
 
-async function assertActiveVendors(vendorIds: string[]): Promise<void> {
-  if (vendorIds.length === 0) return;
-  const objectIds = vendorIds.map((id) => new Types.ObjectId(id));
-  const docs = await VendorRepo.model
-    .find({ _id: { $in: objectIds } })
-    .select({ name: 1, isActive: 1 })
-    .lean()
-    .exec();
-  const byId = new Map(docs.map((d) => [String(d._id), d]));
-  const bad: string[] = [];
-  for (const id of vendorIds) {
-    const doc = byId.get(id);
-    if (!doc) {
-      bad.push(`${id} (not found)`);
-      continue;
-    }
-    if (doc.isActive === false) {
-      bad.push(`${doc.name || id} (disabled)`);
-    }
-  }
-  if (bad.length > 0) {
-    throw new Error(`Invalid or inactive vendors: ${bad.join(", ")}`);
-  }
-}
-
 export class ItemMasterService {
   private async allocateSequence(
     folderId: string | null,
@@ -123,7 +98,7 @@ export class ItemMasterService {
     const updated = await ItemSeqCounterModel.findOneAndUpdate(
       { scopeKey: key },
       { $inc: { nextSeq: 1 }, $setOnInsert: { scopeKey: key } },
-      { upsert: true, new: true, session },
+      { upsert: true, returnDocument: "after", session },
     ).exec();
     if (!updated || updated.nextSeq < 1) {
       throw new Error("Failed to allocate item sequence");
@@ -719,7 +694,7 @@ export class ItemMasterService {
       const categoryIds = input.categoryIds ?? [];
       await assertCategoriesExist(categoryIds);
       const vendorIds = input.vendorIds ?? [];
-      await assertActiveVendors(vendorIds);
+      await assertVendorsActive(vendorIds);
       const sequence = await this.allocateSequence(input.folderId, session);
       const path = await this.pathCodesToFolder(input.folderId, session);
       const itemId = buildItemId(path, sequence);
@@ -755,7 +730,7 @@ export class ItemMasterService {
     return withTx(async (session) => {
       const existing = await this.getItem(id, session);
       if (patch.vendorIds !== undefined) {
-        await assertActiveVendors(patch.vendorIds);
+        await assertVendorsActive(patch.vendorIds);
       }
       if (patch.categoryIds !== undefined) {
         await assertCategoriesExist(patch.categoryIds);

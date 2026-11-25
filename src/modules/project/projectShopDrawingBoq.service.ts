@@ -19,19 +19,16 @@ import {
 } from "../../models/projectShopDrawingBoq.model";
 import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument.model";
 import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
-import { ItemUomRepo } from "../../models/itemUom.model";
+import { formatDecimal, parsePositiveDecimal } from "../../utils/decimal";
 import {
-  formatDecimal,
-  parsePositiveDecimal,
-} from "../itemMaster/itemUomConvert";
-import { itemMasterService } from "../itemMaster/itemMaster.service";
-import {
-  loadItemMeta,
+  assertItemUomsBelong,
+  itemMasterService,
   type ItemMeta,
+  itemUomService,
+  loadItemMeta,
   type UomMeta,
-} from "../itemMaster/itemMeta";
-import { itemUomService } from "../itemMaster/itemUom.service";
-import { uomService } from "../uom/uom.service";
+} from "../itemMaster";
+import { uomService } from "../uom";
 import { collectSourceLines } from "./projectRab.planner";
 import { projectRabChangeService } from "./projectRabChange.service";
 import { rabLocked } from "./projectRabLock";
@@ -560,16 +557,7 @@ export class ProjectShopDrawingBoqService {
     if (material.itemType !== "material") {
       throw new Error("Shop Drawing BOQ lines must use material item type");
     }
-    const itemUom = await ItemUomRepo.model
-      .findOne({
-        _id: line.itemUomId,
-        itemId: line.materialItemId,
-      })
-      .lean()
-      .exec();
-    if (!itemUom) {
-      throw new Error("UOM must belong to the selected material");
-    }
+    await assertItemUomsBelong([line], "UOM must belong to the selected material");
     const formulaQty = uomService.calculateQty(line.formula, line.inputs);
     const yieldQty = parsePositiveDecimal(line.yieldQty, "yieldQty");
     const qtyPerUnit = parsePositiveDecimal(formulaQty, "qtyPerUnit").div(

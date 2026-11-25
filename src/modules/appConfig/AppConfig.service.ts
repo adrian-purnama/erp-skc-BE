@@ -1,7 +1,6 @@
 import mongoose, { Types } from "mongoose";
 import { logger } from "../../core/logger";
 import { AppConfigModel } from "../../models/appconfig.model";
-import { UserModel } from "../../models/user.model";
 import { deleteFileIfExists, uploadFile } from "../../core/gridfs";
 
 const logSource: string = "modules/appConfig/AppConfig.service.ts";
@@ -46,9 +45,12 @@ export class AppConfigService {
   companyProfile: Types.ObjectId | null = null;
   firstRegister: boolean = true;
 
-  async init(): Promise<void> {
-    const checkAdmin = await UserModel.findOne({ roles: "super_admin" });
-    this.firstRegister = !checkAdmin;
+  /**
+   * Load or seed the config. `hasSuperAdmin` comes from the auth module via the
+   * composition root, so appConfig never imports auth (ADR-0001, no cycles).
+   */
+  async init(deps: { hasSuperAdmin: () => Promise<boolean> }): Promise<void> {
+    this.firstRegister = !(await deps.hasSuperAdmin());
 
     const existAppConfig = await AppConfigModel.findOne();
 
@@ -73,6 +75,11 @@ export class AppConfigService {
       this.website = existAppConfig.website ?? "";
       this.companyProfile = existAppConfig.companyProfile ?? null;
 
+      if (this.firstRegister && existAppConfig.adminClaimed) {
+        // No super_admin left (e.g. deleted): reopen the first-admin claim.
+        await AppConfigModel.updateOne({}, { $set: { adminClaimed: false } });
+      }
+
       logger.info("Existing app config found, not seeding", logSource, "init");
       return;
     }
@@ -84,6 +91,7 @@ export class AppConfigService {
         appName: DEFAULT_APP_NAME,
         openLogin: DEFAULT_OPEN_LOGIN,
         openRegister: DEFAULT_OPEN_REGISTER,
+        adminClaimed: !this.firstRegister,
       });
 
       this.appName = DEFAULT_APP_NAME;
@@ -111,8 +119,24 @@ export class AppConfigService {
     }
   }
 
-  markAdminRegistered(): void {
+  /**
+   * Atomically claim the first-admin slot. Only one concurrent registration
+   * can win; the rest register as plain users.
+   */
+  async claimFirstAdmin(): Promise<boolean> {
+    if (!this.firstRegister) return false;
+    const claimed = await AppConfigModel.findOneAndUpdate(
+      { adminClaimed: { $ne: true } },
+      { $set: { adminClaimed: true } },
+    );
     this.firstRegister = false;
+    return claimed !== null;
+  }
+
+  /** Undo a claim whose user could not be created. */
+  async releaseFirstAdmin(): Promise<void> {
+    await AppConfigModel.updateOne({}, { $set: { adminClaimed: false } });
+    this.firstRegister = true;
   }
 
   getAppConfig(): {
@@ -215,7 +239,7 @@ export class AppConfigService {
           const updated = await AppConfigModel.findOneAndUpdate(
             {},
             { $set: { [field]: uploaded.id } },
-            { new: true, session },
+            { returnDocument: "after", session },
           );
 
           if (!updated) {
@@ -274,7 +298,7 @@ export class AppConfigService {
       const updated = await AppConfigModel.findOneAndUpdate(
         {},
         { $set: { branchOfficeAddresses: value } },
-        { new: true },
+        { returnDocument: "after" },
       );
 
       if (!updated) {
@@ -314,7 +338,7 @@ export class AppConfigService {
       const updated = await AppConfigModel.findOneAndUpdate(
         {},
         { $set: { [field]: value } },
-        { new: true },
+        { returnDocument: "after" },
       );
 
       if (!updated) {

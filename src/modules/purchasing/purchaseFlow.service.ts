@@ -1,7 +1,6 @@
 import Decimal from "decimal.js";
 import { Types } from "mongoose";
 import type { PurchaseFlowKindDto, PurchaseFlowOutDto } from "../../dto/purchasing.dto";
-import { ProductionOrderRepo } from "../../models/productionOrder.model";
 import {
   PURCHASE_ORDER_LIVE_STATUSES,
   PurchaseOrderRepo,
@@ -14,12 +13,13 @@ import {
   type PurchaseRealizationInterface,
 } from "../../models/purchaseRealization.model";
 import { PurchaseRequestRepo } from "../../models/purchaseRequest.model";
-import { VendorRepo } from "../../models/vendor.model";
 import { VendorInvoiceRepo } from "../../models/vendorInvoice.model";
-import { labourItemIds } from "../itemMaster/itemMeta";
+import { labourItemIds } from "../itemMaster";
 import { estimatesOf } from "./purchaseOrder.service";
 import { purchasePaymentService } from "./purchasePayment.service";
 import { realizationStatus, sumRealized } from "./purchaseRealization.planner";
+import { getVendorNames } from "../vendor";
+import { productionPort } from "./purchasing.ports";
 
 type LeanOrder = PurchaseOrderInterface & { _id: Types.ObjectId };
 type LeanRealization = PurchaseRealizationInterface & { _id: Types.ObjectId };
@@ -35,13 +35,13 @@ function rupiah(d: Decimal): string {
 }
 
 /**
- * A requester's view of their own SPP: the request and its POs (number,
- * vendor, status), without receipts, invoices, payments or amounts.
+ * A requester's view of their own SPP: the request, its POs (number, vendor,
+ * status) and receipts (number, status), without invoices, payments or amounts.
  */
 export function requesterFlow(flow: PurchaseFlowOutDto): PurchaseFlowOutDto {
   return {
     ...flow,
-    stages: ["request", "order"],
+    stages: ["request", "order", "receive"],
     purchaseRabs: [],
     orders: flow.orders.map((o) => ({
       ...o,
@@ -51,7 +51,11 @@ export function requesterFlow(flow: PurchaseFlowOutDto): PurchaseFlowOutDto {
       payable: null,
       paid: null,
     })),
-    realizations: [],
+    realizations: flow.realizations.map((r) => ({
+      ...r,
+      total: "0",
+      invoiceId: null,
+    })),
     invoices: [],
     payments: [],
     totals: {
@@ -119,7 +123,7 @@ export async function purchaseFlow(kind: PurchaseFlowKindDto, id: string): Promi
     ].map(oid);
   }
 
-  const [requests, realizations, payments, vendors, invoices] = await Promise.all([
+  const [requests, realizations, payments, vendorName, invoices] = await Promise.all([
     PurchaseRequestRepo.model
       .find({ _id: { $in: requestIds } })
       .select({ number: 1, status: 1, productionOrderId: 1, purchaseRabId: 1 })
@@ -136,11 +140,7 @@ export async function purchaseFlow(kind: PurchaseFlowKindDto, id: string): Promi
       .sort({ createdAt: 1 })
       .lean()
       .exec() as Promise<LeanPayment[]>,
-    VendorRepo.model
-      .find({ _id: { $in: orders.map((o) => o.vendorId) } })
-      .select({ name: 1 })
-      .lean()
-      .exec(),
+    getVendorNames(orders.map((o) => o.vendorId)),
     VendorInvoiceRepo.model
       .find({ purchaseOrderId: { $in: orders.map((o) => o._id) }, status: { $in: ["draft", "posted"] } })
       .sort({ createdAt: 1 })
@@ -154,11 +154,7 @@ export async function purchaseFlow(kind: PurchaseFlowKindDto, id: string): Promi
   for (const o of orders) for (const l of o.lines) if (l.productionOrderId) spkIds.add(String(l.productionOrderId));
   const rabIds = new Set<string>(requests.filter((r) => r.purchaseRabId).map((r) => String(r.purchaseRabId)));
   const [spks, rabs] = await Promise.all([
-    ProductionOrderRepo.model
-      .find({ _id: { $in: [...spkIds].map(oid) } })
-      .select({ number: 1, labourName: 1, executor: 1, status: 1 })
-      .lean()
-      .exec(),
+    productionPort().getSpks([...spkIds]),
     PurchaseRabRepo.model
       .find({ _id: { $in: [...rabIds].map(oid) } })
       .select({ number: 1 })
@@ -167,7 +163,6 @@ export async function purchaseFlow(kind: PurchaseFlowKindDto, id: string): Promi
   ]);
 
   const labour = await labourItemIds(orders.flatMap((o) => o.lines.map((l) => String(l.materialItemId))));
-  const vendorName = new Map(vendors.map((v) => [String(v._id), v.name]));
   const posted = realizations.filter((r) => r.status === "posted");
 
   let orderedTotal = new Decimal(0);

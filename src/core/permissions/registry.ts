@@ -1,7 +1,5 @@
-import {
-  ADMIN_PERMS,
-  type PermissionDef,
-} from "../../modules/admin/admin.permissions";
+import { ADMIN_PERMS } from "../../modules/admin/admin.permissions";
+import { type PermissionDef } from "./types";
 import { SHRINK_DB_PERMS } from "../../modules/admin/shrinkDb/shrinkDb.permissions";
 import { CUSTOMER_PERMS } from "../../modules/customer/customer.permissions";
 import { ITEM_MASTER_PERMS } from "../../modules/itemMaster/itemMaster.permissions";
@@ -57,6 +55,32 @@ export function implied(key: string): Set<string> {
   };
   visit(key);
   return result;
+}
+
+/** A role's effective keys: its own and included roles' keys plus implied ones, minus deprecated or unknown keys. */
+export function computeEffective(
+  permissions: string[],
+  includes: string[],
+  includePermissions: Map<string, string[]>,
+  deprecated: Set<string>,
+): string[] {
+  if (permissions.includes("*")) return ["*"];
+
+  const result = new Set<string>();
+  const add = (key: string) => {
+    if (key === "*" || deprecated.has(key)) return;
+    if (!has(key)) return;
+    result.add(key);
+    for (const child of implied(key)) {
+      if (!deprecated.has(child) && has(child)) result.add(child);
+    }
+  };
+
+  for (const key of permissions) add(key);
+  for (const includeKey of includes) {
+    for (const key of includePermissions.get(includeKey) ?? []) add(key);
+  }
+  return [...result].sort();
 }
 
 export function requireLabels(): string[] {

@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  convertByFactors,
-  convertItemQty,
-  parsePositiveDecimal,
-  rescaleFactorsForNewBase,
-} from "./itemUomConvert";
+import { convertByFactors, convertItemQty, rescaleFactorsForNewBase } from "./itemUomConvert";
+import { parsePositiveDecimal } from "../../utils/decimal";
 import { parseCreateItemDto, parseUoms } from "../../validation/itemMaster";
 
 describe("parsePositiveDecimal", () => {

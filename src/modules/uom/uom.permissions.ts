@@ -1,4 +1,4 @@
-import type { PermissionDef } from "../admin/admin.permissions";
+import type { PermissionDef } from "../../core/permissions/types";
 
 export const UOM_PERMS = [
   { key: "uom.view", label: "View units of measure" },

@@ -6,7 +6,7 @@ import {
 } from "../../models/purchaseOrder.model";
 import { PurchaseRealizationRepo } from "../../models/purchaseRealization.model";
 import { PurchaseRequestRepo } from "../../models/purchaseRequest.model";
-import { notificationService } from "../notification/notification.service";
+import { safeNotify } from "../notification";
 import {
   realizationStatus,
   sumRealized,
@@ -208,32 +208,6 @@ function buildPoTimelineHtml(
       ${rows}
     </table>
   `;
-}
-
-export async function safeNotify(input: {
-  userIds: string[];
-  title: string;
-  body: string;
-  link: string;
-  html?: string | null;
-}): Promise<void> {
-  if (input.userIds.length === 0) return;
-  try {
-    await notificationService.notify({
-      userIds: input.userIds,
-      title: input.title,
-      body: input.body,
-      link: input.link,
-      html: input.html,
-      channels: ["in_app", "email"],
-    });
-  } catch (error) {
-    logger.error(
-      error instanceof Error ? error.message : String(error),
-      SOURCE,
-      "safeNotify",
-    );
-  }
 }
 
 /**

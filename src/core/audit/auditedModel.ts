@@ -226,7 +226,7 @@ export function auditedModel<T>(
           { _id: before._id },
           update,
           {
-            new: true,
+            returnDocument: "after",
             runValidators: true,
             ...options,
             session: s,

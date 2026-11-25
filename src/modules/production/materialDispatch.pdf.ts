@@ -1,5 +1,5 @@
 import PDFDocument from "pdfkit";
-import type { QuotationLogo } from "../quotation/quotation.logo";
+import type { DocumentLogo } from "../../utils/document/logo";
 import { drawLetterhead } from "./production.pdf";
 
 const MARGIN = 40;
@@ -28,7 +28,7 @@ export type DispatchPdfData = {
 const COLS = [28, 100, 257, 70, 60] as const;
 const ALIGN: Array<"left" | "center" | "right"> = ["center", "left", "left", "right", "center"];
 
-export function buildDispatchPdf(data: DispatchPdfData, logo: QuotationLogo | null): Promise<Buffer> {
+export function buildDispatchPdf(data: DispatchPdfData, logo: DocumentLogo | null): Promise<Buffer> {
   const pdf = new PDFDocument({
     size: "A4",
     margin: MARGIN,

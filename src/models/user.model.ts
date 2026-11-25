@@ -7,6 +7,8 @@ export interface UserInterface {
   /** GridFS file id in the `public` bucket (`/media/:id`). */
   profilePicture?: Types.ObjectId | null;
   hashedPassword?: string;
+  /** Tokens issued before this are rejected (see `isTokenRevoked`). */
+  passwordChangedAt?: Date;
   isBlocked?: boolean;
   roles?: string[];
   /**
@@ -23,6 +25,7 @@ const userSchema = new Schema<UserInterface>(
     email: {
       type: String,
       required: true,
+      unique: true,
     },
     fullName: {
       type: String,
@@ -38,6 +41,10 @@ const userSchema = new Schema<UserInterface>(
     hashedPassword: {
       type: String,
       required: true,
+    },
+    passwordChangedAt: {
+      type: Date,
+      required: false,
     },
     isBlocked: {
       type: Boolean,

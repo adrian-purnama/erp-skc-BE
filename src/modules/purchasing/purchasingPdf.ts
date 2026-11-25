@@ -5,9 +5,14 @@ import { readFileBuffer } from "../../core/gridfs";
 import { PurchasePaymentRepo } from "../../models/purchasePayment.model";
 import { PurchaseRealizationRepo } from "../../models/purchaseRealization.model";
 import { VendorInvoiceRepo } from "../../models/vendorInvoice.model";
-import { companyLetterhead, loadCompanyLogo, ymdLong } from "../production/production.service";
-import { formatExportYmd, safeFilenamePart } from "../project/projectRabExport.planner";
-import { formatLongDate, splitLines } from "../quotation/quotation.document";
+import { companyLetterhead, loadCompanyLogo } from "../appConfig";
+import {
+  formatExportYmd,
+  formatLongDate,
+  safeFilenamePart,
+  splitLines,
+  ymdLong,
+} from "../../utils/document/text";
 import { PURCHASING_BUCKET } from "./purchaseOrder.service";
 import { purchasePaymentService } from "./purchasePayment.service";
 import { purchaseRealizationService } from "./purchaseRealization.service";

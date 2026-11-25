@@ -1,12 +1,11 @@
 import { logger } from "../logger";
 import { RoleModel } from "../../models/role.model";
-import { computeEffective } from "../../modules/admin/roles/role.service";
 import {
   PermissionModel,
   type PermissionInterface,
   type PermissionStatus,
 } from "../../models/permission.model";
-import { all, get, has, requireLabels } from "./registry";
+import { all, computeEffective, get, has, requireLabels } from "./registry";
 import { invalidateAll } from "./resolve.service";
 import type { ScanResult, ScanViolation, ScannedRoute } from "./scan";
 

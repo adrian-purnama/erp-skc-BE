@@ -7,8 +7,8 @@ import type {
 } from "../../dto/customer.dto";
 import { CustomerRepo } from "../../models/customer.model";
 import { escapeRegex } from "../../utils/shared";
-import { emailContactService } from "../email/emailContact.service";
-import { phoneService } from "../phone/phone.service";
+import { emailContactService } from "../email";
+import { phoneService } from "../phone";
 
 export class CustomerService {
   async list(q?: string): Promise<CustomerListItemOutDto[]> {
@@ -116,7 +116,7 @@ export class CustomerService {
               : {}),
           },
         },
-        { new: true },
+        { returnDocument: "after" },
       );
       if (!updated) throw new Error("Customer not found");
     }

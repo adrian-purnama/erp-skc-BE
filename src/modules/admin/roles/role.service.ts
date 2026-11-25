@@ -1,5 +1,5 @@
 import { UserModel } from "../../../models/user.model";
-import { get, has, implied } from "../../../core/permissions/registry";
+import { computeEffective, has } from "../../../core/permissions/registry";
 import { PermissionModel } from "../../../models/permission.model";
 import {
   invalidateAll,
@@ -72,31 +72,6 @@ async function deprecatedKeys(): Promise<Set<string>> {
     .select("key")
     .exec();
   return new Set(docs.map((d) => d.key));
-}
-
-export function computeEffective(
-  permissions: string[],
-  includes: string[],
-  includePermissions: Map<string, string[]>,
-  deprecated: Set<string>,
-): string[] {
-  if (permissions.includes("*")) return ["*"];
-
-  const result = new Set<string>();
-  const add = (key: string) => {
-    if (key === "*" || deprecated.has(key)) return;
-    if (!has(key)) return;
-    result.add(key);
-    for (const child of implied(key)) {
-      if (!deprecated.has(child) && has(child)) result.add(child);
-    }
-  };
-
-  for (const key of permissions) add(key);
-  for (const includeKey of includes) {
-    for (const key of includePermissions.get(includeKey) ?? []) add(key);
-  }
-  return [...result].sort();
 }
 
 export class RoleService {

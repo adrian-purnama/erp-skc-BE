@@ -10,7 +10,7 @@ import {
   type ProjectLooseFileInterface,
   type ProjectLooseFileKind,
 } from "../../models/projectLooseFile.model";
-import { userEmailsById } from "../../utils/shared";
+import { userEmailsById } from "../auth";
 import { assertProjectLooseFile } from "../../validation/projectLooseFile";
 import {
   discardIngestedFile,

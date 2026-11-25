@@ -1,5 +1,5 @@
 import PDFDocument from "pdfkit";
-import { readLogoImageInfo, type QuotationLogo } from "../quotation/quotation.logo";
+import { readLogoImageInfo, type DocumentLogo } from "../../utils/document/logo";
 
 const MARGIN = 40;
 const FONT = "Helvetica";
@@ -49,7 +49,7 @@ export type PurchasingDocPdfData = {
   otherFiles: string[];
 };
 
-export function buildPurchasingDocPdf(data: PurchasingDocPdfData, logo: QuotationLogo | null): Promise<Buffer> {
+export function buildPurchasingDocPdf(data: PurchasingDocPdfData, logo: DocumentLogo | null): Promise<Buffer> {
   const pdf = new PDFDocument({ size: "A4", margin: MARGIN, info: { Title: data.number } });
   const chunks: Buffer[] = [];
   const done = new Promise<Buffer>((resolve, reject) => {

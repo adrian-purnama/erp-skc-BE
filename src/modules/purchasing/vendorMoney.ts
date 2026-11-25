@@ -8,7 +8,7 @@ import {
 } from "../../models/purchaseRealization.model";
 import { VendorInvoiceRepo, type VendorInvoiceInterface } from "../../models/vendorInvoice.model";
 import { estimatesOf } from "./purchaseOrder.service";
-import { inferChargeCategory } from "./purchaseRealization.planner";
+import { inferChargeCategory } from "../../utils/charges";
 import { priceVendorReceipts, type InvoiceMoney, type PricedReceipt } from "./vendorInvoice.planner";
 
 type LeanOrder = PurchaseOrderInterface & { _id: Types.ObjectId };

@@ -6,6 +6,7 @@ import {
   findFile,
   openDownload,
   readFileBuffer,
+  uploadDedupedBlob,
 } from "../../core/gridfs";
 import type {
   PurchaseOrderQuotationOutDto,
@@ -16,9 +17,8 @@ import {
   PurchaseOrderQuotationRepo,
   type PurchaseOrderQuotationInterface,
 } from "../../models/purchaseOrderQuotation.model";
-import { userEmailsById } from "../../utils/shared";
-import { uploadDedupedBlob } from "../project/projectShared";
-import { sameAsVersionFor } from "../project/versionedProjectFile.service";
+import { userEmailsById } from "../auth";
+import { sameAsVersionFor } from "../project";
 
 export const PURCHASING_BUCKET = "purchasing";
 export const QUOTATION_MAX_BYTES = 15 * 1024 * 1024;

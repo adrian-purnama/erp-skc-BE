@@ -4,6 +4,8 @@ import { env } from "../core/env";
 export type AccessTokenPayload = {
   userId: string;
   email: string;
+  /** JWT `iat`, in seconds. */
+  issuedAt: number;
 };
 
 export function signAccessToken(payload: {
@@ -17,7 +19,9 @@ export function signAccessToken(payload: {
       email: payload.email,
     },
     env.jwtSecret,
-    { expiresIn: payload.rememberMe ? "30d" : "1h" },
+    {
+      expiresIn: payload.rememberMe ? env.sessionTtlRememberMe : env.sessionTtl,
+    },
   );
 }
 
@@ -28,11 +32,27 @@ export function verifyAccessToken(token: string): AccessTokenPayload {
     throw new Error("Invalid token");
   }
 
-  const { userId, email } = decoded as AccessTokenPayload;
+  const { userId, email, iat } = decoded as {
+    userId?: string;
+    email?: string;
+    iat?: number;
+  };
 
-  if (!userId || !email) {
+  if (!userId || !email || typeof iat !== "number") {
     throw new Error("Invalid token payload");
   }
 
-  return { userId, email };
+  return { userId, email, issuedAt: iat };
+}
+
+/**
+ * A token issued before the user's last password change is revoked.
+ * `iat` has 1-second resolution, so compare in whole seconds.
+ */
+export function isTokenRevoked(
+  issuedAt: number,
+  passwordChangedAt: Date | null | undefined,
+): boolean {
+  if (!passwordChangedAt) return false;
+  return issuedAt < Math.floor(passwordChangedAt.getTime() / 1000);
 }

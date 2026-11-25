@@ -1,6 +1,6 @@
 import { HydratedDocument } from "mongoose";
 import { UserInterface, UserModel } from "../models/user.model";
-import { verifyAccessToken } from "../utils/jwt";
+import { isTokenRevoked, verifyAccessToken } from "../utils/jwt";
 
 export class AuthError extends Error {
   constructor(
@@ -28,6 +28,10 @@ export async function authenticateByToken(
 
     if (user.isBlocked) {
       throw new AuthError("User is blocked", 403);
+    }
+
+    if (isTokenRevoked(payload.issuedAt, user.passwordChangedAt)) {
+      throw new AuthError("Session expired, please log in again");
     }
 
     return user;

@@ -7,7 +7,7 @@ import type {
   UpdateAdminUserDto,
 } from "../../dto/adminUser.dto";
 import { UserModel } from "../../models/user.model";
-import { escapeRegex } from "../../utils/shared";
+import { escapeRegex, isDuplicateKeyError } from "../../utils/shared";
 import { RoleValidationError } from "../../validation/role";
 import { roleService } from "./roles/role.service";
 function toAdminUser(doc: {
@@ -66,11 +66,16 @@ export class AdminService {
       );
     }
 
+    const hashedPassword = await bcrypt.hash(input.password, 10);
     const user = await UserModel.create({
       email: input.email,
       fullName: input.fullName,
-      hashedPassword: await bcrypt.hash(input.password, 10),
+      hashedPassword,
       roles,
+    }).catch((error: unknown) => {
+      throw isDuplicateKeyError(error)
+        ? new Error("Email already registered")
+        : error;
     });
     return toAdminUser(user);
   }
@@ -103,6 +108,7 @@ export class AdminService {
 
     if (patch.password !== undefined) {
       user.hashedPassword = await bcrypt.hash(patch.password, 10);
+      user.passwordChangedAt = new Date();
     }
     if (patch.isBlocked !== undefined) {
       user.isBlocked = patch.isBlocked;

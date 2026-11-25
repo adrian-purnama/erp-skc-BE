@@ -1,11 +1,9 @@
 import QRCode from "qrcode";
 import type { ProjectQuotationOutDto } from "../../dto/projectQuotation.dto";
-import {
-  formatExportYmd,
-  safeFilenamePart,
-} from "../project/projectRabExport.planner";
+import { formatExportYmd, safeFilenamePart } from "../../utils/document/text";
 import { buildQuotationDocument } from "./quotation.document";
-import type { QuotationLogo, QuotationVerifyMark } from "./quotation.logo";
+import type { QuotationVerifyMark } from "./quotation.logo";
+import type { DocumentLogo } from "../../utils/document/logo";
 import { buildQuotationPdf } from "./quotation.pdf";
 import { quotationService } from "./quotation.service";
 import { buildQuotationWorkbook } from "./quotation.xlsx";
@@ -33,7 +31,7 @@ async function verifyMark(
 
 async function render(
   q: ProjectQuotationOutDto,
-  logo: QuotationLogo | null,
+  logo: DocumentLogo | null,
   format: QuotationExportFormat,
 ): Promise<QuotationExportResult> {
   const doc = buildQuotationDocument(q);

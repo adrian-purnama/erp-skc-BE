@@ -6,20 +6,21 @@ import type {
   ProjectDetailOutDto,
   ProjectListItemOutDto,
   ProjectListRowOutDto,
+  ProjectSummaryOutDto,
   UpdateProjectDto,
 } from "../../dto/project.dto";
-import { CustomerRepo } from "../../models/customer.model";
 import {
   ProjectRepo,
   type ProjectCloseReason,
   type ProjectLoseReason,
   type ProjectStatus,
 } from "../../models/project.model";
-import { ProjectQuotationRepo } from "../../models/projectQuotation.model";
 import { escapeRegex } from "../../utils/shared";
 import { allocateProjectNumber } from "./projectNumber";
 import { assertProjectExists } from "./projectShared";
 import { summarizeProjects } from "./projectSummary.service";
+import { getCustomerNames, getCustomerRef } from "../customer";
+import { quotationPort } from "./project.ports";
 
 function contactToRecord(
   contact: Map<string, string> | Record<string, string> | undefined | null,
@@ -65,11 +66,7 @@ type LeanProject = {
 
 /** A project is a win only through its won quotation, never by hand. */
 async function assertHasWonQuotation(projectId: string): Promise<void> {
-  const won = await ProjectQuotationRepo.model.exists({
-    projectId: new Types.ObjectId(projectId),
-    status: "won",
-  });
-  if (!won) {
+  if (!(await quotationPort().hasWonQuotation(projectId))) {
     throw new Error("Status Win is set by marking the project's quotation as won");
   }
 }
@@ -101,21 +98,14 @@ export class ProjectService {
   private async customerNameById(
     customerId: string,
   ): Promise<string | null> {
-    if (!Types.ObjectId.isValid(customerId)) return null;
-    const doc = await CustomerRepo.model
-      .findById(customerId)
-      .select({ name: 1 })
-      .lean()
-      .exec();
-    return doc ? doc.name : null;
+    return (await getCustomerRef(customerId))?.name ?? null;
   }
 
   private async assertCustomerExists(customerId: string): Promise<void> {
     if (!Types.ObjectId.isValid(customerId)) {
       throw new Error("Invalid customerId");
     }
-    const doc = await CustomerRepo.model.findById(customerId).lean().exec();
-    if (!doc) throw new Error("Customer not found");
+    if (!(await getCustomerRef(customerId))) throw new Error("Customer not found");
   }
 
   private toListItem(
@@ -171,14 +161,7 @@ export class ProjectService {
     const customerIds = [
       ...new Set(docs.map((d) => String(d.customerId))),
     ];
-    const customers = await CustomerRepo.model
-      .find({ _id: { $in: customerIds } })
-      .select({ name: 1 })
-      .lean()
-      .exec();
-    const nameById = new Map(
-      customers.map((c) => [String(c._id), c.name] as const),
-    );
+    const nameById = await getCustomerNames(customerIds);
 
     const summaries = await summarizeProjects(docs.map((d) => String(d._id)));
 
@@ -187,6 +170,13 @@ export class ProjectService {
       createdAt: doc.createdAt ? doc.createdAt.toISOString() : null,
       summary: summaries.get(String(doc._id))!,
     }));
+  }
+
+  /** Roll-up for one project (same numbers as the list row). */
+  async summary(id: string): Promise<ProjectSummaryOutDto> {
+    await assertProjectExists(id);
+    const summaries = await summarizeProjects([id]);
+    return summaries.get(id)!;
   }
 
   async getById(id: string): Promise<ProjectDetailOutDto | null> {

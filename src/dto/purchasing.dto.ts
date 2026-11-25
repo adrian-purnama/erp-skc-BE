@@ -1,5 +1,6 @@
 import type { ProjectRabUserRefOutDto } from "./projectRab.dto";
 import type { ProjectShopDrawingBoqMaterialOutDto } from "./projectShopDrawingBoq.dto";
+import { type PurchaseChargeAmountsDto, type PurchaseChargeCategoryDto, type RealizationChargeInDto, type RealizationChargeOutDto } from "./charge.dto";
 
 export type PurchaseRequestStatusDto = "draft" | "submitted" | "cancelled" | "declined";
 export type PurchaseRequestLineSourceDto = "spk" | "rab" | "extra";
@@ -473,24 +474,6 @@ export type PurchaseRequestLineOrderOutDto = {
 export type PurchaseRealizationStatusDto = "draft" | "posted" | "voided";
 export type PurchaseRealizationMethodDto = "vendor" | "staff";
 export type RealizationProgressDto = "none" | "partial" | "full";
-export type RealizationChargeKindDto = "percent" | "fixed";
-
-export type PurchaseChargeCategoryDto = "tax" | "delivery" | "other";
-
-/** Integer rupiah per spending category; null = not estimated / nothing. */
-export type PurchaseChargeAmountsDto = Record<PurchaseChargeCategoryDto, string | null>;
-
-export type RealizationChargeInDto = {
-  category: PurchaseChargeCategoryDto;
-  label: string;
-  kind: RealizationChargeKindDto;
-  /** Percent of the lines subtotal; required for `percent`. */
-  rate: string | null;
-  /** Integer rupiah; required for `fixed`, recomputed for `percent`. */
-  amount: string;
-};
-
-export type RealizationChargeOutDto = RealizationChargeInDto & { id: string };
 
 export type SaveRealizationInDto = {
   purchaseOrderId: string;

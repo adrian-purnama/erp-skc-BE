@@ -23,9 +23,10 @@ import type {
 } from "../../dto/dashboardMetrics.dto";
 import { assertUploadFile } from "../../validation/uploadFile";
 import { signAccessToken } from "../../utils/jwt";
-import { appConfigService } from "../appConfig/AppConfig.service";
-import { mailer } from "../mail/mail.service";
-import { OtpService } from "../otp/otp.service";
+import { isDuplicateKeyError } from "../../utils/shared";
+import { appConfigService } from "../appConfig";
+import { mailer } from "../mail";
+import { OtpService } from "../otp";
 
 const PROFILE_PICTURE_MAX_BYTES = 2 * 1024 * 1024;
 const PROFILE_PICTURE_MIME = new Set(["image/png", "image/jpeg"]);
@@ -66,7 +67,9 @@ export class AuthService {
     const user = await UserModel.findOne({ email });
     if (isResetPassword) {
       if (!user) {
-        throw new Error("No account found with this email");
+        // Same response as a real send so the endpoint can't enumerate accounts.
+        logger.debug(`Reset requested for unknown email ${email}`, this.source, method);
+        return true;
       }
     } else if (user) {
       throw new Error("Email already registered");
@@ -129,7 +132,11 @@ export class AuthService {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const isFirstRegister = appConfigService.firstRegister;
+    const isFirstRegister = await appConfigService.claimFirstAdmin();
+    if (!isFirstRegister && !appConfigService.openRegister) {
+      // Lost the first-admin race while registration is closed.
+      throw new Error("Registration is closed, please contact admin");
+    }
 
     try {
       const user = await UserModel.create({
@@ -137,10 +144,6 @@ export class AuthService {
         hashedPassword,
         roles: isFirstRegister ? ["super_admin"] : [],
       });
-
-      if (isFirstRegister) {
-        appConfigService.markAdminRegistered();
-      }
 
       const token = signAccessToken({
         userId: user.id,
@@ -155,6 +158,10 @@ export class AuthService {
         jwt: token,
       };
     } catch (error) {
+      if (isFirstRegister) await appConfigService.releaseFirstAdmin();
+      if (isDuplicateKeyError(error)) {
+        throw new Error("Email already registered");
+      }
       logger.error(
         error instanceof Error ? error.message : String(error),
         this.source,
@@ -175,13 +182,17 @@ export class AuthService {
     }
 
     const user = await UserModel.findOne({ email });
-    if (!user) {
+    if (!user?.hashedPassword) {
       throw new Error("Invalid email or password");
     }
 
-    const match = await bcrypt.compare(password, user.hashedPassword!);
+    const match = await bcrypt.compare(password, user.hashedPassword);
     if (!match) {
       throw new Error("Invalid email or password");
+    }
+
+    if (user.isBlocked) {
+      throw new Error("User is blocked, please contact admin");
     }
 
     const token = signAccessToken({
@@ -204,19 +215,22 @@ export class AuthService {
     const password = input.password;
     const method = "resetPassword";
 
-    const user = await UserModel.findOne({ email });
-    if (!user) {
-      throw new Error("No account found with this email");
-    }
-
     const otpService = new OtpService();
     const ok = await otpService.validateAndConsume(email, otp);
     if (!ok) {
       throw new Error("Invalid or expired OTP");
     }
 
+    const user = await UserModel.findOne({ email });
+    if (!user) {
+      throw new Error("Invalid or expired OTP");
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
-    await UserModel.updateOne({ email }, { hashedPassword });
+    await UserModel.updateOne(
+      { email },
+      { hashedPassword, passwordChangedAt: new Date() },
+    );
     logger.debug(`Password reset for ${email}`, this.source, method);
 
     return { email };
@@ -243,7 +257,7 @@ export class AuthService {
     const user = await UserModel.findByIdAndUpdate(
       userId,
       { $set: { [`dashboardMetrics.${input.dashboard}`]: input.metrics } },
-      { new: true },
+      { returnDocument: "after" },
     ).select({ dashboardMetrics: 1 });
     if (!user) throw new Error("User not found");
     return Object.fromEntries(user.dashboardMetrics ?? new Map<string, string[]>());

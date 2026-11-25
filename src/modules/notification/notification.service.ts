@@ -12,8 +12,8 @@ import {
   NotificationModel,
   type NotificationInterface,
 } from "../../models/notification.model";
-import { userEmailsById } from "../../utils/shared";
-import { emailService } from "../email/email.service";
+import { userEmailsById } from "../auth";
+import { emailService } from "../email";
 
 type NotificationDoc = NotificationInterface & {
   _id: Types.ObjectId;
@@ -154,7 +154,7 @@ class NotificationService {
         readAt: null,
       },
       { $set: { readAt: now } },
-      { new: true },
+      { returnDocument: "after" },
     )
       .lean()
       .exec();
@@ -192,3 +192,30 @@ class NotificationService {
 }
 
 export const notificationService = new NotificationService();
+
+/** In-app + email notification that never fails the caller; errors are logged. */
+export async function safeNotify(input: {
+  userIds: string[];
+  title: string;
+  body: string;
+  link: string;
+  html?: string | null;
+}): Promise<void> {
+  if (input.userIds.length === 0) return;
+  try {
+    await notificationService.notify({
+      userIds: input.userIds,
+      title: input.title,
+      body: input.body,
+      link: input.link,
+      html: input.html,
+      channels: ["in_app", "email"],
+    });
+  } catch (error) {
+    logger.error(
+      error instanceof Error ? error.message : String(error),
+      "modules/notification/notification.service.ts",
+      "safeNotify",
+    );
+  }
+}

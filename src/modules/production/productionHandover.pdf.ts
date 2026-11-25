@@ -1,5 +1,5 @@
 import PDFDocument from "pdfkit";
-import type { QuotationLogo } from "../quotation/quotation.logo";
+import type { DocumentLogo } from "../../utils/document/logo";
 import { drawLetterhead } from "./production.pdf";
 
 const MARGIN = 40;
@@ -31,7 +31,7 @@ const CHECK_COLS = [24, 200, 60, 231] as const;
 
 export function buildHandoverPdf(
   data: HandoverPdfData,
-  logo: QuotationLogo | null,
+  logo: DocumentLogo | null,
 ): Promise<Buffer> {
   const pdf = new PDFDocument({
     size: "A4",

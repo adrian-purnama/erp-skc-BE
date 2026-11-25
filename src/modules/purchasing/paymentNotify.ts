@@ -1,13 +1,14 @@
 import { Types } from "mongoose";
 import { logger } from "../../core/logger";
+import { uniqueIdsExcept } from "../../utils/ids";
 import { PurchaseOrderRepo } from "../../models/purchaseOrder.model";
 import {
   PurchasePaymentRepo,
   type PurchasePaymentInterface,
 } from "../../models/purchasePayment.model";
-import { usersWithPermission } from "./purchaseOrder.service";
+import { usersWithPermission } from "../../core/permissions/resolve.service";
 import { STAGE_LABELS } from "./purchasePayment.planner";
-import { safeNotify } from "./purchasingNotify";
+import { safeNotify } from "../notification";
 
 type LeanPayment = PurchasePaymentInterface & { _id: Types.ObjectId };
 
@@ -19,10 +20,6 @@ const APPROVALS_LINK = "/dashboard/purchasing/approvals";
 function rupiah(digits: string): string {
   const n = Number(digits);
   return Number.isFinite(n) ? `Rp ${new Intl.NumberFormat("id-ID").format(n)}` : digits;
-}
-
-function ids(values: Array<Types.ObjectId | null | undefined>, exclude: string): string[] {
-  return [...new Set(values.filter(Boolean).map(String))].filter((id) => id !== exclude);
 }
 
 /**
@@ -52,7 +49,7 @@ export async function notifyPaymentEvent(input: {
 
     if (input.kind === "submitted" || (input.kind === "approved_step" && doc.status === "pending_approval")) {
       await safeNotify({
-        userIds: ids(nextApprovers(), actor),
+        userIds: uniqueIdsExcept(nextApprovers(), actor),
         title: `Payment waiting for your approval: ${doc.number}`,
         body: summary,
         link: APPROVALS_LINK,
@@ -60,15 +57,15 @@ export async function notifyPaymentEvent(input: {
       return;
     }
     if (doc.status === "approved") {
-      const finance = (await usersWithPermission("purchasing.pay")).map((u) => u._id);
+      const finance = (await usersWithPermission("purchasing.pay")).map((u) => u.id);
       await safeNotify({
-        userIds: ids(finance, actor),
+        userIds: uniqueIdsExcept(finance, actor),
         title: `Payment approved, ready to pay: ${doc.number}`,
         body: summary,
         link: paymentLink,
       });
       await safeNotify({
-        userIds: ids(owner, actor),
+        userIds: uniqueIdsExcept(owner, actor),
         title: `Your payment request was approved: ${doc.number}`,
         body: summary,
         link: paymentLink,
@@ -77,7 +74,7 @@ export async function notifyPaymentEvent(input: {
     }
     if (input.kind === "rejected" || doc.status === "rejected") {
       await safeNotify({
-        userIds: ids(owner, actor),
+        userIds: uniqueIdsExcept(owner, actor),
         title: `Payment rejected: ${doc.number}`,
         body: `${summary} · ${doc.rejectReason || ""}`.trim(),
         link: paymentLink,
@@ -86,7 +83,7 @@ export async function notifyPaymentEvent(input: {
     }
     if (input.kind === "paid") {
       await safeNotify({
-        userIds: ids([...owner, doc.payeeUserId], actor),
+        userIds: uniqueIdsExcept([...owner, doc.payeeUserId], actor),
         title: `Paid: ${doc.number}`,
         body: `${summary} · paid ${doc.paidDate ?? ""}`.trim(),
         link: paymentLink,

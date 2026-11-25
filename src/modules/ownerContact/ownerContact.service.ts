@@ -105,7 +105,7 @@ export function createOwnerContactService<V extends string, T extends string>(
             .findOneAndUpdate(
               { _id: row.id, ownerId: ownerOid },
               { $set: fields },
-              { new: true },
+              { returnDocument: "after" },
             )
             .lean()
             .exec();

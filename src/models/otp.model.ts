@@ -4,6 +4,8 @@ export interface Otpinterface {
     otp?: string;
     userId?: Types.ObjectId;
     email?: string;
+    /** Wrong guesses so far; the OTP is burned at `OTP_MAX_ATTEMPTS`. */
+    attempts?: number;
     createdAt?: Date;
 }
 
@@ -18,6 +20,11 @@ const otpSchema = new Schema<Otpinterface>({
     },
     email: {
         type: String,
+        index: true,
+    },
+    attempts: {
+        type: Number,
+        default: 0,
     },
     createdAt: {
         type: Date,

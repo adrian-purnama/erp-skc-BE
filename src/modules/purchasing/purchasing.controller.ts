@@ -160,7 +160,7 @@ export class PurchasingController {
     const perms = await getUserPermissions(req.user!);
     const full = perms.has("*") || perms.has("purchasing.viewAll") || perms.has("purchasing.manage");
     if (!full) {
-      // Requesters: only their own SPP, request + order stages.
+      // Requesters: only their own SPP, request + order + receive, no amounts.
       const id = queryString(req.query.id) ?? "";
       const own =
         kind === "request" &&

@@ -430,6 +430,13 @@ router.delete(
 );
 
 router.get(
+  "/:id/summary",
+  requireUser,
+  requirePermission({ key: "project.view" }),
+  projectController.summary,
+);
+
+router.get(
   "/:id",
   requireUser,
   requirePermission({ key: "project.view" }),

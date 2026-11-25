@@ -1,5 +1,5 @@
 import PDFDocument from "pdfkit";
-import { readLogoImageInfo, type QuotationLogo } from "../quotation/quotation.logo";
+import { readLogoImageInfo, type DocumentLogo } from "../../utils/document/logo";
 
 const MARGIN = 40;
 const FONT = "Helvetica";
@@ -65,7 +65,7 @@ const APPROVAL_COLS = [22, 54, 135, 36, 44, 70, 76, 78];
 const APPROVAL_ALIGN: Align[] = ["center", "left", "left", "right", "center", "right", "right", "right"];
 const APPROVAL_HEAD = ["No", "Kode", "Material", "Qty", "Satuan", "Harga RAB", "Harga", "Jumlah"];
 
-export function buildPoPdf(data: PoPdfData, logo: QuotationLogo | null): Promise<Buffer> {
+export function buildPoPdf(data: PoPdfData, logo: DocumentLogo | null): Promise<Buffer> {
   const pdf = new PDFDocument({ size: "A4", margin: MARGIN, info: { Title: data.number } });
   const chunks: Buffer[] = [];
   const done = new Promise<Buffer>((resolve, reject) => {

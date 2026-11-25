@@ -1,0 +1,107 @@
+[
+  {
+    "type": "dependency",
+    "from": "src/modules/project/projectRab.planner.ts",
+    "to": "src/models/itemUom.model.ts",
+    "unresolvedTo": "../../models/itemUom.model",
+    "dependencyTypes": [
+      "local",
+      "import",
+      "type-only"
+    ],
+    "rule": {
+      "severity": "info",
+      "name": "models-of-itemMaster-type-only"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "src/modules/project/projectRabUomPlan.ts",
+    "to": "src/models/itemUom.model.ts",
+    "unresolvedTo": "../../models/itemUom.model",
+    "dependencyTypes": [
+      "local",
+      "import",
+      "type-only"
+    ],
+    "rule": {
+      "severity": "info",
+      "name": "models-of-itemMaster-type-only"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "src/modules/production/production.planner.ts",
+    "to": "src/models/projectShopDrawingItem.model.ts",
+    "unresolvedTo": "../../models/projectShopDrawingItem.model",
+    "dependencyTypes": [
+      "local",
+      "import",
+      "type-only"
+    ],
+    "rule": {
+      "severity": "info",
+      "name": "models-of-project-type-only"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "src/modules/production/production.service.ts",
+    "to": "src/models/projectShopDrawingItem.model.ts",
+    "unresolvedTo": "../../models/projectShopDrawingItem.model",
+    "dependencyTypes": [
+      "local",
+      "import",
+      "type-only"
+    ],
+    "rule": {
+      "severity": "info",
+      "name": "models-of-project-type-only"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "src/modules/production/stageFlow.ts",
+    "to": "src/models/projectRab.model.ts",
+    "unresolvedTo": "../../models/projectRab.model",
+    "dependencyTypes": [
+      "local",
+      "import",
+      "type-only"
+    ],
+    "rule": {
+      "severity": "info",
+      "name": "models-of-project-type-only"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "src/modules/purchasing/purchasing.ports.ts",
+    "to": "src/models/projectRab.model.ts",
+    "unresolvedTo": "../../models/projectRab.model",
+    "dependencyTypes": [
+      "local",
+      "import",
+      "type-only"
+    ],
+    "rule": {
+      "severity": "info",
+      "name": "models-of-project-type-only"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "src/modules/quotation/quotation.service.ts",
+    "to": "src/models/projectRab.model.ts",
+    "unresolvedTo": "../../models/projectRab.model",
+    "dependencyTypes": [
+      "local",
+      "import",
+      "type-only"
+    ],
+    "rule": {
+      "severity": "info",
+      "name": "models-of-project-type-only"
+    }
+  }
+]

@@ -7,8 +7,8 @@ import type {
 } from "../../dto/vendor.dto";
 import { VendorRepo } from "../../models/vendor.model";
 import { escapeRegex } from "../../utils/shared";
-import { emailContactService } from "../email/emailContact.service";
-import { phoneService } from "../phone/phone.service";
+import { emailContactService } from "../email";
+import { phoneService } from "../phone";
 
 export class VendorService {
   async list(q?: string): Promise<VendorListItemOutDto[]> {
@@ -116,7 +116,7 @@ export class VendorService {
               : {}),
           },
         },
-        { new: true },
+        { returnDocument: "after" },
       );
       if (!updated) throw new Error("Vendor not found");
     }

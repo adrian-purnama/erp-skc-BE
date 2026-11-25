@@ -1,9 +1,4 @@
-export type PermissionDef = {
-  key: string;
-  label: string;
-  implies?: readonly string[];
-  manual?: boolean;
-};
+import type { PermissionDef } from "../../core/permissions/types";
 
 export const ADMIN_PERMS = [
   { key: "admin.config.view", label: "View app config" },

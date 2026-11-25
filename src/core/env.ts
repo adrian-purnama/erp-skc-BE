@@ -28,6 +28,18 @@ function positiveInt(name: string, fallback: number): number {
   return n;
 }
 
+/** A `jsonwebtoken` / `ms` duration such as "1d", "12h" or "30d". */
+export type DurationString = `${number}${"s" | "m" | "h" | "d" | "w" | "y"}`;
+
+function duration(name: string, fallback: DurationString): DurationString {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  if (!/^[1-9]\d*[smhdwy]$/.test(raw)) {
+    throw new Error(`${name} must be a duration like "12h" or "30d"`);
+  }
+  return raw as DurationString;
+}
+
 export const env = {
   port: Number(process.env.PORT) || 3000,
   build: build(),
@@ -38,6 +50,10 @@ export const env = {
   brevoApiKey: required("BREVO_API_KEY"),
   brevoSenderEmail: required("BREVO_SENDER_EMAIL"),
   jwtSecret: required("JWT_SECRET"),
+  /** Login session lifetime without "Remember me". */
+  sessionTtl: duration("SESSION_TTL", "1d"),
+  /** Login session lifetime with "Remember me" checked. */
+  sessionTtlRememberMe: duration("SESSION_TTL_REMEMBER_ME", "30d"),
   rbacScanStrict: process.env.RBAC_SCAN_STRICT !== "false",
   auditRequireReplicaSet: process.env.AUDIT_REQUIRE_REPLICA_SET !== "false",
   itemMasterMaxFolderDepth: positiveInt("ITEM_MASTER_MAX_FOLDER_DEPTH", 10),

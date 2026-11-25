@@ -3,7 +3,7 @@ import { deleteFileIfExists, openDownload } from "../../core/gridfs";
 import type { AuditedRepo } from "../../core/audit/auditedModel";
 import { withTx } from "../../core/audit/context";
 import type { ProjectDocumentKind } from "../../models/projectDocument.model";
-import { userEmailsById } from "../../utils/shared";
+import { userEmailsById } from "../auth";
 import {
   discardIngestedFile,
   fileActorId,

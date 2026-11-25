@@ -103,3 +103,58 @@ export async function readFileBuffer(
   }
   return Buffer.concat(chunks);
 }
+
+export type UploadDedupedBlobOpts = {
+  buffer: Buffer;
+  filename: string;
+  contentType: string;
+  contentHash: string;
+  force?: boolean;
+  metadata: Record<string, unknown>;
+  /** Candidates newest-first; first with a live GridFS blob wins. */
+  findExistingIds: () => Promise<Types.ObjectId[]>;
+  /** GridFS bucket the blob lives in. */
+  bucket: string;
+};
+
+export type UploadDedupedBlobResult = {
+  gridFsId: Types.ObjectId;
+  linked: boolean;
+  createdNewBlob: boolean;
+};
+
+/** Link an existing blob by content hash, or upload a new one. */
+export async function uploadDedupedBlob(
+  opts: UploadDedupedBlobOpts,
+): Promise<UploadDedupedBlobResult> {
+  const { bucket } = opts;
+  let linkedGridFsId: Types.ObjectId | null = null;
+  if (opts.force !== true) {
+    for (const id of await opts.findExistingIds()) {
+      if (await findFile(bucket, id)) {
+        linkedGridFsId = id;
+        break;
+      }
+    }
+  }
+
+  if (linkedGridFsId) {
+    return {
+      gridFsId: linkedGridFsId,
+      linked: true,
+      createdNewBlob: false,
+    };
+  }
+
+  const uploaded = await uploadFile(bucket, {
+    buffer: opts.buffer,
+    filename: opts.filename,
+    contentType: opts.contentType,
+    metadata: opts.metadata,
+  });
+  return {
+    gridFsId: uploaded.id,
+    linked: false,
+    createdNewBlob: true,
+  };
+}

@@ -15,14 +15,16 @@ const quotation = (
   status: string,
   revision: number,
   unitPrice: string,
-): SummaryQuotation => ({
-  status,
-  revision,
-  discountType: "amount",
-  discountValue: "0",
-  taxPercent: "11",
-  lines: [{ qty: "2", unitPrice, costUnitPrice: "0" }],
-});
+): SummaryQuotation => {
+  // As quotation prices it: 2 × unitPrice, no discount, PPN 11% on top.
+  const taxBase = 2 * Number(unitPrice);
+  return {
+    status,
+    revision,
+    taxBase: String(taxBase),
+    grandTotal: String(Math.round(taxBase * 1.11)),
+  };
+};
 
 const base: SummaryInput = {
   quotations: [],

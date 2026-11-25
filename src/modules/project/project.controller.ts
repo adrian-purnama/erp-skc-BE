@@ -459,6 +459,15 @@ export class ProjectController {
     );
   };
 
+  summary = async (req: Request, res: Response) => {
+    return handle(
+      res,
+      "Failed to load project summary",
+      "Project summary retrieved",
+      () => projectService.summary(parseRouteId(req.params.id)),
+    );
+  };
+
   shopDrawingBoqSummary = async (req: Request, res: Response) => {
     return handle(
       res,

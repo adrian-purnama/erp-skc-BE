@@ -1,4 +1,4 @@
-import type { PermissionDef } from "../admin/admin.permissions";
+import type { PermissionDef } from "../../core/permissions/types";
 
 export const PROJECT_PERMS = [
   { key: "project.view", label: "View projects" },

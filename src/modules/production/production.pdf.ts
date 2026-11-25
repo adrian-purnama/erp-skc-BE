@@ -1,5 +1,5 @@
 import PDFDocument from "pdfkit";
-import { readLogoImageInfo, type QuotationLogo } from "../quotation/quotation.logo";
+import { readLogoImageInfo, type DocumentLogo } from "../../utils/document/logo";
 
 const MARGIN = 40;
 const FONT = "Helvetica";
@@ -66,7 +66,7 @@ type Cell = string | { title: string; lines: string[] };
 export function drawLetterhead(
   pdf: PDFKit.PDFDocument,
   data: { companyName: string; letterhead: string[]; title: string },
-  logo: QuotationLogo | null,
+  logo: DocumentLogo | null,
 ): void {
   const left = MARGIN;
   const width = pdf.page.width - MARGIN * 2;
@@ -106,7 +106,7 @@ export function drawLetterhead(
 
 export function buildSpkPdf(
   data: SpkPdfData,
-  logo: QuotationLogo | null,
+  logo: DocumentLogo | null,
 ): Promise<Buffer> {
   const pdf = new PDFDocument({
     size: "A4",

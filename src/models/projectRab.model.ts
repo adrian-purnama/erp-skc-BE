@@ -4,7 +4,7 @@ import {
   ITEM_UOM_ROUNDING_MODES,
   type ItemUomRoundingMode,
 } from "./itemUom.model";
-import { purchaseChargeSchema, type PurchaseCharge } from "./purchaseCharge.model";
+import { purchaseChargeSchema, type PurchaseCharge } from "./charge.schema";
 
 /** `item`: decimals set on the item's UOM row. `unit`: the UOM's own decimals. */
 export const PROJECT_RAB_ROUNDING_SOURCES = ["item", "unit"] as const;

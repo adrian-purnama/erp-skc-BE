@@ -1,11 +1,8 @@
 import PDFDocument from "pdfkit";
-import { formatRp, type QuotationDocument } from "./quotation.document";
-import {
-  readLogoImageInfo,
-  VERIFY_NOTE,
-  type QuotationLogo,
-  type QuotationVerifyMark,
-} from "./quotation.logo";
+import { type QuotationDocument } from "./quotation.document";
+import { formatRp } from "../../utils/document/text";
+import { VERIFY_NOTE, type QuotationVerifyMark } from "./quotation.logo";
+import { readLogoImageInfo, type DocumentLogo } from "../../utils/document/logo";
 
 const MARGIN = 40;
 const FONT = "Helvetica";
@@ -40,7 +37,7 @@ type Cell = string | { title: string; lines: string[] };
 
 export function buildQuotationPdf(
   doc: QuotationDocument,
-  logo: QuotationLogo | null,
+  logo: DocumentLogo | null,
   verify: QuotationVerifyMark | null = null,
 ): Promise<Buffer> {
   const pdf = new PDFDocument({

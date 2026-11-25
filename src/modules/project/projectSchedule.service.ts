@@ -6,8 +6,6 @@ import type {
   SaveProjectScheduleDto,
   SCurvePeriod,
 } from "../../dto/projectSchedule.dto";
-import { ProductionOrderRepo } from "../../models/productionOrder.model";
-import { ProductionReportRepo } from "../../models/productionReport.model";
 import { ProjectRepo } from "../../models/project.model";
 import { ProjectRabRepo, type ProjectRabLine } from "../../models/projectRab.model";
 import {
@@ -24,9 +22,9 @@ import {
   ProjectShopDrawingItemRepo,
   type ShopDrawingMakeType,
 } from "../../models/projectShopDrawingItem.model";
-import { jakartaYmdString } from "../../utils/shared";
-import type { StageLine } from "../production/production.planner";
-import { orderLineKey } from "../production/stageFlow";
+import { jakartaYmdString } from "../../utils/time";
+import { productionPort } from "./project.ports";
+import type { StageLine } from "./projectStages.planner";
 import { isLabourLine, labourRole, type BoqLike } from "./projectRab.planner";
 import { loadRabUomPlan } from "./projectRabUomPlan";
 import {
@@ -192,33 +190,13 @@ async function loadActual(
   rabLines: ProjectRabLine[],
   weights: Map<string, ItemWeight>,
 ): Promise<SCurveActualItem[]> {
-  const projectOid = new Types.ObjectId(projectId);
-  const [orders, reports] = await Promise.all([
-    ProductionOrderRepo.model
-      .find({ projectId: projectOid })
-      .select({ shopDrawingItemId: 1, labourItemId: 1, labourUomId: 1, "snapshot.makeQty": 1 })
-      .lean()
-      .exec(),
-    ProductionReportRepo.model
-      .find({ projectId: projectOid, isVoided: false })
-      .select({ productionOrderId: 1, shopDrawingItemId: 1, qtyDone: 1, reportDate: 1 })
-      .lean()
-      .exec(),
-  ]);
-  const lineKeyByOrder = new Map(orders.map((o) => [String(o._id), orderLineKey(o)]));
-  const snapshotQty = new Map<string, string>();
-  for (const o of orders) {
-    const qty = o.snapshot?.makeQty;
-    if (qty) snapshotQty.set(String(o.shopDrawingItemId), qty);
-  }
+  const actuals = await productionPort().scheduleActuals(projectId);
+  const snapshotQty = actuals.makeQtyByItem;
   const reportsByItem = new Map<string, SCurveActualItem["reports"]>();
-  for (const r of reports) {
-    const lineKey = lineKeyByOrder.get(String(r.productionOrderId));
-    if (!lineKey) continue;
-    const itemId = String(r.shopDrawingItemId);
-    const list = reportsByItem.get(itemId) ?? [];
-    list.push({ date: r.reportDate, lineKey, qty: r.qtyDone });
-    reportsByItem.set(itemId, list);
+  for (const r of actuals.reports) {
+    const list = reportsByItem.get(r.itemId) ?? [];
+    list.push({ date: r.date, lineKey: r.lineKey, qty: r.qty });
+    reportsByItem.set(r.itemId, list);
   }
   const linesByItem = stageLinesByItem(rabLines);
   return items.map((i) => ({

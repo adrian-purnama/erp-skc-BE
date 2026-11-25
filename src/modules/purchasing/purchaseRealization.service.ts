@@ -20,23 +20,15 @@ import {
   type PurchaseRealizationInterface,
 } from "../../models/purchaseRealization.model";
 import { PurchasingSeqCounterModel } from "../../models/seqCounter.model";
-import { UserModel } from "../../models/user.model";
-import { userEmailsById } from "../../utils/shared";
-import { formatDecimal } from "../itemMaster/itemUomConvert";
-import { projectNumberParts } from "../project/projectNumber";
+import { getUserRef, listAssignableUsers, userEmailsById } from "../auth";
+import { formatDecimal } from "../../utils/decimal";
+import { numberingPeriod } from "../../utils/numbering";
 import { lineAmount } from "./purchaseOrder.planner";
 import { PURCHASING_BUCKET, purchaseOrderService, type PoActor } from "./purchaseOrder.service";
-import {
-  checkRealizationCharges,
-  inferChargeCategory,
-  checkRealizationLines,
-  realizationStatus,
-  remainingToRealize,
-  sumRealized,
-  type PoLineRef,
-} from "./purchaseRealization.planner";
+import { checkRealizationLines, realizationStatus, remainingToRealize, sumRealized, type PoLineRef } from "./purchaseRealization.planner";
+import { checkRealizationCharges, inferChargeCategory } from "../../utils/charges";
 import { notifyPurchaseOrderEvent } from "./purchasingNotify";
-import { assertRealizationFeeWithinHandover, directToVendorTargets } from "../production/vendorWork";
+import { productionPort } from "./purchasing.ports";
 import { assertRealizationNotPaid } from "./purchasePayment.service";
 import { PURCHASE_PAYMENT_LIVE_STATUSES, PurchasePaymentRepo } from "../../models/purchasePayment.model";
 import { VendorInvoiceRepo } from "../../models/vendorInvoice.model";
@@ -55,12 +47,12 @@ function iso(d: Date | null | undefined): string | null {
 }
 
 async function allocateNumber(): Promise<string> {
-  const parts = projectNumberParts();
+  const parts = numberingPeriod();
   const scopeKey = `nr:${parts.scopeKey}`;
   const counter = await PurchasingSeqCounterModel.findOneAndUpdate(
     { scopeKey },
     { $inc: { nextSeq: 1 }, $setOnInsert: { scopeKey } },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: "after" },
   ).exec();
   if (!counter || counter.nextSeq < 1) throw new Error("Failed to allocate nota number");
   return `NR/${parts.roman}/${parts.year}/${String(counter.nextSeq).padStart(4, "0")}`;
@@ -83,12 +75,9 @@ function assertDraftOwner(doc: LeanRealization, actor: PoActor): void {
 }
 
 async function userName(userId: string): Promise<string> {
-  const user = await UserModel.findById(userId)
-    .select({ fullName: 1, email: 1, isBlocked: 1 })
-    .lean()
-    .exec();
+  const user = await getUserRef(userId);
   if (!user) throw new Error("User not found");
-  return user.fullName?.trim() || user.email || "";
+  return user.name;
 }
 
 /** Qty per PO line held by live (draft / posted) notas, optionally leaving one out. */
@@ -107,16 +96,8 @@ async function realizedOnOrder(orderId: string, exceptId?: string): Promise<Map<
 export class PurchaseRealizationService {
   /** Active users who can be named as the buyer. */
   async buyers(): Promise<PurchasingUserOutDto[]> {
-    const users = await UserModel.find({ isBlocked: { $ne: true } })
-      .select({ fullName: 1, email: 1 })
-      .sort({ fullName: 1, email: 1 })
-      .lean()
-      .exec();
-    return users.map((u) => ({
-      id: String(u._id),
-      name: u.fullName?.trim() || u.email || "",
-      email: u.email ?? "",
-    }));
+    const users = await listAssignableUsers();
+    return users.map((u) => ({ id: u.id, name: u.name, email: u.email }));
   }
 
   /** Approved POs not fully realized yet, oldest approval first. */
@@ -180,7 +161,7 @@ export class PurchaseRealizationService {
       .exec();
     return {
       drafts: drafts.map((d) => ({ id: String(d._id), number: d.number })),
-      directToVendor: await directToVendorTargets(orderId),
+      directToVendor: await productionPort().directToVendorTargets(orderId),
       purchaseOrderId: order.id,
       poNumber: order.number,
       vendorName: order.vendorName,
@@ -523,14 +504,14 @@ export class PurchaseRealizationService {
     });
     if (input.deliveredTo === "vendor") {
       if (input.method !== "vendor") throw new Error("Only a supplier delivery can go straight to the subcon vendor");
-      if (!(await directToVendorTargets(input.purchaseOrderId))) {
+      if (!(await productionPort().directToVendorTargets(input.purchaseOrderId))) {
         throw new Error(
           "Straight to the vendor is only for material of a subcon SPK whose vendor fee PO is approved",
         );
       }
     }
     // A subcon / outsource vendor fee is received only for the units handed over.
-    await assertRealizationFeeWithinHandover({
+    await productionPort().assertRealizationFeeWithinHandover({
       purchaseOrderId: order.id,
       lines: checked.lines.map((l) => ({ poLineId: l.poLineId, qty: l.qty })),
       exceptRealizationId: exceptId,

@@ -1,25 +1,13 @@
 import { Types } from "mongoose";
 import type { ProjectSummaryOutDto } from "../../dto/project.dto";
-import { ProductionOrderRepo } from "../../models/productionOrder.model";
-import { ProductionReportRepo } from "../../models/productionReport.model";
 import { ProjectRepo } from "../../models/project.model";
 import { ProjectCalendarEventRepo } from "../../models/projectCalendarEvent.model";
 import { ProjectScheduleRepo } from "../../models/projectSchedule.model";
-import { ProjectQuotationRepo } from "../../models/projectQuotation.model";
 import { ProjectRabRepo } from "../../models/projectRab.model";
 import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
-import { PurchaseOrderRepo } from "../../models/purchaseOrder.model";
-import { PurchaseRealizationRepo } from "../../models/purchaseRealization.model";
-import { productionService } from "../production/production.service";
 import { projectScheduleService } from "./projectSchedule.service";
-import {
-  allocateRealizationCost,
-  buildProjectSummary,
-  type SummaryInput,
-  type SummaryQuotation,
-  type SummaryRab,
-  type SummarySchedule,
-} from "./projectSummary.planner";
+import { buildProjectSummary, type SummaryInput, type SummaryQuotation, type SummaryRab, type SummarySchedule } from "./projectSummary.planner";
+import { productionPort, purchasingPort, quotationPort } from "./project.ports";
 
 function groupBy<T>(rows: T[], key: (row: T) => string): Map<string, T[]> {
   const out = new Map<string, T[]>();
@@ -61,24 +49,6 @@ async function scheduleReadings(
   return out;
 }
 
-/**
- * The Production page's weighted total for each project with SPKs, so the
- * dashboard and the production pages show the same number.
- */
-async function productionPercentReadings(ids: string[]): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-  await Promise.all(
-    ids.map(async (id) => {
-      try {
-        out.set(id, (await productionService.progress(id)).totals.percent);
-      } catch {
-        // A broken item must not break the project list.
-      }
-    }),
-  );
-  return out;
-}
-
 /** Bulk-loads list roll-ups for many projects (a fixed number of queries, plus one S-curve per scheduled project). */
 export async function summarizeProjects(
   projectIds: string[],
@@ -96,24 +66,9 @@ export async function summarizeProjects(
   ]);
   const projectBy = new Map(projects.map((p) => [String(p._id), p] as const));
 
-  const [quotations, rabs, orders, reports, events, drawingCounts, pos] =
+  const [quotations, rabs, production, events, drawingCounts, realizationCosts] =
     await Promise.all([
-      ProjectQuotationRepo.model
-        .find({ projectId: inIds, status: { $in: ["won", "issued"] } })
-        .select({
-          projectId: 1,
-          status: 1,
-          revision: 1,
-          discountType: 1,
-          discountValue: 1,
-          charges: 1,
-          taxPercent: 1,
-          "lines.qty": 1,
-          "lines.unitPrice": 1,
-          "lines.costUnitPrice": 1,
-        })
-        .lean()
-        .exec(),
+      quotationPort().contractQuotations(projectIds),
       ProjectRabRepo.model
         .find({ projectId: inIds })
         .select({
@@ -125,16 +80,7 @@ export async function summarizeProjects(
         })
         .lean()
         .exec(),
-      ProductionOrderRepo.model
-        .find({ projectId: inIds, status: { $ne: "cancelled" } })
-        .select({ projectId: 1, qty: 1, plannedFinish: 1 })
-        .lean()
-        .exec(),
-      ProductionReportRepo.model
-        .find({ projectId: inIds, isVoided: false })
-        .select({ projectId: 1, qtyDone: 1 })
-        .lean()
-        .exec(),
+      productionPort().summaryInputs(projectIds),
       ProjectCalendarEventRepo.model
         .find({ projectId: inIds, type: "deadline" })
         .select({ projectId: 1, startAt: 1, title: 1 })
@@ -146,55 +92,16 @@ export async function summarizeProjects(
           { $group: { _id: "$projectId", count: { $sum: 1 } } },
         ])
         .exec(),
-      PurchaseOrderRepo.model
-        .find({ "lines.projectId": inIds })
-        .select({ "lines._id": 1, "lines.projectId": 1 })
-        .lean()
-        .exec(),
+      purchasingPort().realizedCosts(projectIds),
     ]);
 
-  // Project ids live on PO lines; realization lines point at them.
-  const projectByPoLine = new Map<string, string>();
-  for (const po of pos) {
-    for (const line of po.lines ?? []) {
-      if (line._id && line.projectId) {
-        projectByPoLine.set(String(line._id), String(line.projectId));
-      }
-    }
-  }
-  const realizations = await PurchaseRealizationRepo.model
-    .find({
-      purchaseOrderId: { $in: pos.map((po) => po._id) },
-      status: "posted",
-    })
-    .select({ lines: 1, subtotal: 1, total: 1 })
-    .lean()
-    .exec();
-  const realizationCosts = realizations.flatMap((r) =>
-    allocateRealizationCost(
-      {
-        lines: (r.lines ?? []).map((l) => ({
-          projectId: projectByPoLine.get(String(l.poLineId)) ?? null,
-          qty: l.qty,
-          unitPrice: l.unitPrice,
-        })),
-        subtotal: r.subtotal,
-        total: r.total,
-      },
-    ),
-  );
-
-  const quotationsBy = groupBy(quotations, (q) => String(q.projectId));
+  const quotationsBy = groupBy(quotations, (q) => q.projectId);
   const rabBy = new Map(rabs.map((r) => [String(r.projectId), r] as const));
-  const ordersBy = groupBy(orders, (o) => String(o.projectId));
-  const reportsBy = groupBy(reports, (r) => String(r.projectId));
   const eventsBy = groupBy(events, (e) => String(e.projectId));
   const drawingsBy = new Map(
     drawingCounts.map((d) => [String(d._id), d.count] as const),
   );
   const realizationsBy = groupBy(realizationCosts, (c) => c.projectId);
-
-  const productionPercents = await productionPercentReadings([...ordersBy.keys()]);
 
   const now = new Date();
   const out = new Map<string, ProjectSummaryOutDto>();
@@ -205,11 +112,8 @@ export async function summarizeProjects(
         (q): SummaryQuotation => ({
           status: q.status,
           revision: q.revision,
-          discountType: q.discountType,
-          discountValue: q.discountValue,
-          charges: q.charges ?? null,
-          taxPercent: q.taxPercent ?? null,
-          lines: q.lines ?? [],
+          taxBase: q.taxBase,
+          grandTotal: q.grandTotal,
         }),
       ),
       rab: rab
@@ -221,9 +125,9 @@ export async function summarizeProjects(
         : null,
       realizationTotals: (realizationsBy.get(id) ?? []).map((c) => c.amount),
       shopDrawingCount: drawingsBy.get(id) ?? 0,
-      orders: ordersBy.get(id) ?? [],
-      reportQtys: (reportsBy.get(id) ?? []).map((r) => r.qtyDone),
-      productionPercent: productionPercents.get(id) ?? null,
+      orders: production.get(id)?.orders ?? [],
+      reportQtys: production.get(id)?.reportQtys ?? [],
+      productionPercent: production.get(id)?.productionPercent ?? null,
       deadlines: (eventsBy.get(id) ?? []).map((e) => ({
         at: e.startAt,
         title: e.title,

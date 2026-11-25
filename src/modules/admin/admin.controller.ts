@@ -7,7 +7,7 @@ import {
 } from "../../validation/adminUser";
 import { parseRouteId } from "../../validation/parseParam";
 import { queryString } from "../../validation/query";
-import { appConfigService } from "../appConfig/AppConfig.service";
+import { appConfigService } from "../appConfig";
 import { AdminService } from "./admin.service";
 
 export class AdminController {

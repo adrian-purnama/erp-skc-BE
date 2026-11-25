@@ -18,23 +18,24 @@ import {
 } from "../../models/productionOrder.model";
 import { ProductionReportRepo } from "../../models/productionReport.model";
 import { ProductionSeqCounterModel } from "../../models/seqCounter.model";
-import { UserModel } from "../../models/user.model";
-import { jakartaYmdString } from "../../utils/shared";
-import { formatDecimal } from "../itemMaster/itemUomConvert";
-import { projectNumberParts } from "../project/projectNumber";
+import { jakartaYmdString } from "../../utils/time";
+import { formatDecimal } from "../../utils/decimal";
+import { numberingPeriod } from "../../utils/numbering";
 import { notifyHandoverPosted } from "./productionNotify";
 import { assertHandoverChecklist } from "./production.planner";
 import { assertOrderReportRoom, assertOrderVoidRoom } from "./stageFlow";
-import { ProjectShopDrawingItemRepo } from "../../models/projectShopDrawingItem.model";
-import { formatExportYmd, safeFilenamePart } from "../project/projectRabExport.planner";
-import { formatLongDate, splitLines } from "../quotation/quotation.document";
 import {
-  companyLetterhead,
-  loadCompanyLogo,
-  productionService,
-} from "./production.service";
+  formatExportYmd,
+  formatLongDate,
+  safeFilenamePart,
+  splitLines,
+} from "../../utils/document/text";
+import { productionService } from "./production.service";
+import { companyLetterhead, loadCompanyLogo } from "../appConfig";
 import { buildHandoverPdf } from "./productionHandover.pdf";
 import { assertFeeCoveredAfterVoid, doneOnOrder, hasVendorFee } from "./vendorWork";
+import { getUserRef } from "../auth";
+import { getShopDrawingItemRef } from "../project";
 
 /** Handover proof files; kept apart from project files (Shrink DB only cleans `project`). */
 export const PRODUCTION_BUCKET = "production";
@@ -48,12 +49,12 @@ type LeanOrder = ProductionOrderInterface & { _id: Types.ObjectId };
 type LeanHandover = ProductionHandoverInterface & { _id: Types.ObjectId };
 
 async function allocateNumber(): Promise<string> {
-  const parts = projectNumberParts();
+  const parts = numberingPeriod();
   const scopeKey = `bast:${parts.scopeKey}`;
   const counter = await ProductionSeqCounterModel.findOneAndUpdate(
     { scopeKey },
     { $inc: { nextSeq: 1 }, $setOnInsert: { scopeKey } },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: "after" },
   ).exec();
   if (!counter || counter.nextSeq < 1) throw new Error("Failed to allocate handover number");
   return `BAST/${parts.roman}/${parts.year}/${String(counter.nextSeq).padStart(4, "0")}`;
@@ -85,9 +86,9 @@ async function requireVendorOrder(orderId: string | Types.ObjectId): Promise<Lea
 
 async function receiverName(userId: string | null): Promise<string> {
   if (!userId) return "";
-  const user = await UserModel.findById(userId).select({ fullName: 1, email: 1 }).lean().exec();
+  const user = await getUserRef(userId);
   if (!user) throw new Error("Receiver user not found");
-  return user.fullName?.trim() || user.email || "";
+  return user.name;
 }
 
 /** Fields shared by create and update; qty is checked against what is left on the SPK. */
@@ -320,11 +321,7 @@ export async function exportHandoverPdf(
 ): Promise<{ buffer: Buffer; filename: string; contentType: string }> {
   const doc = await requireHandover(id);
   const order = await productionService.getOrder(String(doc.productionOrderId));
-  const item = await ProjectShopDrawingItemRepo.model
-    .findById(order.shopDrawingItemId)
-    .select({ code: 1, name: 1, dimension: 1 })
-    .lean()
-    .exec();
+  const item = await getShopDrawingItemRef(order.shopDrawingItemId);
   const vendors = [
     ...new Set(
       order.purchaseOrders

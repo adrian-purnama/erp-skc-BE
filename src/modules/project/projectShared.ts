@@ -1,9 +1,5 @@
 import { Types } from "mongoose";
-import {
-  findFile,
-  openDownload,
-  uploadFile,
-} from "../../core/gridfs";
+import { findFile, openDownload } from "../../core/gridfs";
 import { ProjectRepo } from "../../models/project.model";
 
 const BUCKET = "project";
@@ -23,61 +19,6 @@ export async function assertProjectExists(projectId: string): Promise<void> {
   }
   const project = await ProjectRepo.model.findById(projectId).lean().exec();
   if (!project) throw new Error("Project not found");
-}
-
-export type UploadDedupedBlobOpts = {
-  buffer: Buffer;
-  filename: string;
-  contentType: string;
-  contentHash: string;
-  force?: boolean;
-  metadata: Record<string, unknown>;
-  /** Candidates newest-first; first with a live GridFS blob wins. */
-  findExistingIds: () => Promise<Types.ObjectId[]>;
-  /** GridFS bucket; project files by default. */
-  bucket?: string;
-};
-
-export type UploadDedupedBlobResult = {
-  gridFsId: Types.ObjectId;
-  linked: boolean;
-  createdNewBlob: boolean;
-};
-
-/** Link an existing blob by content hash, or upload a new one. */
-export async function uploadDedupedBlob(
-  opts: UploadDedupedBlobOpts,
-): Promise<UploadDedupedBlobResult> {
-  const bucket = opts.bucket ?? BUCKET;
-  let linkedGridFsId: Types.ObjectId | null = null;
-  if (opts.force !== true) {
-    for (const id of await opts.findExistingIds()) {
-      if (await findFile(bucket, id)) {
-        linkedGridFsId = id;
-        break;
-      }
-    }
-  }
-
-  if (linkedGridFsId) {
-    return {
-      gridFsId: linkedGridFsId,
-      linked: true,
-      createdNewBlob: false,
-    };
-  }
-
-  const uploaded = await uploadFile(bucket, {
-    buffer: opts.buffer,
-    filename: opts.filename,
-    contentType: opts.contentType,
-    metadata: opts.metadata,
-  });
-  return {
-    gridFsId: uploaded.id,
-    linked: false,
-    createdNewBlob: true,
-  };
 }
 
 export async function openBlob(

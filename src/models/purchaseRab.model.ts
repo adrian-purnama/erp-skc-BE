@@ -1,6 +1,6 @@
 import { Schema, type Types } from "mongoose";
 import { auditedModel } from "../core/audit/auditedModel";
-import { purchaseChargeSchema, type PurchaseCharge } from "./purchaseCharge.model";
+import { purchaseChargeSchema, type PurchaseCharge } from "./charge.schema";
 
 /** Draft is editable; only a locked RAB can be picked on an SPP. */
 export const PURCHASE_RAB_STATUSES = ["draft", "locked"] as const;

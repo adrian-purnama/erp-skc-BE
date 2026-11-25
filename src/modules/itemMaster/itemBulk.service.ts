@@ -3,20 +3,16 @@ import { Types } from "mongoose";
 import { withTx } from "../../core/audit/context";
 import type { CreateItemDto } from "../../dto/itemMaster.dto";
 import { FolderRepo, type FolderInterface } from "../../models/folder.model";
-import { ITEM_TYPES } from "../../models/item.model";
-import { ItemRepo } from "../../models/item.model";
-import { UomRepo } from "../../models/uom.model";
-import { VendorRepo } from "../../models/vendor.model";
+import { ITEM_TYPES, ItemRepo } from "../../models/item.model";
 import {
   parseItemType,
   todayYmdUtc,
   toTitleCaseWords,
 } from "../../validation/itemMaster";
-import {
-  formatDecimal,
-  parsePositiveDecimal,
-} from "./itemUomConvert";
+import { formatDecimal, parsePositiveDecimal } from "../../utils/decimal";
 import { itemMasterService } from "./itemMaster.service";
+import { listActiveUoms } from "../uom";
+import { listActiveVendors } from "../vendor";
 
 const ITEMS_HEADERS = [
   "Name",
@@ -164,18 +160,8 @@ type PreparedRow = {
 export class ItemBulkService {
   async buildTemplate(): Promise<Buffer> {
     const [vendors, uoms, folders] = await Promise.all([
-      VendorRepo.model
-        .find({ isActive: { $ne: false } })
-        .sort({ name: 1 })
-        .select({ name: 1 })
-        .lean()
-        .exec(),
-      UomRepo.model
-        .find({ isActive: { $ne: false } })
-        .sort({ symbol: 1 })
-        .select({ symbol: 1, name: 1 })
-        .lean()
-        .exec(),
+      listActiveVendors(),
+      listActiveUoms({ sorted: true }),
       FolderRepo.model.find().lean().exec() as Promise<FolderLean[]>,
     ]);
 
@@ -208,7 +194,7 @@ export class ItemBulkService {
     vendorsSheet.addRow(["Name", "Id"]);
     vendorsSheet.getRow(1).font = { bold: true };
     for (const v of vendors) {
-      vendorsSheet.addRow([v.name, String(v._id)]);
+      vendorsSheet.addRow([v.name, v.id]);
     }
     vendorsSheet.columns = [{ width: 32 }, { width: 28 }];
 
@@ -261,24 +247,16 @@ export class ItemBulkService {
       cols.get(name.toLowerCase())!;
 
     const [vendors, uoms, folders] = await Promise.all([
-      VendorRepo.model
-        .find({ isActive: { $ne: false } })
-        .select({ name: 1 })
-        .lean()
-        .exec(),
-      UomRepo.model
-        .find({ isActive: { $ne: false } })
-        .select({ symbol: 1 })
-        .lean()
-        .exec(),
+      listActiveVendors(),
+      listActiveUoms(),
       FolderRepo.model.find().lean().exec() as Promise<FolderLean[]>,
     ]);
 
     const vendorByName = new Map(
-      vendors.map((v) => [v.name.toLowerCase(), String(v._id)]),
+      vendors.map((v) => [v.name.toLowerCase(), v.id]),
     );
     const uomBySymbol = new Map(
-      uoms.map((u) => [u.symbol.toLowerCase(), String(u._id)]),
+      uoms.map((u) => [u.symbol.toLowerCase(), u.id]),
     );
 
     const errors: ItemBulkRowError[] = [];

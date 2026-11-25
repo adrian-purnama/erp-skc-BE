@@ -1,4 +1,8 @@
 import multer from "multer";
+import {
+  authAttemptRateLimit,
+  otpSendRateLimit,
+} from "../../middleware/rateLimit";
 import { requireUser } from "../../middleware/requireUser";
 import { createRouter } from "../../core/permissions/routing";
 import { publicRoute } from "../../core/permissions/requirePermission";
@@ -19,10 +23,20 @@ const profilePictureUpload = multer({
 const router = createRouter();
 const authController = new AuthController();
 
-router.post("/otp", publicRoute(), authController.sendOtp);
-router.post("/register", publicRoute(), authController.register);
-router.post("/login", publicRoute(), authController.login);
-router.post("/reset-password", publicRoute(), authController.resetPassword);
+router.post("/otp", publicRoute(), otpSendRateLimit, authController.sendOtp);
+router.post(
+  "/register",
+  publicRoute(),
+  authAttemptRateLimit,
+  authController.register,
+);
+router.post("/login", publicRoute(), authAttemptRateLimit, authController.login);
+router.post(
+  "/reset-password",
+  publicRoute(),
+  authAttemptRateLimit,
+  authController.resetPassword,
+);
 router.get("/validate", requireUser, authController.validateUser);
 router.get("/profile", requireUser, authController.getProfile);
 router.patch("/profile", requireUser, authController.updateProfile);

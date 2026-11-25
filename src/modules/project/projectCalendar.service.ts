@@ -9,10 +9,7 @@ import {
   ProjectCalendarEventRepo,
   type ProjectCalendarEventType,
 } from "../../models/projectCalendarEvent.model";
-import {
-  addJakartaDays,
-  jakartaYmdString,
-} from "../../utils/shared";
+import { addJakartaDays, jakartaYmdString } from "../../utils/time";
 import { projectScheduleService } from "./projectSchedule.service";
 import { assertProjectExists } from "./projectShared";
 

@@ -1,4 +1,7 @@
 import cors from "cors";
+import helmet from "helmet";
+import mongoose from "mongoose";
+import type { Server } from "node:http";
 import express, {
   type Express,
   type NextFunction,
@@ -6,6 +9,12 @@ import express, {
   type Response,
 } from "express";
 import { connectDatabase } from "./core/database";
+import { hasSuperAdmin } from "./modules/auth";
+import { productionForProject, productionForPurchasing } from "./modules/production";
+import { provideProjectPorts } from "./modules/project";
+import { providePurchasingPorts, purchasingForProject } from "./modules/purchasing";
+import { quotationForProject } from "./modules/quotation";
+import type { ApiResponseDto } from "./dto/httpResponse";
 import { env } from "./core/env";
 import { appConfigService } from "./modules/appConfig/AppConfig.service";
 import { logger } from "./core/logger";
@@ -39,6 +48,12 @@ function createApp(): Express {
   const app = express();
   app.set("trust proxy", 1);
 
+  app.use(
+    helmet({
+      // /media images and public-quotation logos are loaded by the frontend origin.
+      crossOriginResourcePolicy: { policy: "cross-origin" },
+    }),
+  );
   app.use(express.json());
   app.use(
     cors({
@@ -149,7 +164,8 @@ function createApp(): Express {
     res.status(404).json({
       success: false,
       message: "Route not found",
-    });
+      data: null,
+    } satisfies ApiResponseDto);
   });
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
@@ -162,13 +178,28 @@ function createApp(): Express {
     res.status(500).json({
       success: false,
       message: "Internal server error",
-    });
+      data: null,
+    } satisfies ApiResponseDto);
   });
 
   return app;
 }
 
+/**
+ * Plug each module's port implementations into the modules below them
+ * (ADR-0001): lower modules declare ports, never import the modules above.
+ */
+function wirePorts(): void {
+  provideProjectPorts({
+    production: productionForProject,
+    quotation: quotationForProject,
+    purchasing: purchasingForProject,
+  });
+  providePurchasingPorts({ production: productionForPurchasing });
+}
+
 async function bootstrap() {
+  wirePorts();
   await connectDatabase(env.mongodbUrl, env.build);
   await assertReplicaSet();
   await initAuditCollections();
@@ -179,16 +210,54 @@ async function bootstrap() {
   validateScan(scan, env.rbacScanStrict);
   await syncPermissions(scan);
   await seedRoles();
-  await appConfigService.init();
+  await appConfigService.init({ hasSuperAdmin });
   await seedUoms();
 
-  app.listen(env.port, () => {
+  const server = app.listen(env.port, () => {
     logger.info(
       `Server running at http://localhost:${env.port} (${env.build})`,
       "index",
       "bootstrap",
     );
   });
+  registerShutdown(server);
+}
+
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+/** Stop taking requests, let in-flight ones finish, then close Mongo. */
+function registerShutdown(server: Server): void {
+  let shuttingDown = false;
+
+  const shutdown = (signal: NodeJS.Signals) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info(`${signal} received, shutting down`, "index", "shutdown");
+
+    const force = setTimeout(() => {
+      logger.error("Shutdown timed out, forcing exit", "index", "shutdown");
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+    force.unref();
+
+    server.close(() => {
+      mongoose
+        .disconnect()
+        .then(() => process.exit(0))
+        .catch((err: unknown) => {
+          logger.error(
+            err instanceof Error ? err.message : String(err),
+            "index",
+            "shutdown",
+          );
+          process.exit(1);
+        });
+    });
+    server.closeIdleConnections();
+  };
+
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
 }
 
 bootstrap().catch((err) => {

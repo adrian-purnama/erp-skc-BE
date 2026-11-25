@@ -4,7 +4,7 @@ import type {
   ProjectQuotationChargeDto,
   UpdateProjectQuotationInDto,
 } from "../dto/projectQuotation.dto";
-import { formatDecimal, parseQtyDecimal } from "../modules/itemMaster/itemUomConvert";
+import { formatDecimal, parseQtyDecimal } from "../utils/decimal";
 import { asRecord } from "./asRecord";
 
 const LINE_KEY = /^(boq:[a-f0-9]{24}|labour)$/;

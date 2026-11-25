@@ -1,4 +1,4 @@
-import type { PermissionDef } from "../admin/admin.permissions";
+import type { PermissionDef } from "../../core/permissions/types";
 
 export const PURCHASING_PERMS = [
   { key: "purchasing.view", label: "View your material requests (SPP)" },

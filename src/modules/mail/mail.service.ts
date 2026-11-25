@@ -1,7 +1,7 @@
 import { BrevoClient } from "@getbrevo/brevo";
 import { env } from "../../core/env";
 import { logger } from "../../core/logger";
-import { appConfigService } from "../appConfig/AppConfig.service";
+import { appConfigService } from "../appConfig";
 
 const sans =
   "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";

@@ -4,28 +4,22 @@ import type {
   ProjectRabLabourExecutor,
   ProjectRabLine,
 } from "../../models/projectRab.model";
-import { ProjectRabRepo } from "../../models/projectRab.model";
 import {
   ProductionOrderRepo,
   type ProductionOrderInterface,
 } from "../../models/productionOrder.model";
 import { ProductionReportRepo } from "../../models/productionReport.model";
-import { formatDecimal } from "../itemMaster/itemUomConvert";
-import { loadItemMeta } from "../itemMaster/itemMeta";
+import { formatDecimal } from "../../utils/decimal";
+import { loadItemMeta } from "../itemMaster";
 import {
+  getProjectRab,
   isLabourLine,
   labourExecutor,
   labourRole,
-} from "../project/projectRab.planner";
-import {
-  allocatedQty,
-  assertProcessChange,
-  assertStageReport,
-  assertStageVoid,
-  stageRoom,
-  stagesOf,
   type StageLine,
-} from "./production.planner";
+  stagesOf,
+} from "../project";
+import { allocatedQty, assertProcessChange, assertStageReport, assertStageVoid, stageRoom } from "./production.planner";
 
 /**
  * SPK per RAB labour line: the item's labour lines (stages + install) and
@@ -46,8 +40,10 @@ type OrderLineRef = Pick<
   "shopDrawingItemId" | "labourItemId" | "labourUomId"
 >;
 
+type Id = Types.ObjectId | string;
+
 /** The SPK's RAB line key: `${shopDrawingItemId}:${labourItemId}:${labourUomId}`. */
-export function orderLineKey(o: OrderLineRef): string {
+export function orderLineKey(o: { shopDrawingItemId: Id; labourItemId: Id; labourUomId: Id }): string {
   return `${String(o.shopDrawingItemId)}:${String(o.labourItemId)}:${String(o.labourUomId)}`;
 }
 
@@ -85,12 +81,8 @@ export async function labourLinesByItem(
 export async function projectLabourLines(
   projectId: string,
 ): Promise<Map<string, LabourLineState[]>> {
-  const rab = await ProjectRabRepo.model
-    .findOne({ projectId: new Types.ObjectId(projectId) })
-    .select({ lines: 1 })
-    .lean()
-    .exec();
-  return labourLinesByItem((rab?.lines ?? []) as ProjectRabLine[]);
+  const rab = await getProjectRab(projectId);
+  return labourLinesByItem(rab?.lines ?? []);
 }
 
 /**

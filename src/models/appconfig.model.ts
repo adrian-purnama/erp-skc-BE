@@ -14,6 +14,8 @@ export interface AppConfigInterface {
     email?: string;
     website?: string;
     companyProfile?: Types.ObjectId;
+    /** Set atomically by the first registration that becomes super_admin. */
+    adminClaimed?: boolean;
 }
 
 const optionalString = {
@@ -60,6 +62,12 @@ const appConfigSchema = new Schema<AppConfigInterface>({
     companyProfile: {
         type: Types.ObjectId,
         required: false,
+    },
+
+    adminClaimed: {
+        type: Boolean,
+        required: false,
+        default: false,
     },
 });
 

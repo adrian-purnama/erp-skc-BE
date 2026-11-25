@@ -3,8 +3,7 @@ import type {
   UpdateAdminUserDto,
 } from "../dto/adminUser.dto";
 import { normalizeEmail } from "../utils/email";
-
-const MIN_PASSWORD_LENGTH = 8;
+import { MIN_PASSWORD_LENGTH } from "./auth";
 
 export function parseUpdateAdminUserDto(body: unknown): UpdateAdminUserDto {
   if (!body || typeof body !== "object") {

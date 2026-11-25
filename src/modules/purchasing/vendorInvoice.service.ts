@@ -19,14 +19,14 @@ import {
 } from "../../models/purchaseRealization.model";
 import { PurchasingSeqCounterModel } from "../../models/seqCounter.model";
 import { VendorInvoiceRepo, type VendorInvoiceInterface } from "../../models/vendorInvoice.model";
-import { VendorRepo } from "../../models/vendor.model";
-import { userEmailsById } from "../../utils/shared";
-import { projectNumberParts } from "../project/projectNumber";
+import { userEmailsById } from "../auth";
+import { numberingPeriod } from "../../utils/numbering";
 import { lineAmount } from "./purchaseOrder.planner";
 import { PURCHASING_BUCKET, purchaseOrderService, type PoActor } from "./purchaseOrder.service";
-import { checkRealizationCharges, inferChargeCategory } from "./purchaseRealization.planner";
+import { checkRealizationCharges, inferChargeCategory } from "../../utils/charges";
 import { checkInvoiceLines } from "./vendorInvoice.planner";
 import { assertVendorNotOverpaid, invoiceMoneyOf, repriceVendorReceipts } from "./vendorMoney";
+import { getVendorNames } from "../vendor";
 
 type LeanInvoice = VendorInvoiceInterface & { _id: Types.ObjectId };
 type LeanRealization = PurchaseRealizationInterface & { _id: Types.ObjectId };
@@ -43,12 +43,12 @@ function iso(d: Date | null | undefined): string | null {
 }
 
 async function allocateNumber(): Promise<string> {
-  const parts = projectNumberParts();
+  const parts = numberingPeriod();
   const scopeKey = `inv:${parts.scopeKey}`;
   const counter = await PurchasingSeqCounterModel.findOneAndUpdate(
     { scopeKey },
     { $inc: { nextSeq: 1 }, $setOnInsert: { scopeKey } },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: "after" },
   ).exec();
   if (!counter || counter.nextSeq < 1) throw new Error("Failed to allocate invoice number");
   return `INV/${parts.roman}/${parts.year}/${String(counter.nextSeq).padStart(4, "0")}`;
@@ -525,17 +525,13 @@ export class VendorInvoiceService {
 
   private async summaries(docs: LeanInvoice[]): Promise<VendorInvoiceSummaryOutDto[]> {
     if (docs.length === 0) return [];
-    const [orders, vendors, receipts] = await Promise.all([
+    const [orders, vendorName, receipts] = await Promise.all([
       PurchaseOrderRepo.model
         .find({ _id: { $in: docs.map((d) => d.purchaseOrderId) } })
         .select({ number: 1 })
         .lean()
         .exec(),
-      VendorRepo.model
-        .find({ _id: { $in: docs.map((d) => d.vendorId) } })
-        .select({ name: 1 })
-        .lean()
-        .exec(),
+      getVendorNames(docs.map((d) => d.vendorId)),
       PurchaseRealizationRepo.model
         .find({ _id: { $in: docs.flatMap((d) => d.realizationIds) } })
         .select({ number: 1, purchaseDate: 1, deliveryNoteNumber: 1 })
@@ -543,7 +539,6 @@ export class VendorInvoiceService {
         .exec(),
     ]);
     const poNumber = new Map(orders.map((o) => [String(o._id), o.number]));
-    const vendorName = new Map(vendors.map((v) => [String(v._id), v.name]));
     const receiptById = new Map(receipts.map((r) => [String(r._id), r]));
     const names = await userEmailsById(docs.flatMap((d) => (d.createdBy ? [String(d.createdBy)] : [])));
     return docs.map((d) => {

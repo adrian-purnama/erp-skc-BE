@@ -1,18 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import Decimal from "decimal.js";
-import {
-  chargesByCategory,
-  checkRealizationCharges,
-  inferChargeCategory,
-  priceStoredCharges,
-  checkRealizationLines,
-  realizationStatus,
-  remainingToRealize,
-  sumRealized,
-  type PoLineRef,
-  type RealizationLineInput,
-} from "./purchaseRealization.planner";
+import { checkRealizationLines, realizationStatus, remainingToRealize, sumRealized, type PoLineRef, type RealizationLineInput } from "./purchaseRealization.planner";
+import { chargesByCategory, checkRealizationCharges, inferChargeCategory, priceStoredCharges } from "../../utils/charges";
 
 const PLATE: PoLineRef = { poLineId: "p1", label: "Plate 2mm", qty: "6", unitPrice: "1250000" };
 

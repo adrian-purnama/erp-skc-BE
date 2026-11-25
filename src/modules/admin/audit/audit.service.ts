@@ -10,7 +10,8 @@ import type {
   AuditListOutDto,
 } from "../../../dto/audit.dto";
 import { UserModel } from "../../../models/user.model";
-import { escapeRegex, userEmailsById } from "../../../utils/shared";
+import { escapeRegex } from "../../../utils/shared";
+import { userEmailsById } from "../../auth";
 import type { AuditListQuery } from "../../../validation/audit";
 
 const LABEL_KEYS = [

@@ -1,4 +1,4 @@
-import type { PermissionDef } from "../admin/admin.permissions";
+import type { PermissionDef } from "../../core/permissions/types";
 
 export const TERM_OF_PAYMENT_PERMS = [
   { key: "termOfPayment.view", label: "View terms of payment" },

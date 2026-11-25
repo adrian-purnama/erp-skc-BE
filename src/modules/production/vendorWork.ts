@@ -14,13 +14,12 @@ import {
   type ProductionOrderInterface,
 } from "../../models/productionOrder.model";
 import { ProductionReportRepo } from "../../models/productionReport.model";
-import { PurchaseOrderRepo } from "../../models/purchaseOrder.model";
-import { PurchaseRealizationRepo } from "../../models/purchaseRealization.model";
-import { VendorRepo } from "../../models/vendor.model";
-import { userEmailsById } from "../../utils/shared";
-import { formatDecimal } from "../itemMaster/itemUomConvert";
-import { labourItemIds, loadItemMeta } from "../itemMaster/itemMeta";
+import { userEmailsById } from "../auth";
+import { formatDecimal } from "../../utils/decimal";
+import { labourItemIds, loadItemMeta } from "../itemMaster";
+import { getPurchaseOrderLines, listSpkPurchaseOrders, realizedQtyByPoLine } from "../purchasing";
 import { assertFeeWithinHandover, feeReceivableQty } from "./production.planner";
+import { getVendorNames } from "../vendor";
 
 /**
  * Vendor SPK helpers shared by production and purchasing: handovers as DTOs,
@@ -82,37 +81,26 @@ async function feeLines(order: LeanOrder): Promise<FeeLine[]> {
     .map((m) => ({ ...m, key: feeKey(m.materialItemId, m.itemUomId) }));
 }
 
+/** The SPK's PO lines, each mapped to its material / fee key. */
+async function feeKeyByPoLine(orderId: Types.ObjectId): Promise<Map<string, string>> {
+  const pos = await listSpkPurchaseOrders(String(orderId));
+  return new Map(
+    pos.flatMap((po) => po.lines.map((l) => [l.id, feeKey(l.materialItemId, l.itemUomId)] as const)),
+  );
+}
+
 /** Fee qty per fee key on live (draft / posted) realizations of the SPK's PO lines. */
 async function receivedFees(
   orderId: Types.ObjectId,
   exceptRealizationId?: string,
 ): Promise<Map<string, Decimal>> {
-  const pos = await PurchaseOrderRepo.model
-    .find({ "lines.productionOrderId": orderId })
-    .select({ lines: 1 })
-    .lean()
-    .exec();
-  const keyByPoLine = new Map<string, string>();
-  for (const po of pos) {
-    for (const l of po.lines) {
-      if (l._id && l.productionOrderId && String(l.productionOrderId) === String(orderId)) {
-        keyByPoLine.set(String(l._id), feeKey(String(l.materialItemId), String(l.itemUomId)));
-      }
-    }
-  }
+  const keyByPoLine = await feeKeyByPoLine(orderId);
   const sums = new Map<string, Decimal>();
   if (keyByPoLine.size === 0) return sums;
-  const query: Record<string, unknown> = {
-    "lines.poLineId": { $in: [...keyByPoLine.keys()].map((id) => new Types.ObjectId(id)) },
-    status: { $in: ["draft", "posted"] },
-  };
-  if (exceptRealizationId) query._id = { $ne: new Types.ObjectId(exceptRealizationId) };
-  const docs = await PurchaseRealizationRepo.model.find(query).select({ lines: 1 }).lean().exec();
-  for (const d of docs) {
-    for (const l of d.lines) {
-      const key = keyByPoLine.get(String(l.poLineId));
-      if (key) sums.set(key, (sums.get(key) ?? new Decimal(0)).plus(l.qty));
-    }
+  const realized = await realizedQtyByPoLine([...keyByPoLine.keys()], { exceptRealizationId });
+  for (const [poLineId, qty] of realized) {
+    const key = keyByPoLine.get(poLineId)!;
+    sums.set(key, (sums.get(key) ?? new Decimal(0)).plus(qty.toUs).plus(qty.toVendor));
   }
   return sums;
 }
@@ -170,13 +158,9 @@ export async function assertRealizationFeeWithinHandover(input: {
   lines: Array<{ poLineId: string; qty: string }>;
   exceptRealizationId?: string;
 }): Promise<void> {
-  const po = await PurchaseOrderRepo.model
-    .findById(input.purchaseOrderId)
-    .select({ lines: 1 })
-    .lean()
-    .exec();
-  if (!po) return;
-  const poLines = new Map(po.lines.map((l) => [String(l._id), l]));
+  const lines = await getPurchaseOrderLines(input.purchaseOrderId);
+  if (!lines) return;
+  const poLines = new Map(lines.map((l) => [l.id, l]));
   const qtyByOrder = new Map<string, Map<string, Decimal>>();
   for (const l of input.lines) {
     const poLine = poLines.get(l.poLineId);
@@ -259,58 +243,27 @@ export async function handoversOut(orderId: Types.ObjectId): Promise<ProductionH
 export async function approvedFeeOrders(
   orderId: Types.ObjectId,
 ): Promise<Array<{ _id: Types.ObjectId; number: string; vendorId: Types.ObjectId }>> {
-  const pos = await PurchaseOrderRepo.model
-    .find({ "lines.productionOrderId": orderId, status: "approved" })
-    .select({ number: 1, vendorId: 1, lines: 1, approvedAt: 1 })
-    .sort({ approvedAt: 1 })
-    .lean()
-    .exec();
-  const labour = await labourItemIds(
-    pos.flatMap((p) => p.lines.map((l) => String(l.materialItemId))),
-  );
+  const pos = await listSpkPurchaseOrders(String(orderId), { approvedOnly: true, sort: "firstApproved" });
+  const labour = await labourItemIds(pos.flatMap((p) => p.lines.map((l) => l.materialItemId)));
   return pos
-    .filter((p) =>
-      p.lines.some(
-        (l) => String(l.productionOrderId) === String(orderId) && labour.has(String(l.materialItemId)),
-      ),
-    )
-    .map((p) => ({ _id: p._id, number: p.number, vendorId: p.vendorId }));
+    .filter((p) => p.lines.some((l) => labour.has(l.materialItemId)))
+    .map((p) => ({ _id: new Types.ObjectId(p.id), number: p.number, vendorId: new Types.ObjectId(p.vendorId) }));
 }
 
 /** Per SPK material: posted receipts that arrived at us, and those the supplier sent straight to the vendor. */
 export async function postedReceiptsByKey(
   orderId: Types.ObjectId,
 ): Promise<{ atUs: Map<string, Decimal>; direct: Map<string, Decimal> }> {
-  const pos = await PurchaseOrderRepo.model
-    .find({ "lines.productionOrderId": orderId })
-    .select({ lines: 1 })
-    .lean()
-    .exec();
-  const keyByPoLine = new Map<string, string>();
-  for (const po of pos) {
-    for (const l of po.lines) {
-      if (l._id && String(l.productionOrderId) === String(orderId)) {
-        keyByPoLine.set(String(l._id), feeKey(String(l.materialItemId), String(l.itemUomId)));
-      }
-    }
-  }
+  const keyByPoLine = await feeKeyByPoLine(orderId);
   const atUs = new Map<string, Decimal>();
   const direct = new Map<string, Decimal>();
   if (keyByPoLine.size === 0) return { atUs, direct };
-  const docs = await PurchaseRealizationRepo.model
-    .find({
-      "lines.poLineId": { $in: [...keyByPoLine.keys()].map((id) => new Types.ObjectId(id)) },
-      status: "posted",
-    })
-    .select({ lines: 1, deliveredTo: 1 })
-    .lean()
-    .exec();
-  for (const d of docs) {
-    const target = d.deliveredTo === "vendor" ? direct : atUs;
-    for (const l of d.lines) {
-      const key = keyByPoLine.get(String(l.poLineId));
-      if (key) target.set(key, (target.get(key) ?? new Decimal(0)).plus(l.qty));
-    }
+  const realized = await realizedQtyByPoLine([...keyByPoLine.keys()], { postedOnly: true });
+  const zero = new Decimal(0);
+  for (const [poLineId, qty] of realized) {
+    const key = keyByPoLine.get(poLineId)!;
+    atUs.set(key, (atUs.get(key) ?? zero).plus(qty.toUs));
+    direct.set(key, (direct.get(key) ?? zero).plus(qty.toVendor));
   }
   return { atUs, direct };
 }
@@ -347,12 +300,12 @@ export async function materialsNotArrived(order: LeanOrder): Promise<string[]> {
  * vendors it would reach, or null when it may not.
  */
 export async function directToVendorTargets(purchaseOrderId: string): Promise<string[] | null> {
-  const po = await PurchaseOrderRepo.model.findById(purchaseOrderId).select({ lines: 1 }).lean().exec();
-  if (!po || po.lines.length === 0) return null;
-  const orderIds = [...new Set(po.lines.map((l) => (l.productionOrderId ? String(l.productionOrderId) : "")))];
+  const lines = await getPurchaseOrderLines(purchaseOrderId);
+  if (!lines || lines.length === 0) return null;
+  const orderIds = [...new Set(lines.map((l) => l.productionOrderId ?? ""))];
   if (orderIds.includes("")) return null;
-  const labour = await labourItemIds(po.lines.map((l) => String(l.materialItemId)));
-  if (po.lines.some((l) => labour.has(String(l.materialItemId)))) return null;
+  const labour = await labourItemIds(lines.map((l) => l.materialItemId));
+  if (lines.some((l) => labour.has(l.materialItemId))) return null;
   const vendorIds = new Set<string>();
   for (const id of orderIds) {
     const order = (await ProductionOrderRepo.model
@@ -365,10 +318,5 @@ export async function directToVendorTargets(purchaseOrderId: string): Promise<st
     if (fee.length === 0) return null;
     vendorIds.add(String(fee[0]!.vendorId));
   }
-  const vendors = await VendorRepo.model
-    .find({ _id: { $in: [...vendorIds].map((id) => new Types.ObjectId(id)) } })
-    .select({ name: 1 })
-    .lean()
-    .exec();
-  return vendors.map((v) => v.name);
+  return [...(await getVendorNames([...vendorIds])).values()];
 }

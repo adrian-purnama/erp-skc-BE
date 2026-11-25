@@ -85,7 +85,7 @@ export class TermOfPaymentService {
           ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
         },
       },
-      { new: true },
+      { returnDocument: "after" },
     );
     if (!updated) throw new Error("Term of payment not found");
 

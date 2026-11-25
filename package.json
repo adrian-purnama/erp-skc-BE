@@ -7,7 +7,9 @@
     "start": "node dist/index.js",
     "build": "tsc -p tsconfig.build.json",
     "type-check": "tsc --noEmit",
-    "test": "tsx --env-file=.env --test src/**/*.test.ts"
+    "test": "tsx --env-file=.env --test src/**/*.test.ts",
+    "check:boundaries": "depcruise src --config .dependency-cruiser.cjs --ignore-known --output-type err",
+    "check:boundaries:baseline": "depcruise src --config .dependency-cruiser.cjs --baseline --baseline-mode shrink-only --output-type err"
   },
   "keywords": [],
   "author": "",
@@ -20,6 +22,8 @@
     "decimal.js": "^10.6.0",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.7.5",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.9.4",
     "multer": "^2.3.0",
@@ -27,6 +31,7 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
+    "@swc/core": "^1.16.22",
     "@tsconfig/node22": "^22.0.6",
     "@types/bcrypt": "^6.0.0",
     "@types/cors": "^2.8.19",
@@ -36,6 +41,7 @@
     "@types/node": "^26.4.0",
     "@types/pdfkit": "^0.13.9",
     "@types/qrcode": "^1.5.5",
+    "dependency-cruiser": "^18.9.0",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2"
   }

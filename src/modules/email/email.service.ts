@@ -1,4 +1,4 @@
-import { mailer } from "../mail/mail.service";
+import { mailer } from "../mail";
 
 export type SendNotificationEmailInput = {
   title: string;

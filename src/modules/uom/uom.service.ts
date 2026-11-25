@@ -10,10 +10,7 @@ import {
   UomRepo,
   type UomInterface,
 } from "../../models/uom.model";
-import {
-  formatDecimal,
-  parsePositiveDecimal,
-} from "../itemMaster/itemUomConvert";
+import { formatDecimal, parsePositiveDecimal } from "../../utils/decimal";
 import {
   defaultFormulasOr,
   evalUomFormula,
@@ -135,7 +132,7 @@ export class UomService {
           ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
         },
       },
-      { new: true },
+      { returnDocument: "after" },
     );
     if (!updated) throw new Error("UoM not found");
 

@@ -1,5 +1,5 @@
 import type { ProjectQuotationOutDto } from "../../dto/projectQuotation.dto";
-import { terbilangRupiah } from "../project/projectRabExport.planner";
+import { formatLongDate, splitLines, terbilangRupiah } from "../../utils/document/text";
 import { chargeLabel } from "./quotation.planner";
 
 export type QuotationDocumentRow =
@@ -71,29 +71,8 @@ function documentRows(q: ProjectQuotationOutDto): QuotationDocumentRow[] {
   ]);
 }
 
-export function formatLongDate(d: Date): string {
-  return new Intl.DateTimeFormat("id-ID", {
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-    timeZone: "Asia/Jakarta",
-  }).format(d);
-}
-
 function ymdToLong(ymd: string): string {
   return formatLongDate(new Date(`${ymd}T00:00:00+07:00`));
-}
-
-export function splitLines(raw: string): string[] {
-  return raw
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-}
-
-export function formatRp(amount: number): string {
-  const sign = amount < 0 ? "-" : "";
-  return `${sign}Rp ${new Intl.NumberFormat("id-ID", { maximumFractionDigits: 0 }).format(Math.abs(amount))}`;
 }
 
 export function buildQuotationDocument(

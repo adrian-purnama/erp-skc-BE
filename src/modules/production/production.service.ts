@@ -19,7 +19,6 @@ import type {
   UpdateProductionOrderInDto,
 } from "../../dto/production.dto";
 import type { ProjectRabUserRefOutDto } from "../../dto/projectRab.dto";
-import { ProjectRepo } from "../../models/project.model";
 import {
   ProductionOrderRepo,
   type ProductionOrderInterface,
@@ -32,48 +31,50 @@ import {
 } from "../../models/productionReport.model";
 import { ProductionHandoverRepo } from "../../models/productionHandover.model";
 import { MaterialDispatchRepo } from "../../models/materialDispatch.model";
-import { ProjectProductionFileRepo } from "../../models/projectProductionFile.model";
-import {
-  PURCHASE_ORDER_LIVE_STATUSES,
-  PurchaseOrderRepo,
-} from "../../models/purchaseOrder.model";
-import {
-  PurchaseRequestRepo,
-  type PurchaseRequestStatus,
-} from "../../models/purchaseRequest.model";
-import { ProjectQuotationRepo } from "../../models/projectQuotation.model";
-import { ProjectRabRepo } from "../../models/projectRab.model";
-import {
-  ProjectShopDrawingBoqRepo,
-  type ProjectShopDrawingBoqInterface,
-} from "../../models/projectShopDrawingBoq.model";
-import { ProjectShopDrawingDocumentRepo } from "../../models/projectShopDrawingDocument.model";
-import {
-  ProjectShopDrawingItemRepo,
-  type ShopDrawingMakeType,
-} from "../../models/projectShopDrawingItem.model";
+import { type ShopDrawingMakeType } from "../../models/projectShopDrawingItem.model";
 import { ProductionSeqCounterModel } from "../../models/seqCounter.model";
-import { UserModel } from "../../models/user.model";
-import { CustomerRepo } from "../../models/customer.model";
-import { VendorRepo } from "../../models/vendor.model";
-import { findFile, readFileBuffer } from "../../core/gridfs";
-import { logger } from "../../core/logger";
-import { appConfigService } from "../appConfig/AppConfig.service";
+import { companyLetterhead, loadCompanyLogo } from "../appConfig";
 import { env } from "../../core/env";
 import {
   formatExportYmd,
+  formatLongDate,
   safeFilenamePart,
-} from "../project/projectRabExport.planner";
-import { formatLongDate, splitLines } from "../quotation/quotation.document";
-import type { QuotationLogo } from "../quotation/quotation.logo";
+  splitLines,
+  ymdLong,
+} from "../../utils/document/text";
 import { buildSpkPdf, type SpkPdfData } from "./production.pdf";
-import { jakartaYmdString, userEmailsById } from "../../utils/shared";
-import { formatDecimal } from "../itemMaster/itemUomConvert";
-import { labourItemIds, loadItemMeta } from "../itemMaster/itemMeta";
-import { projectNumberParts } from "../project/projectNumber";
-import { projectRabChangeService } from "../project/projectRabChange.service";
-import { shopDrawingItemLabel } from "../project/projectShared";
-import { loadShopDrawingSpecs } from "../project/projectShopDrawingSpec";
+import {
+  assertAssignableUser,
+  getUserDisplayNames,
+  getUserRef,
+  listAssignableUsers,
+  userEmailsById,
+} from "../auth";
+import { jakartaYmdString } from "../../utils/time";
+import { formatDecimal, percentOf } from "../../utils/decimal";
+import { labourItemIds, loadItemMeta } from "../itemMaster";
+import { numberingPeriod } from "../../utils/numbering";
+import {
+  getProductionFileNames,
+  getProjectRab,
+  getProjectRef,
+  getProjectRefs,
+  getShopDrawingFileNames,
+  getShopDrawingItemRef,
+  getShopDrawingItemRefs,
+  listCurrentItemFiles,
+  listLiveShopDrawingItems,
+  listShopDrawingBoqs,
+  loadRabUomPlan,
+  loadShopDrawingSpecs,
+  markProjectReleasedToProduction,
+  projectRabChangeService,
+  type ProjectRefDto,
+  rabLineKey,
+  type ShopDrawingBoqSnapshot,
+  shopDrawingItemLabel,
+} from "../project";
+import { getWonQuotationRef } from "../quotation";
 import {
   carriesMaterials,
   handoversOut,
@@ -91,33 +92,10 @@ import {
   type LabourLineState,
 } from "./stageFlow";
 import { subconDispatchOut } from "./materialDispatch.queries";
-import {
-  DEFAULT_HANDOVER_CHECKLIST,
-  allocatedQty,
-  assertLabourStages,
-  installCapacity,
-  installedQty,
-  itemInstallPercent,
-  assertOrderQty,
-  evaluateReadiness,
-  itemMakingPercent,
-  madeQty,
-  maxOrderQty,
-  needsBoq,
-  needsProductionFile,
-  percentOf,
-  planFeeLines,
-  planMaterials,
-  scaleMaterials,
-  processReadiness,
-  progressStatus,
-  stageRoom,
-  type OrderQtyRow,
-  type PlannedMaterial,
-  type PriorMaterialIssue,
-} from "./production.planner";
-import { loadRabUomPlan } from "../project/projectRabUomPlan";
-import { rabLineKey } from "../project/projectRab.planner";
+import { DEFAULT_HANDOVER_CHECKLIST, allocatedQty, assertLabourStages, installCapacity, installedQty, itemInstallPercent, assertOrderQty, evaluateReadiness, itemMakingPercent, madeQty, maxOrderQty, needsBoq, needsProductionFile, planFeeLines, planMaterials, scaleMaterials, processReadiness, progressStatus, stageRoom, type OrderQtyRow, type PlannedMaterial, type PriorMaterialIssue } from "./production.planner";
+import { getVendorNames } from "../vendor";
+import { countLivePurchasesForSpks, listSpkPurchaseOrders } from "../purchasing";
+import { getCustomerRef } from "../customer";
 
 /** Release refused: carries the readiness so the client can show what is missing. */
 export class ProductionNotReadyError extends Error {
@@ -128,14 +106,8 @@ export class ProductionNotReadyError extends Error {
 
 type LeanOrder = ProductionOrderInterface & { _id: Types.ObjectId };
 type LeanReport = ProductionReportInterface & { _id: Types.ObjectId };
-type LeanBoq = ProjectShopDrawingBoqInterface & { _id: Types.ObjectId };
-type LeanProject = {
-  _id: Types.ObjectId;
-  name: string;
-  projectNumber: string;
-  productionReleasedAt?: Date | null;
-  productionReleasedBy?: Types.ObjectId | null;
-};
+type LeanBoq = ShopDrawingBoqSnapshot;
+type LeanProject = ProjectRefDto;
 type LeanItem = {
   _id: Types.ObjectId;
   code?: string;
@@ -157,7 +129,6 @@ type ItemState = {
 const ACTIVE_STATUSES: ProductionOrderStatus[] = ["released", "in_progress"];
 /** Draft plus active: PIC, dates and notes can still be amended. */
 const EDITABLE_STATUSES: ProductionOrderStatus[] = ["draft", ...ACTIVE_STATUSES];
-const LIVE_PURCHASE_REQUEST_STATUSES: PurchaseRequestStatus[] = ["draft", "submitted"];
 
 function iso(d: Date | null | undefined): string | null {
   return d ? d.toISOString() : null;
@@ -170,11 +141,11 @@ function fileRefOut(f: FileRef | null): ProductionOrderFileRefOutDto | null {
 }
 
 async function allocateOrderNumber(): Promise<string> {
-  const parts = projectNumberParts();
+  const parts = numberingPeriod();
   const counter = await ProductionSeqCounterModel.findOneAndUpdate(
     { scopeKey: `spk:${parts.scopeKey}` },
     { $inc: { nextSeq: 1 }, $setOnInsert: { scopeKey: `spk:${parts.scopeKey}` } },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: "after" },
   ).exec();
   if (!counter || counter.nextSeq < 1) {
     throw new Error("Failed to allocate SPK number");
@@ -184,26 +155,14 @@ async function allocateOrderNumber(): Promise<string> {
 
 /** Display name for a user: full name, else email. */
 async function userDisplayName(userId: string): Promise<string> {
-  const user = await UserModel.findById(userId)
-    .select({ fullName: 1, email: 1 })
-    .lean()
-    .exec();
+  const user = await getUserRef(userId);
   if (!user) throw new Error("User not found");
-  return user.fullName?.trim() || user.email || "";
+  return user.name;
 }
 
 /** id → full name (email when no full name) for existing users. */
 async function userDisplayNames(ids: string[]): Promise<Map<string, string>> {
-  if (ids.length === 0) return new Map();
-  const users = await UserModel.find({
-    _id: { $in: ids.map((id) => new Types.ObjectId(id)) },
-  })
-    .select({ fullName: 1, email: 1 })
-    .lean()
-    .exec();
-  return new Map(
-    users.map((u) => [String(u._id), u.fullName?.trim() || u.email || ""]),
-  );
+  return getUserDisplayNames(ids);
 }
 
 /** PIC fields for a user id (null clears the PIC). */
@@ -211,56 +170,39 @@ async function picFields(
   picUserId: string | null,
 ): Promise<{ picUserId: Types.ObjectId | null; pic: string }> {
   if (!picUserId) return { picUserId: null, pic: "" };
-  const user = await UserModel.findById(picUserId)
-    .select({ fullName: 1, email: 1, isBlocked: 1 })
-    .lean()
-    .exec();
-  if (!user) throw new Error("PIC user not found");
-  if (user.isBlocked) throw new Error("PIC user is blocked");
-  return {
-    picUserId: new Types.ObjectId(picUserId),
-    pic: user.fullName?.trim() || user.email || "",
-  };
+  const user = await assertAssignableUser(picUserId, "PIC user");
+  return { picUserId: new Types.ObjectId(picUserId), pic: user.name };
 }
 
 async function requireProject(projectId: string): Promise<LeanProject> {
   if (!Types.ObjectId.isValid(projectId)) throw new Error("Invalid project id");
-  const project = (await ProjectRepo.model
-    .findById(projectId)
-    .select({ name: 1, projectNumber: 1, productionReleasedAt: 1, productionReleasedBy: 1 })
-    .lean()
-    .exec()) as LeanProject | null;
+  const project = await getProjectRef(projectId);
   if (!project) throw new Error("Project not found");
   return project;
 }
 
 async function loadItemStates(projectId: string): Promise<ItemState[]> {
-  const projectOid = new Types.ObjectId(projectId);
-  const [items, sdFiles, productionFiles] = await Promise.all([
-    ProjectShopDrawingItemRepo.model
-      .find({ projectId: projectOid, isDeleted: false })
-      .select({ code: 1, name: 1, category: 1, makeType: 1, makeQty: 1 })
-      .sort({ code: 1, name: 1 })
-      .lean()
-      .exec() as Promise<LeanItem[]>,
-    ProjectShopDrawingDocumentRepo.model
-      .find({ projectId: projectOid, isCurrent: true, isDeleted: { $ne: true } })
-      .select({ itemId: 1, version: 1, originalFilename: 1 })
-      .lean()
-      .exec(),
-    ProjectProductionFileRepo.model
-      .find({ projectId: projectOid, isCurrent: true, isDeleted: { $ne: true } })
-      .select({ itemId: 1, version: 1, originalFilename: 1 })
-      .lean()
-      .exec(),
+  const [items, files] = await Promise.all([
+    listLiveShopDrawingItems(projectId).then((rows) =>
+      rows.map(
+        (i): LeanItem => ({
+          _id: new Types.ObjectId(i.id),
+          code: i.code,
+          name: i.name,
+          category: i.category,
+          ...(i.makeType ? { makeType: i.makeType } : {}),
+          makeQty: i.makeQty,
+        }),
+      ),
+    ),
+    listCurrentItemFiles(projectId),
   ]);
-  const boqs = (await ProjectShopDrawingBoqRepo.model
-    .find({ projectId: projectOid, shopDrawingFileId: { $in: sdFiles.map((f) => f._id) } })
-    .lean()
-    .exec()) as LeanBoq[];
+  const boqs = await listShopDrawingBoqs(projectId, {
+    shopDrawingFileIds: files.shopDrawing.map((f) => f.id),
+  });
 
-  const sdByItem = new Map(sdFiles.map((f) => [String(f.itemId), f]));
-  const prodByItem = new Map(productionFiles.map((f) => [String(f.itemId), f]));
+  const sdByItem = new Map(files.shopDrawing.map((f) => [f.itemId, f]));
+  const prodByItem = new Map(files.production.map((f) => [f.itemId, f]));
   const boqByFile = new Map(boqs.map((b) => [String(b.shopDrawingFileId), b]));
 
   return items.map((item) => {
@@ -269,11 +211,11 @@ async function loadItemStates(projectId: string): Promise<ItemState[]> {
     return {
       item,
       sdFile: sd
-        ? { id: sd._id, version: sd.version, originalFilename: sd.originalFilename }
+        ? { id: new Types.ObjectId(sd.id), version: sd.version, originalFilename: sd.originalFilename }
         : null,
-      boq: sd ? (boqByFile.get(String(sd._id)) ?? null) : null,
+      boq: sd ? (boqByFile.get(sd.id) ?? null) : null,
       productionFile: prod
-        ? { id: prod._id, version: prod.version, originalFilename: prod.originalFilename }
+        ? { id: new Types.ObjectId(prod.id), version: prod.version, originalFilename: prod.originalFilename }
         : null,
     };
   });
@@ -410,21 +352,10 @@ function qtyRows(orders: LeanOrder[]): OrderQtyRow[] {
 
 /** Refuse when output was reported or material was requested against the SPK. */
 async function assertNoOrderActivity(order: LeanOrder, action: string): Promise<void> {
-  const [reports, handovers, requests, purchaseOrders] = await Promise.all([
+  const [reports, handovers, livePurchases] = await Promise.all([
     ProductionReportRepo.model.countDocuments({ productionOrderId: order._id }).exec(),
     ProductionHandoverRepo.model.countDocuments({ productionOrderId: order._id }).exec(),
-    PurchaseRequestRepo.model
-      .countDocuments({
-        productionOrderId: order._id,
-        status: { $in: LIVE_PURCHASE_REQUEST_STATUSES },
-      })
-      .exec(),
-    PurchaseOrderRepo.model
-      .countDocuments({
-        "lines.productionOrderId": order._id,
-        status: { $in: PURCHASE_ORDER_LIVE_STATUSES },
-      })
-      .exec(),
+    countLivePurchasesForSpks([String(order._id)]),
   ]);
   if (reports > 0) {
     throw new Error(`Cannot ${action}: this SPK has production reports`);
@@ -432,7 +363,7 @@ async function assertNoOrderActivity(order: LeanOrder, action: string): Promise<
   if (handovers > 0) {
     throw new Error(`Cannot ${action}: this SPK has vendor handovers`);
   }
-  if (requests + purchaseOrders > 0) {
+  if (livePurchases > 0) {
     throw new Error(
       `Cannot ${action}: material was requested on this SPK; cancel its SPP / PO first`,
     );
@@ -515,35 +446,21 @@ async function planOrderMaterials(
 
 /** POs with lines on the SPK, newest first, with this SPK's share of the total. */
 async function purchaseOrdersFor(orderId: Types.ObjectId): Promise<ProductionOrderPurchaseOutDto[]> {
-  const pos = await PurchaseOrderRepo.model
-    .find({ "lines.productionOrderId": orderId })
-    .select({ number: 1, vendorId: 1, status: 1, lines: 1 })
-    .sort({ createdAt: -1 })
-    .lean()
-    .exec();
+  const pos = await listSpkPurchaseOrders(String(orderId), { sort: "newest" });
   if (pos.length === 0) return [];
-  const vendors = await VendorRepo.model
-    .find({ _id: { $in: pos.map((p) => p.vendorId) } })
-    .select({ name: 1 })
-    .lean()
-    .exec();
-  const vendorName = new Map(vendors.map((v) => [String(v._id), v.name]));
-  const ownLines = (po: (typeof pos)[number]) =>
-    po.lines.filter((l) => l.productionOrderId && String(l.productionOrderId) === String(orderId));
-  const labour = await labourItemIds(
-    pos.flatMap((po) => ownLines(po).map((l) => String(l.materialItemId))),
-  );
+  const vendorName = await getVendorNames(pos.map((p) => p.vendorId));
+  const labour = await labourItemIds(pos.flatMap((po) => po.lines.map((l) => l.materialItemId)));
   return pos.map((po) => ({
-    id: String(po._id),
+    id: po.id,
     number: po.number,
-    vendorName: vendorName.get(String(po.vendorId)) ?? "Unknown vendor",
+    vendorName: vendorName.get(po.vendorId) ?? "Unknown vendor",
     status: po.status,
     total: formatDecimal(
-      ownLines(po)
+      po.lines
         .reduce((sum, l) => sum.plus(new Decimal(l.qty).times(l.unitPrice)), new Decimal(0))
         .round(),
     ),
-    vendorFee: ownLines(po).some((l) => labour.has(String(l.materialItemId))),
+    vendorFee: po.lines.some((l) => labour.has(l.materialItemId)),
   }));
 }
 
@@ -570,14 +487,9 @@ async function materialsOut(rows: PlannedMaterial[]): Promise<ProductionOrderMat
 export class ProductionService {
   async readiness(projectId: string): Promise<ProductionReadinessOutDto> {
     const project = await requireProject(projectId);
-    const projectOid = new Types.ObjectId(projectId);
     const [won, rab, change, states, labourByItem] = await Promise.all([
-      ProjectQuotationRepo.model
-        .findOne({ projectId: projectOid, status: "won" })
-        .select({ revision: 1, quotationNumber: 1 })
-        .lean()
-        .exec(),
-      ProjectRabRepo.model.findOne({ projectId: projectOid }).select({ status: 1 }).lean().exec(),
+      getWonQuotationRef(projectId),
+      getProjectRab(projectId),
       projectRabChangeService.findOpenDraft(projectId),
       loadItemStates(projectId),
       projectLabourLines(projectId),
@@ -629,15 +541,7 @@ export class ProductionService {
     }
     const readiness = await this.readiness(projectId);
     if (!readiness.ready) throw new ProductionNotReadyError(readiness);
-    await ProjectRepo.findByIdAndUpdate(projectId, {
-      $set: {
-        productionReleasedAt: new Date(),
-        productionReleasedBy: new Types.ObjectId(userId),
-        status: "win",
-        loseReason: null,
-        closeReason: null,
-      },
-    });
+    await markProjectReleasedToProduction(projectId, userId);
     return this.readiness(projectId);
   }
 
@@ -736,16 +640,8 @@ export class ProductionService {
 
   /** Active users that can be picked as SPK person in charge. */
   async listPicUsers(): Promise<ProductionPicUserOutDto[]> {
-    const users = await UserModel.find({ isBlocked: { $ne: true } })
-      .select({ fullName: 1, email: 1 })
-      .sort({ fullName: 1, email: 1 })
-      .lean()
-      .exec();
-    return users.map((u) => ({
-      id: String(u._id),
-      name: u.fullName?.trim() || u.email || "",
-      email: u.email ?? "",
-    }));
+    const users = await listAssignableUsers();
+    return users.map((u) => ({ id: u.id, name: u.name, email: u.email }));
   }
 
   /**
@@ -820,30 +716,20 @@ export class ProductionService {
         exactQty: m.exactQty ?? m.qty,
         qty: m.qty,
       }));
-      const [sd, prod] = await Promise.all([
-        ProjectShopDrawingDocumentRepo.model
-          .findById(snap.shopDrawingFileId)
-          .select({ originalFilename: 1 })
-          .lean()
-          .exec(),
-        snap.productionFileId
-          ? ProjectProductionFileRepo.model
-              .findById(snap.productionFileId)
-              .select({ originalFilename: 1 })
-              .lean()
-              .exec()
-          : null,
+      const [sdNames, prodNames] = await Promise.all([
+        getShopDrawingFileNames([snap.shopDrawingFileId]),
+        getProductionFileNames([snap.productionFileId]),
       ]);
       sdFile = {
         id: snap.shopDrawingFileId,
         version: snap.shopDrawingFileVersion,
-        originalFilename: sd?.originalFilename ?? "(deleted)",
+        originalFilename: sdNames.get(String(snap.shopDrawingFileId)) ?? "(deleted)",
       };
       productionFile = snap.productionFileId
         ? {
             id: snap.productionFileId,
             version: snap.productionFileVersion ?? 0,
-            originalFilename: prod?.originalFilename ?? "(deleted)",
+            originalFilename: prodNames.get(String(snap.productionFileId)) ?? "(deleted)",
           }
         : null;
     } else {
@@ -1316,22 +1202,12 @@ export class ProductionService {
     const picIds = [
       ...new Set(orders.flatMap((o) => (o.picUserId ? [String(o.picUserId)] : []))),
     ];
-    const [projects, items, progress, picNames] = await Promise.all([
-      ProjectRepo.model
-        .find({ _id: { $in: projectIds.map((id) => new Types.ObjectId(id)) } })
-        .select({ name: 1, projectNumber: 1 })
-        .lean()
-        .exec(),
-      ProjectShopDrawingItemRepo.model
-        .find({ _id: { $in: itemIds.map((id) => new Types.ObjectId(id)) } })
-        .select({ code: 1, name: 1 })
-        .lean()
-        .exec(),
+    const [projectById, itemById, progress, picNames] = await Promise.all([
+      getProjectRefs(projectIds),
+      getShopDrawingItemRefs(itemIds),
       progressByOrder(orders),
       userDisplayNames(picIds),
     ]);
-    const projectById = new Map(projects.map((p) => [String(p._id), p]));
-    const itemById = new Map(items.map((i) => [String(i._id), i]));
     return orders.map((o) => {
       const project = projectById.get(String(o.projectId));
       const item = itemById.get(String(o.shopDrawingItemId));
@@ -1370,53 +1246,6 @@ export class ProductionService {
 
 export const productionService = new ProductionService();
 
-/** Company profile logo from Admin › Config (live, not a snapshot). */
-export async function loadCompanyLogo(): Promise<QuotationLogo | null> {
-  const id = appConfigService.companyProfile;
-  if (!id) return null;
-  try {
-    const file = await findFile("public", id);
-    if (!file) return null;
-    const contentType =
-      typeof file.metadata?.contentType === "string"
-        ? file.metadata.contentType
-        : "application/octet-stream";
-    return { buffer: await readFileBuffer("public", id), contentType };
-  } catch (error) {
-    logger.warn(
-      error instanceof Error ? error.message : String(error),
-      "modules/production/production.service.ts",
-      "loadCompanyLogo",
-    );
-    return null;
-  }
-}
-
-/** Company name and address lines for printed documents (Admin › Config). */
-export function companyLetterhead(): { companyName: string; letterhead: string[] } {
-  const config = appConfigService.getAppConfig();
-  const branches = (config.branchOfficeAddresses ?? [])
-    .map(splitLines)
-    .filter((lines) => lines.length > 0);
-  const labelled = (label: string, lines: string[]) =>
-    lines.map((l, i) => (i === 0 ? `${label}: ${l}` : l));
-  const letterhead = [
-    ...(branches.length > 0
-      ? [
-          ...labelled("Head Office", splitLines(config.address)),
-          ...branches.flatMap((lines) => labelled("Branch Office", lines)),
-        ]
-      : splitLines(config.address)),
-    [config.phone && `Telp: ${config.phone}`, config.email].filter(Boolean).join(" · "),
-    config.website,
-  ].filter((line): line is string => Boolean(line));
-  return { companyName: config.companyName, letterhead };
-}
-
-export function ymdLong(ymd: string | null): string {
-  return ymd ? formatLongDate(new Date(`${ymd}T00:00:00+07:00`)) : "-";
-}
-
 /** SPK as a printable PDF; drafts print as DRAFT with no issuer signature. */
 /** A qty short enough to print: 3 decimals, or 3 significant digits below 1. */
 function printQty(qty: string): string {
@@ -1429,21 +1258,11 @@ export async function exportProductionOrderPdf(
 ): Promise<{ buffer: Buffer; filename: string; contentType: string }> {
   const order = await productionService.getOrder(id);
   const [project, item, specs] = await Promise.all([
-    ProjectRepo.model
-      .findById(order.projectId)
-      .select({ name: 1, projectNumber: 1, customerId: 1 })
-      .lean()
-      .exec(),
-    ProjectShopDrawingItemRepo.model
-      .findById(order.shopDrawingItemId)
-      .select({ code: 1, name: 1, dimension: 1 })
-      .lean()
-      .exec(),
+    getProjectRef(order.projectId),
+    getShopDrawingItemRef(order.shopDrawingItemId),
     loadShopDrawingSpecs([order.shopDrawingItemId]),
   ]);
-  const customer = project
-    ? await CustomerRepo.model.findById(project.customerId).select({ name: 1 }).lean().exec()
-    : null;
+  const customer = project ? await getCustomerRef(project.customerId) : null;
 
   const { companyName, letterhead } = companyLetterhead();
 

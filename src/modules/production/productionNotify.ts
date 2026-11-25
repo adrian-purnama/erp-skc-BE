@@ -1,11 +1,12 @@
 import { Types } from "mongoose";
 import { logger } from "../../core/logger";
+import { uniqueIdsExcept } from "../../utils/ids";
 import { MaterialDispatchRepo } from "../../models/materialDispatch.model";
 import { ProductionHandoverRepo } from "../../models/productionHandover.model";
 import { ProductionOrderRepo } from "../../models/productionOrder.model";
-import { PurchaseOrderRepo } from "../../models/purchaseOrder.model";
-import { usersWithPermission } from "../purchasing/purchaseOrder.service";
-import { safeNotify } from "../purchasing/purchasingNotify";
+import { usersWithPermission } from "../../core/permissions/resolve.service";
+import { safeNotify } from "../notification";
+import { listSpkPurchaseOrders } from "../purchasing";
 
 const SOURCE = "modules/production/productionNotify.ts";
 
@@ -13,10 +14,6 @@ export type DispatchNotifyKind = "submitted" | "approved" | "rejected";
 
 function spkLink(orderId: Types.ObjectId | string): string {
   return `/dashboard/production?spk=${String(orderId)}`;
-}
-
-function ids(values: Array<Types.ObjectId | string | null | undefined>, exclude: string): string[] {
-  return [...new Set(values.filter(Boolean).map(String))].filter((id) => id !== exclude);
 }
 
 /**
@@ -35,9 +32,9 @@ export async function notifyDispatchEvent(input: {
     const summary = `${doc.number} · ${order?.number ?? "SPK"} · ${doc.lines.length} material(s) to the subcon vendor`;
     const link = spkLink(doc.productionOrderId);
     if (input.kind === "submitted") {
-      const approvers = (await usersWithPermission("production.dispatchApprove")).map((u) => u._id);
+      const approvers = (await usersWithPermission("production.dispatchApprove")).map((u) => u.id);
       await safeNotify({
-        userIds: ids(approvers, String(doc.createdBy ?? input.actorUserId)),
+        userIds: uniqueIdsExcept(approvers, String(doc.createdBy ?? input.actorUserId)),
         title: `Surat jalan waiting for your approval: ${doc.number}`,
         body: summary,
         link,
@@ -45,7 +42,7 @@ export async function notifyDispatchEvent(input: {
       return;
     }
     await safeNotify({
-      userIds: ids([doc.createdBy], input.actorUserId),
+      userIds: uniqueIdsExcept([doc.createdBy], input.actorUserId),
       title:
         input.kind === "approved"
           ? `Surat jalan approved, ready to send: ${doc.number}`
@@ -71,13 +68,9 @@ export async function notifyHandoverPosted(input: { handoverId: string; actorUse
       .select({ number: 1, qty: 1, picUserId: 1 })
       .lean()
       .exec();
-    const feePos = await PurchaseOrderRepo.model
-      .find({ "lines.productionOrderId": doc.productionOrderId, status: "approved" })
-      .select({ createdBy: 1 })
-      .lean()
-      .exec();
+    const feePos = await listSpkPurchaseOrders(String(doc.productionOrderId), { approvedOnly: true });
     await safeNotify({
-      userIds: ids([...feePos.map((p) => p.createdBy), order?.picUserId], input.actorUserId),
+      userIds: uniqueIdsExcept([...feePos.map((p) => p.createdBy), order?.picUserId], input.actorUserId),
       title: `Vendor handed over ${doc.qty} unit(s): ${order?.number ?? "SPK"}`,
       body: `${doc.number} · ${doc.qty} of ${order?.qty ?? "?"} on ${order?.number ?? "the SPK"}. That share of the vendor fee can now be received.`,
       link: spkLink(doc.productionOrderId),

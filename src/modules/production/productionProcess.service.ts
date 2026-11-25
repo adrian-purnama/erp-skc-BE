@@ -1,27 +1,20 @@
 import { Types } from "mongoose";
 import type { SaveProductionProcessInDto } from "../../dto/production.dto";
-import { ProjectRepo } from "../../models/project.model";
 import { ProductionOrderRepo } from "../../models/productionOrder.model";
-import {
-  PURCHASE_ORDER_LIVE_STATUSES,
-  PurchaseOrderRepo,
-} from "../../models/purchaseOrder.model";
-import {
-  PurchaseRequestRepo,
-  type PurchaseRequestStatus,
-} from "../../models/purchaseRequest.model";
 import { logger } from "../../core/logger";
-import { userEmailsById } from "../../utils/shared";
-import { projectRabService } from "../project/projectRab.service";
-import { projectRabChangeService } from "../project/projectRabChange.service";
+import { userEmailsById } from "../auth";
+import {
+  getProjectRef,
+  projectRabChangeService,
+  projectRabService,
+} from "../project";
+import { countLivePurchasesForSpks } from "../purchasing";
 import {
   assertLabourStages,
   assertProcessChange,
   type ProcessLine,
 } from "./production.planner";
 import { doneByLineForItems, itemLabourLines, orderLineKey } from "./stageFlow";
-
-const LIVE_PURCHASE_REQUEST_STATUSES: PurchaseRequestStatus[] = ["draft", "submitted"];
 
 type ProcessRow = ProcessLine & {
   /** Present on stages new to the RAB. */
@@ -40,11 +33,7 @@ export class ProductionProcessService {
     userId: string,
     input: SaveProductionProcessInDto,
   ): Promise<void> {
-    const project = await ProjectRepo.model
-      .findById(projectId)
-      .select({ productionReleasedAt: 1 })
-      .lean()
-      .exec();
+    const project = await getProjectRef(projectId);
     if (!project) throw new Error("Project not found");
     if (!project.productionReleasedAt) {
       throw new Error("Release the project to production before setting up its process");
@@ -175,21 +164,7 @@ export class ProductionProcessService {
 /** A stage can't leave the RAB while a live SPP / PO still points at one of its SPKs. */
 async function assertNoPurchaseOnLine(name: string, orderIds: Types.ObjectId[]): Promise<void> {
   if (orderIds.length === 0) return;
-  const [requests, purchaseOrders] = await Promise.all([
-    PurchaseRequestRepo.model
-      .countDocuments({
-        productionOrderId: { $in: orderIds },
-        status: { $in: LIVE_PURCHASE_REQUEST_STATUSES },
-      })
-      .exec(),
-    PurchaseOrderRepo.model
-      .countDocuments({
-        "lines.productionOrderId": { $in: orderIds },
-        status: { $in: PURCHASE_ORDER_LIVE_STATUSES },
-      })
-      .exec(),
-  ]);
-  if (requests + purchaseOrders > 0) {
+  if ((await countLivePurchasesForSpks(orderIds.map(String))) > 0) {
     throw new Error(`${name} still has a live SPP / PO on its SPKs: cancel it before removing the stage`);
   }
 }

@@ -4,7 +4,7 @@ import {
   projectRabLineSchema,
   type ProjectRabLine,
 } from "./projectRab.model";
-import { purchaseChargeSchema, type PurchaseCharge } from "./purchaseCharge.model";
+import { purchaseChargeSchema, type PurchaseCharge } from "./charge.schema";
 import type {
   ProjectShopDrawingBoqLighting,
   ProjectShopDrawingBoqMain,

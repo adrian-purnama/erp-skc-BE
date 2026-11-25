@@ -1,6 +1,6 @@
 import { Schema, type Types } from "mongoose";
 import { auditedModel } from "../core/audit/auditedModel";
-import { purchaseChargeSchema, type PurchaseCharge } from "./purchaseCharge.model";
+import { purchaseChargeSchema, type PurchaseCharge } from "./charge.schema";
 
 export const VENDOR_INVOICE_STATUSES = ["draft", "posted", "voided"] as const;
 export type VendorInvoiceStatus = (typeof VENDOR_INVOICE_STATUSES)[number];
