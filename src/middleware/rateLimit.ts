@@ -21,6 +21,15 @@ export const otpSendRateLimit = rateLimit({
   handler: tooManyRequests,
 });
 
+/** Website quote form: each request sends an email. Per IP. */
+export const quoteRequestRateLimit = rateLimit({
+  windowMs: WINDOW_MS,
+  limit: 5,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  handler: tooManyRequests,
+});
+
 /** Login / register / reset: password and OTP guessing. Per IP. */
 export const authAttemptRateLimit = rateLimit({
   windowMs: WINDOW_MS,

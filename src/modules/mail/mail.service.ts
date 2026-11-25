@@ -280,6 +280,69 @@ class MailService {
     }
   }
 
+  /** Website "Request a quote" form, sent to the company inbox; replies go to the visitor. */
+  async sendQuoteRequest(
+    to: string,
+    input: {
+      name: string;
+      email: string;
+      company: string;
+      phone: string;
+      service: string;
+      location: string;
+      message: string;
+    },
+  ): Promise<boolean> {
+    const rows: [string, string][] = [
+      ["Name", input.name],
+      ["Email", input.email],
+      ["Company", input.company],
+      ["Phone", input.phone],
+      ["Service", input.service],
+      ["Project location", input.location],
+    ];
+    const table = rows
+      .filter(([, value]) => value)
+      .map(
+        ([label, value]) => `
+          <tr>
+            <td style="padding:6px 16px 6px 0;font-family:${sans};font-size:13px;color:${brand.muted};vertical-align:top;white-space:nowrap;">${label}</td>
+            <td style="padding:6px 0;font-family:${sans};font-size:15px;color:${brand.text};">${escapeHtml(value)}</td>
+          </tr>`,
+      )
+      .join("");
+    const message = input.message
+      ? paragraph(escapeHtml(input.message).replace(/\r?\n/g, "<br />"))
+      : "";
+    const subject = `Quote request from ${input.name}${input.company ? ` (${input.company})` : ""}`;
+    try {
+      await this.client.transactionalEmails.sendTransacEmail({
+        subject,
+        sender: this.sender(),
+        to: [{ email: to }],
+        replyTo: { email: input.email, name: input.name },
+        htmlContent: layout(
+          "New quote request",
+          `
+            <table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 16px;">${table}</table>
+            ${message}
+            ${note("Sent from the Request a quote form on the website. Reply to this email to answer the visitor.")}
+          `,
+          { preheader: subject, eyebrow: "Website" },
+        ),
+      });
+      logger.debug(`Quote request emailed to ${to}`, this.source, "sendQuoteRequest");
+      return true;
+    } catch (error) {
+      logger.error(
+        error instanceof Error ? error.message : String(error),
+        this.source,
+        "sendQuoteRequest",
+      );
+      return false;
+    }
+  }
+
   async sendResetPasswordLink(to: string, resetUrl: string): Promise<boolean> {
     const appName = escapeHtml(branding().appName);
     try {

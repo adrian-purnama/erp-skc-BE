@@ -30,6 +30,8 @@ import quotationRoutes from "./modules/quotation/quotation.route";
 import productionRoutes from "./modules/production/production.route";
 import purchasingRoutes from "./modules/purchasing/purchasing.route";
 import publicQuotationRoutes from "./modules/quotation/publicQuotation.route";
+import landingRoutes from "./modules/landing/landing.route";
+import publicLandingRoutes from "./modules/landing/publicLanding.route";
 import termOfPaymentRoutes from "./modules/termOfPayment/termOfPayment.route";
 import uomRoutes from "./modules/uom/uom.route";
 import vendorRoutes from "./modules/vendor/vendor.route";
@@ -57,7 +59,7 @@ function createApp(): Express {
   app.use(express.json());
   app.use(
     cors({
-      origin: env.frontendUrl,
+      origin: [env.frontendUrl, ...env.landingUrls],
     }),
   );
 
@@ -140,6 +142,18 @@ function createApp(): Express {
     "/public/quotation",
     publicQuotationRoutes,
     require.resolve("./modules/quotation/publicQuotation.route"),
+  );
+  mountRouter(
+    app,
+    "/landing",
+    landingRoutes,
+    require.resolve("./modules/landing/landing.route"),
+  );
+  mountRouter(
+    app,
+    "/public/landing",
+    publicLandingRoutes,
+    require.resolve("./modules/landing/publicLanding.route"),
   );
   mountRouter(
     app,

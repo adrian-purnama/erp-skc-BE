@@ -2,6 +2,7 @@ import { ADMIN_PERMS } from "../../modules/admin/admin.permissions";
 import { type PermissionDef } from "./types";
 import { SHRINK_DB_PERMS } from "../../modules/admin/shrinkDb/shrinkDb.permissions";
 import { CUSTOMER_PERMS } from "../../modules/customer/customer.permissions";
+import { LANDING_PERMS } from "../../modules/landing/landing.permissions";
 import { ITEM_MASTER_PERMS } from "../../modules/itemMaster/itemMaster.permissions";
 import { PRODUCTION_PERMS } from "../../modules/production/production.permissions";
 import { PROJECT_PERMS } from "../../modules/project/project.permissions";
@@ -16,6 +17,7 @@ const MODULE_PERMS: readonly PermissionDef[] = [
   ...SHRINK_DB_PERMS,
   ...CUSTOMER_PERMS,
   ...ITEM_MASTER_PERMS,
+  ...LANDING_PERMS,
   ...PROJECT_PERMS,
   ...PRODUCTION_PERMS,
   ...PURCHASING_PERMS,

@@ -18,6 +18,14 @@ function build(): string {
   return raw;
 }
 
+/** Comma-separated origins, e.g. "https://a.com,https://www.a.com". */
+function origins(name: string): string[] {
+  return (process.env[name] ?? "")
+    .split(",")
+    .map((value) => value.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+}
+
 function positiveInt(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw === "") return fallback;
@@ -45,6 +53,8 @@ export const env = {
   build: build(),
   mongodbUrl: required("MONGODB_URL"),
   frontendUrl: required("FRONTEND_URL"),
+  /** Public website origins allowed by CORS (quote form). Optional, comma-separated. */
+  landingUrls: origins("LANDING_URL"),
   /** Public base URL of this API (e.g. https://api.example.com); used for absolute asset links in emails. */
   publicApiUrl: process.env.PUBLIC_API_URL?.trim() || null,
   brevoApiKey: required("BREVO_API_KEY"),

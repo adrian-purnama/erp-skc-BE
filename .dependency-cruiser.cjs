@@ -16,7 +16,7 @@
 // email / phone / ownerContact sit in platform: notification sends through
 // email.service, and the contact sub-documents depend on nothing above them.
 const LAYERS = [
-  ["auth", "appConfig", "notification", "mail", "otp", "media", "email", "phone", "ownerContact"],
+  ["auth", "appConfig", "notification", "mail", "otp", "media", "email", "phone", "ownerContact", "landing"],
   ["uom", "itemMaster", "vendor", "customer", "termOfPayment"],
   ["project"],
   ["quotation", "purchasing"],
@@ -57,6 +57,7 @@ const OWNERS = {
   customer: { models: ["customer"], flat: ["customer"] },
   termOfPayment: { models: ["termOfPayment"], flat: ["termOfPayment"] },
   appConfig: { models: ["appconfig"], flat: [] },
+  landing: { models: ["landingCategory", "landingPost"], flat: ["landing"] },
   notification: { models: ["notification"], flat: ["notification"] },
   // Contact sub-document schemas, embedded by customer and vendor.
   email: { models: ["email"], flat: [], sharedWith: ["customer", "vendor"] },
