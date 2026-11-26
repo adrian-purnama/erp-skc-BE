@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { rabLineKey } from "../project/projectRab.planner";
+import { rabChargeFactor, rabLineKey } from "../project/projectRab.planner";
 import {
   boqLineKey,
   buildQuotationSections,
@@ -92,6 +92,25 @@ describe("buildSeedLines", () => {
     });
     assert.equal(lines[0]!.costUnitPrice, "440");
     assert.equal(lines[1]!.costUnitPrice, "660");
+  });
+
+  it("accepts a charge factor with more than 8 decimals", () => {
+    // 10,670,000 subtotal + 11% PPN + 200,000 ongkir → 1.12874414245548…
+    const chargeFactor = rabChargeFactor("10670000", [
+      { label: "PPN 11%", kind: "percent", rate: "11", amount: "0" },
+      { label: "Ongkir", kind: "fixed", rate: null, amount: "200000" },
+    ]);
+    const lines = buildSeedLines({
+      boqs: [
+        boq("f1", "i1", "Sign A", "2", [["m1", "u1", "3"], ["m2", "u2", "2"]]),
+      ],
+      rabLines,
+      markupPercent: "0",
+      chargeFactor,
+    });
+    assert.equal(lines[0]!.costUnitPrice, "451.49765699");
+    assert.equal(lines[0]!.unitPrice, "451");
+    assert.equal(lines[1]!.unitPrice, "677");
   });
 
   it("spreads shop drawing labour over that drawing's units", () => {

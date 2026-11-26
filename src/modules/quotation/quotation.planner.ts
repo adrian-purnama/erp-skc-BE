@@ -187,7 +187,9 @@ export function buildSeedLines(input: {
   /** RAB charges spread over every cost: (subtotal + charges) / subtotal. */
   chargeFactor?: string;
 }): PlannerLine[] {
-  const factor = parseQtyDecimal(input.chargeFactor ?? "1");
+  // A ratio, not a qty: (subtotal + charges) / subtotal often has far more
+  // than the 8 decimals parseQtyDecimal allows.
+  const factor = new Decimal(input.chargeFactor ?? "1");
   const priceByKey = new Map<string, string>();
   const labourByItem = new Map<string, Decimal>();
   for (const line of input.rabLines) {
