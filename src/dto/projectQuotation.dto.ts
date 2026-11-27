@@ -128,7 +128,18 @@ export type ProjectQuotationSummaryOutDto = {
   wonBy: ProjectRabUserRefOutDto | null;
 };
 
+/** An issued / superseded / won quotation compared with today's RAB. */
+export type QuotationRabRiskOutDto = {
+  currentRabRevision: number;
+  outdated: boolean;
+  costNow: string | null;
+  marginNow: string | null;
+  reasons: string[];
+};
+
 export type ProjectQuotationOutDto = ProjectQuotationSummaryOutDto & {
+  /** Null for drafts (issuing already requires the current RAB). */
+  rabRisk: QuotationRabRiskOutDto | null;
   subject: string;
   markupPercent: string;
   discountType: ProjectQuotationDiscountTypeDto;

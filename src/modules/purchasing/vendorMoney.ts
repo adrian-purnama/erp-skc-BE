@@ -1,5 +1,7 @@
 import Decimal from "decimal.js";
 import { Types } from "mongoose";
+import { als } from "../../core/audit/context";
+import { PurchasingSeqCounterModel } from "../../models/seqCounter.model";
 import { PurchaseOrderRepo, type PurchaseOrderInterface } from "../../models/purchaseOrder.model";
 import { PurchasePaymentRepo } from "../../models/purchasePayment.model";
 import {
@@ -80,6 +82,23 @@ export async function vendorMoney(order: LeanOrder, whatIf: MoneyWhatIf = {}) {
   };
 }
 
+/**
+ * Serialise money changes on one PO (payments, invoices). Call first inside a
+ * `withTx`: two transactions that both lock the same PO write-conflict, so the
+ * later one is retried and re-reads what the first committed. Without this,
+ * two payments checked at the same moment could each take the whole amount left.
+ */
+export async function lockPoMoney(orderId: Types.ObjectId | string): Promise<void> {
+  const session = als.getStore()?.session;
+  if (!session) throw new Error("lockPoMoney must run inside a transaction");
+  const scopeKey = `pomoney:${String(orderId)}`;
+  await PurchasingSeqCounterModel.updateOne(
+    { scopeKey },
+    { $inc: { nextSeq: 1 }, $setOnInsert: { scopeKey } },
+    { upsert: true, session },
+  ).exec();
+}
+
 /** Σ vendor payments approved or paid on the PO: money the vendor already has or will get. */
 async function committedToVendor(orderId: Types.ObjectId): Promise<Decimal> {
   const docs = await PurchasePaymentRepo.model
@@ -92,6 +111,7 @@ async function committedToVendor(orderId: Types.ObjectId): Promise<Decimal> {
 
 /** Refuse a change that would leave the vendor owed less than approved / paid payments. */
 export async function assertVendorNotOverpaid(order: LeanOrder, whatIf: MoneyWhatIf): Promise<void> {
+  await lockPoMoney(order._id);
   const { vendorOwed } = await vendorMoney(order, whatIf);
   const committed = await committedToVendor(order._id);
   if (committed.gt(vendorOwed)) {

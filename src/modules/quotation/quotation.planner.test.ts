@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { rabChargeFactor, rabLineKey } from "../project/projectRab.planner";
+import { rabCostFactor, rabLineKey } from "../project/projectRab.planner";
 import {
+  quotationRabRisk,
   boqLineKey,
   buildQuotationSections,
   buildSeedLines,
@@ -95,8 +96,8 @@ describe("buildSeedLines", () => {
   });
 
   it("accepts a charge factor with more than 8 decimals", () => {
-    // 10,670,000 subtotal + 11% PPN + 200,000 ongkir → 1.12874414245548…
-    const chargeFactor = rabChargeFactor("10670000", [
+    // 10,670,000 subtotal + 200,000 ongkir (PPN 11% is not a cost) → 1.01874414245548…
+    const chargeFactor = rabCostFactor("10670000", [
       { label: "PPN 11%", kind: "percent", rate: "11", amount: "0" },
       { label: "Ongkir", kind: "fixed", rate: null, amount: "200000" },
     ]);
@@ -108,9 +109,9 @@ describe("buildSeedLines", () => {
       markupPercent: "0",
       chargeFactor,
     });
-    assert.equal(lines[0]!.costUnitPrice, "451.49765699");
-    assert.equal(lines[0]!.unitPrice, "451");
-    assert.equal(lines[1]!.unitPrice, "677");
+    assert.equal(lines[0]!.costUnitPrice, "407.49765699");
+    assert.equal(lines[0]!.unitPrice, "407");
+    assert.equal(lines[1]!.unitPrice, "611");
   });
 
   it("spreads shop drawing labour over that drawing's units", () => {
@@ -380,5 +381,38 @@ describe("buildQuotationSections", () => {
 
   it("writes roman numerals", () => {
     assert.deepEqual([1, 4, 9, 14, 40].map(toRoman), ["I", "IV", "IX", "XIV", "XL"]);
+  });
+});
+
+describe("quotationRabRisk", () => {
+  it("has nothing to confirm on the current RAB with a positive margin", () => {
+    const risk = quotationRabRisk({ quotedRabRevision: 2, currentRabRevision: 2, taxBase: "1000", costNow: "800" });
+    assert.equal(risk.marginNow, "200");
+    assert.deepEqual(risk.reasons, []);
+  });
+
+  it("flags a quotation priced on an older RAB revision", () => {
+    const risk = quotationRabRisk({ quotedRabRevision: 0, currentRabRevision: 2, taxBase: "1000", costNow: "800" });
+    assert.equal(risk.outdated, true);
+    assert.equal(risk.reasons.length, 1);
+    assert.match(risk.reasons[0]!, /rev 0.*rev 2/);
+  });
+
+  it("flags a price below today's RAB cost (IAN GILA)", () => {
+    const risk = quotationRabRisk({
+      quotedRabRevision: 0,
+      currentRabRevision: 2,
+      taxBase: "278000000",
+      costNow: "283900000",
+    });
+    assert.equal(risk.marginNow, "-5900000");
+    assert.equal(risk.reasons.length, 2);
+    assert.match(risk.reasons[1]!, /loses Rp 5\.900\.000/);
+  });
+
+  it("has no margin while the RAB has no priced line", () => {
+    const risk = quotationRabRisk({ quotedRabRevision: 1, currentRabRevision: 1, taxBase: "1000", costNow: null });
+    assert.equal(risk.marginNow, null);
+    assert.deepEqual(risk.reasons, []);
   });
 });

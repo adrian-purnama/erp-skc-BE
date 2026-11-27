@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   checkPaymentAmount,
   priceStage,
+  shortfallBeforeCommit,
   sumAmounts,
 } from "./purchasePayment.planner";
 
@@ -56,5 +57,20 @@ describe("checkPaymentAmount", () => {
 describe("sumAmounts", () => {
   it("adds integer rupiah", () => {
     assert.equal(sumAmounts([{ amount: "100" }, { amount: "250" }]), "350");
+  });
+});
+
+describe("shortfallBeforeCommit", () => {
+  it("passes while approved + paid payments fit what is owed", () => {
+    assert.equal(shortfallBeforeCommit({ amount: "40", owed: "100", committed: [{ amount: "60" }] }), null);
+  });
+
+  it("refuses a full payment after the invoice came in below the PO price", () => {
+    // Full Rp 100 submitted on the PO estimate, invoice then posted at Rp 90.
+    assert.equal(shortfallBeforeCommit({ amount: "100", owed: "90", committed: [] }), "90");
+  });
+
+  it("reports 0 left when other payments already took everything", () => {
+    assert.equal(shortfallBeforeCommit({ amount: "10", owed: "100", committed: [{ amount: "120" }] }), "0");
   });
 });

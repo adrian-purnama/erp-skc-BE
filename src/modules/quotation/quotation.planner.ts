@@ -449,3 +449,56 @@ export function buildQuotationSections(
       ),
     }));
 }
+
+/** "5900000" → "5.900.000" for messages. */
+function idr(amount: string): string {
+  return amount.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
+
+/** Why winning / re-issuing this quotation needs an explicit OK. */
+export type QuotationRabRisk = {
+  currentRabRevision: number;
+  /** Priced from an older RAB revision than the current one. */
+  outdated: boolean;
+  /** Current RAB cost (excl. PPN); null when the RAB has no priced line. */
+  costNow: string | null;
+  /** Quotation price before PPN − current RAB cost. */
+  marginNow: string | null;
+  /** Plain sentences; empty when there is nothing to confirm. */
+  reasons: string[];
+};
+
+/**
+ * Compare an issued quotation with today's RAB: a quotation priced on an old
+ * revision, or one that now loses money, must not be won or re-issued silently.
+ */
+export function quotationRabRisk(input: {
+  quotedRabRevision: number;
+  currentRabRevision: number;
+  taxBase: string;
+  costNow: string | null;
+}): QuotationRabRisk {
+  const outdated = input.quotedRabRevision !== input.currentRabRevision;
+  const marginNow =
+    input.costNow === null
+      ? null
+      : rupiah(parseQtyDecimal(input.taxBase).sub(new Decimal(input.costNow)));
+  const reasons: string[] = [];
+  if (outdated) {
+    reasons.push(
+      `Priced from RAB rev ${input.quotedRabRevision}; the RAB is now at rev ${input.currentRabRevision}.`,
+    );
+  }
+  if (marginNow !== null && new Decimal(marginNow).lt(0)) {
+    reasons.push(
+      `At today's RAB cost (Rp ${idr(input.costNow!)}) this price loses Rp ${idr(new Decimal(marginNow).neg().toFixed(0))} before PPN.`,
+    );
+  }
+  return {
+    currentRabRevision: input.currentRabRevision,
+    outdated,
+    costNow: input.costNow,
+    marginNow,
+    reasons,
+  };
+}

@@ -25,7 +25,7 @@ async function realizedCosts(projectIds: string[]): Promise<Array<{ projectId: s
       purchaseOrderId: { $in: pos.map((po) => po._id) },
       status: "posted",
     })
-    .select({ lines: 1, subtotal: 1, total: 1 })
+    .select({ lines: 1, subtotal: 1, charges: 1 })
     .lean()
     .exec();
   return realizations.flatMap((r) =>
@@ -36,7 +36,7 @@ async function realizedCosts(projectIds: string[]): Promise<Array<{ projectId: s
         unitPrice: l.unitPrice,
       })),
       subtotal: r.subtotal,
-      total: r.total,
+      charges: r.charges ?? [],
     }),
   );
 }

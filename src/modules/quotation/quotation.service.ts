@@ -28,6 +28,7 @@ import {
   fileVersionsById,
   filterCountedBoqs,
   getProjectRab,
+  rabMoney,
   getProjectRef,
   getShopDrawingItemRefs,
   listLiveShopDrawingItems,
@@ -38,7 +39,7 @@ import {
   markProjectWon,
   projectRabChangeService,
   type ProjectRefDto,
-  rabChargeFactor,
+  rabCostFactor,
   sumLineTotals,
 } from "../project";
 import { logger } from "../../core/logger";
@@ -58,6 +59,7 @@ import {
   buildSeedLines,
   computeTotals,
   quotationCharges,
+  quotationRabRisk,
   lineTotal,
   quotationNumber,
   repriceLines,
@@ -89,6 +91,16 @@ export class QuotationFullNameRequiredError extends Error {
     super(
       "Full name is required to issue. You can change it in your profile (top right).",
     );
+  }
+}
+
+/**
+ * Winning / re-issuing a quotation priced on an old RAB revision, or one that
+ * loses money at today's RAB cost, needs an explicit OK (`acknowledgeRisk`).
+ */
+export class QuotationRabRiskError extends Error {
+  constructor(readonly reasons: string[]) {
+    super(`${reasons.join(" ")} Confirm to continue.`);
   }
 }
 
@@ -271,7 +283,7 @@ export class QuotationService {
       markupPercent,
       previous: base?.lines.map(toPlannerLine),
       plan: await loadRabUomPlan(seedBoqs),
-      chargeFactor: rabChargeFactor(
+      chargeFactor: rabCostFactor(
         sumLineTotals(gate.rab.lines),
         gate.rab.charges ?? [],
       ),
@@ -391,7 +403,7 @@ export class QuotationService {
       markupPercent: doc.markupPercent,
       previous: doc.lines.map(toPlannerLine),
       plan: await loadRabUomPlan(seedBoqs),
-      chargeFactor: rabChargeFactor(
+      chargeFactor: rabCostFactor(
         sumLineTotals(gate.rab.lines),
         gate.rab.charges ?? [],
       ),
@@ -492,6 +504,7 @@ export class QuotationService {
     id: string,
     userId: string,
     validUntil: string,
+    acknowledgeRisk = false,
   ): Promise<ProjectQuotationOutDto> {
     const doc = await this.findById(id);
     if (!doc) throw new Error("Quotation not found");
@@ -499,6 +512,7 @@ export class QuotationService {
       throw new Error("Only a superseded revision can be re-issued");
     }
     await this.assertNotWon(String(doc.projectId));
+    await this.assertRabRiskAcknowledged(doc, acknowledgeRisk);
     if (!Types.ObjectId.isValid(userId)) throw new Error("Invalid user id");
     if (validUntil < jakartaYmdString()) {
       throw new Error("“Valid until” is in the past");
@@ -539,7 +553,11 @@ export class QuotationService {
    * The client accepted this issued revision. Quotations for the project are
    * locked from here on (no new revision, no re-issue) and the project is a win.
    */
-  async markWon(id: string, userId: string): Promise<ProjectQuotationOutDto> {
+  async markWon(
+    id: string,
+    userId: string,
+    acknowledgeRisk = false,
+  ): Promise<ProjectQuotationOutDto> {
     const doc = await this.findById(id);
     if (!doc) throw new Error("Quotation not found");
     if (doc.status !== "issued") {
@@ -547,6 +565,7 @@ export class QuotationService {
     }
     if (!Types.ObjectId.isValid(userId)) throw new Error("Invalid user id");
     await this.assertNotWon(String(doc.projectId));
+    await this.assertRabRiskAcknowledged(doc, acknowledgeRisk);
 
     const won = await withTx(async () => {
       const updated = (await ProjectQuotationRepo.findOneAndUpdate(
@@ -583,6 +602,36 @@ export class QuotationService {
     )) as LeanQuotation | null;
     if (!reverted) throw new Error("Failed to undo won");
     return this.toOut(reverted);
+  }
+
+  /** This quotation against today's RAB (revision and cost excl. PPN). */
+  private async rabRisk(doc: LeanQuotation) {
+    const projectId = String(doc.projectId);
+    const [rab, currentRabRevision] = await Promise.all([
+      getProjectRab(projectId),
+      projectRabChangeService.latestCommittedRevision(projectId),
+    ]);
+    const totals = computeTotals({
+      lines: doc.lines,
+      discountType: doc.discountType,
+      discountValue: doc.discountValue,
+      charges: quotationCharges(doc),
+    });
+    return quotationRabRisk({
+      quotedRabRevision: doc.rabRevision,
+      currentRabRevision,
+      taxBase: totals.taxBase,
+      costNow: rab ? rabMoney(rab.lines, rab.charges ?? []).cost : null,
+    });
+  }
+
+  private async assertRabRiskAcknowledged(
+    doc: LeanQuotation,
+    acknowledged: boolean,
+  ): Promise<void> {
+    if (acknowledged) return;
+    const { reasons } = await this.rabRisk(doc);
+    if (reasons.length > 0) throw new QuotationRabRiskError(reasons);
   }
 
   private async assertNotWon(projectId: string): Promise<void> {
@@ -1038,6 +1087,7 @@ export class QuotationService {
 
     return {
       ...this.toSummary(doc, names),
+      rabRisk: doc.status === "draft" ? null : await this.rabRisk(doc),
       subject: doc.subject ?? "",
       markupPercent: doc.markupPercent,
       discountType: doc.discountType,

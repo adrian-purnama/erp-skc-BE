@@ -1,8 +1,8 @@
 import Decimal from "decimal.js";
 import { formatDecimal, parseQtyDecimal, percentOf } from "../../utils/decimal";
-import { priceStoredCharges } from "../../utils/charges";
 import type { PurchaseCharge } from "../../models/charge.schema";
-import { computeLineTotal, sumGrandTotal } from "./projectRab.planner";
+import { rabMoney } from "./projectRab.planner";
+import { chargesByCategory, type ChargeCategory } from "../../utils/charges";
 import type { ProjectSummaryOutDto } from "../../dto/project.dto";
 
 /** A won / issued quotation with its money computed by the quotation module. */
@@ -59,16 +59,19 @@ function sum(values: string[]): Decimal {
 }
 
 /**
- * Splits a posted realization's total across projects by line value, so
- * charges (tax, shipping) follow the lines they were paid with.
+ * Splits a posted realization's cost across projects by line value, so
+ * charges (shipping, others) follow the lines they were paid with. The cost
+ * is the subtotal plus non-tax charges: PPN is not a project cost, the same
+ * rule as the RAB cost (`rabMoney`).
  */
 export function allocateRealizationCost(input: {
   lines: Array<{ projectId: string | null; qty: string; unitPrice: string }>;
   subtotal: string;
-  total: string;
+  charges: Array<{ category?: ChargeCategory | null; label: string; amount: string }>;
 }): Array<{ projectId: string; amount: string }> {
   const subtotal = parseQtyDecimal(input.subtotal || "0");
-  const total = parseQtyDecimal(input.total || "0");
+  const byCategory = chargesByCategory(input.charges);
+  const total = subtotal.add(byCategory.delivery).add(byCategory.other);
   const byProject = new Map<string, Decimal>();
   for (const line of input.lines) {
     if (!line.projectId) continue;
@@ -151,18 +154,11 @@ export function projectDeadline(input: {
 }
 
 /**
- * RAB budget compared with the contract before tax: priced lines plus the
- * additional costs that are not tax (delivery, others). Null when no line is priced.
+ * RAB budget compared with the contract before tax: the RAB cost (lines plus
+ * non-tax charges, see `rabMoney`). Null when no line is priced.
  */
 export function rabBudget(rab: SummaryRab): string | null {
-  const subtotal = sumGrandTotal(
-    rab.lines.map((l) => computeLineTotal(l.totalQty, l.unitPrice)),
-  );
-  if (subtotal === null) return null;
-  const extra = priceStoredCharges(subtotal, rab.charges ?? [])
-    .charges.filter((c) => c.category !== "tax")
-    .reduce((acc, c) => acc.add(c.amount), new Decimal(0));
-  return formatDecimal(parseQtyDecimal(subtotal).add(extra));
+  return rabMoney(rab.lines, rab.charges ?? []).cost;
 }
 
 export function buildProjectSummary(input: SummaryInput): ProjectSummaryOutDto {

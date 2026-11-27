@@ -60,6 +60,7 @@ function sample(overrides: Partial<ProjectQuotationOutDto> = {}): ProjectQuotati
     quotationNumber: "QUO/PRJ-001/R2",
     status: "issued",
     rabRevision: 1,
+    rabRisk: null,
     grandTotal: "2498",
     createdAt: null,
     createdBy: null,

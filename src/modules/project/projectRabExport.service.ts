@@ -432,7 +432,7 @@ export class ProjectRabExportService {
               ? num(line.unitPrice)
               : null;
           sheet.getCell(r, 11).value = {
-            formula: `${toLetter(8)}${r}*${toLetter(10)}${r}`,
+            formula: `ROUND(${toLetter(8)}${r}*${toLetter(10)}${r},0)`,
           };
           sheet.getCell(r, 12).value = sanitizeExcelText(
             line.keterangan || "—",
@@ -601,7 +601,7 @@ export class ProjectRabExportService {
               ? num(line.unitPrice)
               : null;
           rab.getCell(r, 6).value = {
-            formula: `C${r}*E${r}`,
+            formula: `ROUND(C${r}*E${r},0)`,
           };
           rab.getCell(r, 7).value = sanitizeExcelText(line.keterangan);
           for (let c = 1; c <= 7; c += 1) {
@@ -932,7 +932,7 @@ export class ProjectRabExportService {
           sheet.getCell(er, 9).value = num(line.totalQty);
           sheet.getCell(er, 10).value =
             unitPrice != null && unitPrice !== "" ? num(unitPrice) : null;
-          sheet.getCell(er, 11).value = { formula: `I${er}*J${er}` };
+          sheet.getCell(er, 11).value = { formula: `ROUND(I${er}*J${er},0)` };
           for (let c = 1; c <= 11; c += 1) {
             sheet.getCell(er, c).font = { name: FONT, size: 10 };
             sheet.getCell(er, c).border = THIN_BORDER;
@@ -1007,7 +1007,7 @@ export class ProjectRabExportService {
         line.unitPrice != null && line.unitPrice !== ""
           ? num(line.unitPrice)
           : null;
-      sheet.getCell(er, 11).value = { formula: `I${er}*J${er}` };
+      sheet.getCell(er, 11).value = { formula: `ROUND(I${er}*J${er},0)` };
       for (let c = 1; c <= 11; c += 1) {
         sheet.getCell(er, c).font = { name: FONT, size: 10 };
         sheet.getCell(er, c).border = THIN_BORDER;

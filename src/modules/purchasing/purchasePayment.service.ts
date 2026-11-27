@@ -1,6 +1,6 @@
 import Decimal from "decimal.js";
 import { Types } from "mongoose";
-import { withTx } from "../../core/audit/context";
+import { als, withTx } from "../../core/audit/context";
 import { deleteFileIfExists, findFile, openDownload, uploadFile } from "../../core/gridfs";
 import { logger } from "../../core/logger";
 import type { ProjectRabUserRefOutDto } from "../../dto/projectRab.dto";
@@ -26,6 +26,7 @@ import {
   type PaymentApproval,
   type PurchasePaymentInterface,
   type PurchasePaymentKind,
+  type PurchasePaymentStatus,
 } from "../../models/purchasePayment.model";
 import {
   PurchaseRealizationRepo,
@@ -38,8 +39,8 @@ import { jakartaYmdString } from "../../utils/time";
 import { numberingPeriod } from "../../utils/numbering";
 import { APPROVE_PERM, PURCHASING_BUCKET, type PoActor } from "./purchaseOrder.service";
 import { userHasPermission } from "../../core/permissions/resolve.service";
-import { checkPaymentAmount, priceStage, sumAmounts } from "./purchasePayment.planner";
-import { vendorMoney } from "./vendorMoney";
+import { checkPaymentAmount, priceStage, shortfallBeforeCommit, sumAmounts } from "./purchasePayment.planner";
+import { lockPoMoney, vendorMoney } from "./vendorMoney";
 import { notifyPaymentEvent } from "./paymentNotify";
 import { getVendorNames, getVendorRef } from "../vendor";
 
@@ -90,10 +91,11 @@ function iso(d: Date | null | undefined): string | null {
 async function allocateNumber(): Promise<string> {
   const parts = numberingPeriod();
   const scopeKey = `pay:${parts.scopeKey}`;
+  // In the caller's transaction, so an aborted or retried save leaves no gap.
   const counter = await PurchasingSeqCounterModel.findOneAndUpdate(
     { scopeKey },
     { $inc: { nextSeq: 1 }, $setOnInsert: { scopeKey } },
-    { upsert: true, returnDocument: "after" },
+    { upsert: true, returnDocument: "after", session: als.getStore()?.session },
   ).exec();
   if (!counter || counter.nextSeq < 1) throw new Error("Failed to allocate payment number");
   return `PAY/${parts.roman}/${parts.year}/${String(counter.nextSeq).padStart(4, "0")}`;
@@ -254,6 +256,35 @@ async function livePayments(orderId: Types.ObjectId, exceptId?: Types.ObjectId):
   return (await PurchasePaymentRepo.model.find(query).lean().exec()) as LeanPayment[];
 }
 
+/** Statuses whose money the payee already has or is sure to get. */
+const COMMITTED_STATUSES: PurchasePaymentStatus[] = ["approved", "paid"];
+
+/**
+ * Before a payment is approved (either level) or paid: it, plus the payee's
+ * other approved / paid payments, must still fit what the payee is owed now.
+ * What is owed can drop after submit (an invoice posted below the PO price, a
+ * GR or NR voided), so the submit check alone is not enough.
+ */
+async function assertStillOwed(doc: LeanPayment): Promise<void> {
+  await lockPoMoney(doc.purchaseOrderId);
+  const order = await requireOrder(doc.purchaseOrderId);
+  const payees = await payeesOf(order);
+  const payee =
+    doc.kind === "vendor"
+      ? payees[0]!
+      : payees.find((p) => p.kind === "reimburse" && p.payeeUserId === String(doc.payeeUserId));
+  const committed = (await livePayments(order._id, doc._id)).filter(
+    (p) => COMMITTED_STATUSES.includes(p.status) && (payee ? samePayee(p, payee) : false),
+  );
+  const owed = payee?.owed ?? "0";
+  const left = shortfallBeforeCommit({ amount: doc.amount, owed, committed });
+  if (left !== null) {
+    throw new Error(
+      `${doc.number} is Rp ${doc.amount}, but only Rp ${left} is left to pay ${doc.payeeName} on ${order.number} now (owed Rp ${owed}). Ask the requester to edit or cancel it`,
+    );
+  }
+}
+
 /** A payment checked against what its payee is owed on the PO; returns the fields to store. */
 async function checkedFields(
   kind: PurchasePaymentKind,
@@ -261,6 +292,7 @@ async function checkedFields(
   exceptId?: Types.ObjectId,
 ) {
   const order = await requireOrder(input.purchaseOrderId);
+  await lockPoMoney(order._id);
   assertPayableOrder(order);
   const payees = await payeesOf(order);
   const payee =
@@ -537,11 +569,14 @@ export class PurchasePaymentService {
     const doc = await requirePayment(id);
     const level = await assertApprover(doc, doc.status === "pending_approval", actor.userId, notApprovers(doc));
     const step = await approvalStep(level, actor.userId);
-    const updated = await PurchasePaymentRepo.findOneAndUpdate(
-      { _id: doc._id, status: "pending_approval", approvalLevel: level },
-      { $set: { ...step, ...(level === 2 ? { status: "approved" } : {}) } },
-    );
-    if (!updated) throw new Error("Payment changed meanwhile; reload it");
+    await withTx(async () => {
+      await assertStillOwed(doc);
+      const updated = await PurchasePaymentRepo.findOneAndUpdate(
+        { _id: doc._id, status: "pending_approval", approvalLevel: level },
+        { $set: { ...step, ...(level === 2 ? { status: "approved" } : {}) } },
+      );
+      if (!updated) throw new Error("Payment changed meanwhile; reload it");
+    });
     await notifyPaymentEvent({ kind: "approved_step", paymentId: id, actorUserId: actor.userId });
     return this.get(id, actor);
   }
@@ -666,20 +701,23 @@ export class PurchasePaymentService {
     if (doc.status !== "approved") throw new Error("Only an approved payment can be paid");
     if (doc.proofs.length === 0) throw new Error("Add the transfer slip or receipt before marking it paid");
     if (input.paidDate > jakartaYmdString()) throw new Error("paidDate cannot be in the future");
-    const updated = await PurchasePaymentRepo.findOneAndUpdate(
-      { _id: doc._id, status: "approved" },
-      {
-        $set: {
-          status: "paid",
-          paidAt: new Date(),
-          paidBy: new Types.ObjectId(actor.userId),
-          paidDate: input.paidDate,
-          method: input.method,
-          reference: input.reference,
+    await withTx(async () => {
+      await assertStillOwed(doc);
+      const updated = await PurchasePaymentRepo.findOneAndUpdate(
+        { _id: doc._id, status: "approved" },
+        {
+          $set: {
+            status: "paid",
+            paidAt: new Date(),
+            paidBy: new Types.ObjectId(actor.userId),
+            paidDate: input.paidDate,
+            method: input.method,
+            reference: input.reference,
+          },
         },
-      },
-    );
-    if (!updated) throw new Error("Payment changed meanwhile; reload it");
+      );
+      if (!updated) throw new Error("Payment changed meanwhile; reload it");
+    });
     await notifyPaymentEvent({ kind: "paid", paymentId: id, actorUserId: actor.userId });
     return this.get(id, actor);
   }

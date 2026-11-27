@@ -172,10 +172,19 @@ export function parsePatchProjectQuotationLineDto(
 }
 
 /** Re-issue needs a fresh Valid until: the client link expires on that date. */
-export function parseReissueQuotationDto(body: unknown): { validUntil: string } {
+export function parseReissueQuotationDto(body: unknown): {
+  validUntil: string;
+  acknowledgeRisk: boolean;
+} {
   const row = asRecord(body);
   if (typeof row.validUntil !== "string" || !YMD.test(row.validUntil)) {
     throw new Error("validUntil must be YYYY-MM-DD");
   }
-  return { validUntil: row.validUntil };
+  return { validUntil: row.validUntil, acknowledgeRisk: row.acknowledgeRisk === true };
+}
+
+/** Mark won: `acknowledgeRisk` confirms an outdated RAB / negative margin. */
+export function parseMarkWonQuotationDto(body: unknown): { acknowledgeRisk: boolean } {
+  const row = body === undefined || body === null ? {} : asRecord(body);
+  return { acknowledgeRisk: row.acknowledgeRisk === true };
 }

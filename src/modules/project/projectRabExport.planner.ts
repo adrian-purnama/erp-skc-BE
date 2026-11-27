@@ -2,6 +2,7 @@
 
 import type { PurchaseCharge } from "../../models/charge.schema";
 import { priceStoredCharges } from "../../utils/charges";
+import { computeLineTotal } from "./projectRab.planner";
 import { safeFilenamePart, formatExportYmd, toRoman, toLetter } from "../../utils/document/text";
 
 export type ExportLineKind = "material" | "labour";
@@ -40,11 +41,13 @@ export function missingPriceLines(lines: ExportLineIn[]): ExportLineIn[] {
   );
 }
 
+/** Whole-rupiah line amount, the same rounding as the RAB page (`computeLineTotal`). */
 export function lineAmount(line: ExportLineIn): number {
-  const qty = Number(line.totalQty);
-  const price = Number(line.unitPrice ?? "");
-  if (!Number.isFinite(qty) || !Number.isFinite(price)) return 0;
-  return Math.round(qty * price);
+  try {
+    return Number(computeLineTotal(line.totalQty, line.unitPrice) ?? "0");
+  } catch {
+    return 0;
+  }
 }
 
 export function sumLineAmounts(lines: ExportLineIn[]): number {

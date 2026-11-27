@@ -56,3 +56,17 @@ export function checkPaymentAmount(input: {
 export function sumAmounts(rows: Array<{ amount: string }>): string {
   return rupiah(rows.reduce((sum, r) => sum.plus(r.amount || 0), new Decimal(0)));
 }
+
+/**
+ * Before approving or paying: this payment plus the payee's other approved /
+ * paid payments must fit what the payee is owed now. Returns what is left for
+ * this payment (never below 0) when it does not fit, else null.
+ */
+export function shortfallBeforeCommit(input: {
+  amount: string;
+  owed: string;
+  committed: Array<{ amount: string }>;
+}): string | null {
+  const left = new Decimal(input.owed).minus(sumAmounts(input.committed));
+  return new Decimal(input.amount).gt(left) ? Decimal.max(left, 0).toFixed(0) : null;
+}

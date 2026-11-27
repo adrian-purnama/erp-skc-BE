@@ -12,7 +12,8 @@ import {
   type RabUomPlan,
   unitPriceFromLineTotal,
   rabRowsForPurchasing,
-  rabChargeFactor,
+  rabCostFactor,
+  rabMoney,
   rabTotalsWithCharges,
 } from "./projectRab.planner";
 
@@ -285,16 +286,30 @@ describe("RAB charges", () => {
     assert.equal(out.chargesTotal, "210");
     assert.equal(out.charges[0]!.amount, "110");
     assert.equal(out.grandTotal, "1210");
+    assert.equal(out.taxTotal, "110");
+    assert.equal(out.cost, "1100");
   });
 
   it("keeps grand total null while nothing is priced", () => {
     assert.equal(rabTotalsWithCharges(null, charges).grandTotal, null);
   });
 
-  it("spreads charges as a cost factor", () => {
-    assert.equal(rabChargeFactor("1000", charges), "1.21");
-    assert.equal(rabChargeFactor("1000", []), "1");
-    assert.equal(rabChargeFactor("0", charges), "1");
+  it("spreads non-tax charges as a cost factor (PPN is not a cost)", () => {
+    assert.equal(rabCostFactor("1000", charges), "1.1");
+    assert.equal(rabCostFactor("1000", []), "1");
+    assert.equal(rabCostFactor("0", charges), "1");
+  });
+
+  it("rounds each line to whole rupiah before summing", () => {
+    const lines = [
+      { totalQty: "3", unitPrice: "1000.333" },
+      { totalQty: "7", unitPrice: "2500.5" },
+    ];
+    const out = rabMoney(lines, charges);
+    // 3001 + 17504 (17503.5 half up)
+    assert.equal(out.subtotal, "20505");
+    assert.equal(out.grandTotal, "22861");
+    assert.equal(out.cost, "20605");
   });
 });
 

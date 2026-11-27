@@ -6,6 +6,7 @@ import { parseRouteId } from "../../validation/parseParam";
 import { queryString } from "../../validation/query";
 import {
   parsePatchProjectQuotationLineDto,
+  parseMarkWonQuotationDto,
   parseQuotationLineKey,
   parseReissueQuotationDto,
   parseUpdateProjectQuotationDto,
@@ -13,8 +14,18 @@ import {
 import { quotationExportService } from "./quotation.export";
 import {
   QuotationFullNameRequiredError,
+  QuotationRabRiskError,
   quotationService,
 } from "./quotation.service";
+
+/** 409 the client answers by asking the user and resending with `acknowledgeRisk`. */
+function rabRiskConflict(res: Response, error: QuotationRabRiskError) {
+  return res.status(409).json({
+    success: false,
+    message: error.message,
+    data: { code: "RAB_RISK", reasons: error.reasons },
+  } satisfies ApiResponseDto<{ code: "RAB_RISK"; reasons: string[] }>);
+}
 
 function userId(req: Request): string {
   if (!req.user?._id) throw new Error("Unauthorized");
@@ -92,18 +103,30 @@ export class QuotationController {
       "Quotation re-issued",
       "Failed to re-issue quotation",
       () =>
-        quotationService.reissue(
-          parseRouteId(req.params.id),
-          userId(req),
-          parseReissueQuotationDto(req.body).validUntil,
-        ),
+        {
+          const body = parseReissueQuotationDto(req.body);
+          return quotationService.reissue(
+            parseRouteId(req.params.id),
+            userId(req),
+            body.validUntil,
+            body.acknowledgeRisk,
+          );
+        },
     );
   };
 
   markWon = async (req: Request, res: Response) => {
-    return handle(res, "Failed to mark quotation as won", "Quotation marked as won", () =>
-      quotationService.markWon(parseRouteId(req.params.id), userId(req)),
-    );
+    try {
+      const { acknowledgeRisk } = parseMarkWonQuotationDto(req.body);
+      return ok(
+        res,
+        "Quotation marked as won",
+        await quotationService.markWon(parseRouteId(req.params.id), userId(req), acknowledgeRisk),
+      );
+    } catch (error) {
+      if (error instanceof QuotationRabRiskError) return rabRiskConflict(res, error);
+      return fail(res, error, "Failed to mark quotation as won");
+    }
   };
 
   unmarkWon = async (req: Request, res: Response) => {
@@ -122,6 +145,7 @@ export class QuotationController {
     try {
       return ok(res, message, await fn());
     } catch (error) {
+      if (error instanceof QuotationRabRiskError) return rabRiskConflict(res, error);
       if (error instanceof QuotationFullNameRequiredError) {
         // Lets the client prompt for a full name instead of a plain toast.
         return res.status(400).json({

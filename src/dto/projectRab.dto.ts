@@ -198,6 +198,10 @@ export type ProjectRabOutDto = {
   chargesTotal: string;
   /** subtotal + chargesTotal. */
   grandTotal: string | null;
+  /** Σ tax charges (PPN): part of the grand total, not of the cost. */
+  taxTotal: string;
+  /** Project cost: grandTotal − taxTotal. The budget the dashboard and quotation use. */
+  cost: string | null;
 };
 
 export type SaveProjectRabChargesInDto = {

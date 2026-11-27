@@ -5,10 +5,9 @@ import type { ProjectRabChangeBoqSnapshot } from "../../models/projectRabChange.
 import {
   aggregateBoqLinesToRab,
   collectSourceLines,
-  computeLineTotal,
   isLabourLine,
   mergeRabPricing,
-  sumGrandTotal,
+  rabLinesSubtotal,
   type BoqLike,
   type RabUomPlan,
 } from "./projectRab.planner";
@@ -379,9 +378,7 @@ export function diffBoqFiles(
 
 /** Sum line totals (qty × price); null if nothing priced. */
 export function sumLineTotals(lines: ProjectRabLine[]): string | null {
-  return sumGrandTotal(
-    lines.map((line) => computeLineTotal(line.totalQty, line.unitPrice)),
-  );
+  return rabLinesSubtotal(lines);
 }
 
 /** One shop drawing item that already has live SPKs, and what the change does to it. */

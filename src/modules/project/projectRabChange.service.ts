@@ -54,6 +54,7 @@ import {
   isLabourLine,
   labourExecutor,
   labourRole,
+  rabMoney,
   rabQtyWaste,
   rabTotalsWithCharges,
 } from "./projectRab.planner";
@@ -346,6 +347,9 @@ export class ProjectRabChangeService {
       oldest[0]?.baselineRabLines?.length
         ? oldest[0].baselineRabLines
         : ((rab.lines ?? []) as ProjectRabLine[]);
+    const baselineCharges = oldest[0]?.baselineRabLines?.length
+      ? (oldest[0].baselineCharges ?? [])
+      : (rab.charges ?? []);
 
     const itemIds = [
       ...new Set(baselineLines.map((l) => String(l.materialItemId))),
@@ -386,7 +390,7 @@ export class ProjectRabChangeService {
     return {
       lockedAt: rab.lockedAt.toISOString(),
       lockedBy,
-      grandTotal: sumLineTotals(baselineLines),
+      grandTotal: rabMoney(baselineLines, baselineCharges).grandTotal,
       lines,
     };
   }

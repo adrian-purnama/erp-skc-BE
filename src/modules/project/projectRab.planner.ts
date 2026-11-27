@@ -296,7 +296,11 @@ export function mergeRabPricing(
   });
 }
 
-/** After lock: only brand-new material×UOM keys become append candidates. */export function computeLineTotal(
+/**
+ * RAB line total in whole rupiah (half up). Every RAB total, the export and the
+ * quotation cost are built from this, so they add up to the same rupiah.
+ */
+export function computeLineTotal(
   totalQty: string,
   unitPrice: string | null | undefined,
 ): string | null {
@@ -305,7 +309,7 @@ export function mergeRabPricing(
   }
   const qty = parseQtyDecimal(totalQty);
   const price = parseQtyDecimal(unitPrice);
-  return formatDecimal(qty.mul(price));
+  return qty.mul(price).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toFixed(0);
 }
 
 /** Unit price that makes `totalQty × price` equal the typed line total. */
@@ -331,9 +335,21 @@ export function sumGrandTotal(lineTotals: Array<string | null>): string | null {
   return any ? formatDecimal(sum) : null;
 }
 
+/** Σ priced RAB line totals; null while no line is priced. */
+export function rabLinesSubtotal(
+  lines: Array<{ totalQty: string; unitPrice?: string | null }>,
+): string | null {
+  return sumGrandTotal(lines.map((l) => computeLineTotal(l.totalQty, l.unitPrice)));
+}
+
 /**
- * RAB totals with its extra charges: percent rows are priced on the line
- * subtotal; grandTotal is null while no line is priced.
+ * The one place RAB money is calculated (RAB page, RAB changes, project
+ * summary, quotation cost, xlsx export). Percent charges are priced on the
+ * line subtotal.
+ * - `grandTotal`: lines + every charge, the RAB document total.
+ * - `cost`: lines + every charge except tax. PPN on purchases is credited
+ *   against PPN charged to the customer, so it is not a project cost.
+ * Both are null while no line is priced.
  */
 export function rabTotalsWithCharges(
   subtotal: string | null,
@@ -342,33 +358,47 @@ export function rabTotalsWithCharges(
   subtotal: string | null;
   charges: ReturnType<typeof priceStoredCharges>["charges"];
   chargesTotal: string;
+  taxTotal: string;
   grandTotal: string | null;
+  cost: string | null;
 } {
   const priced = priceStoredCharges(subtotal ?? "0", charges);
+  const base = subtotal === null ? null : parseQtyDecimal(subtotal);
   return {
     subtotal,
     charges: priced.charges,
     chargesTotal: priced.chargesTotal,
-    grandTotal:
-      subtotal === null
+    taxTotal: priced.byCategory.tax,
+    grandTotal: base === null ? null : formatDecimal(base.add(priced.chargesTotal)),
+    cost:
+      base === null
         ? null
-        : formatDecimal(parseQtyDecimal(subtotal).add(priced.chargesTotal)),
+        : formatDecimal(base.add(priced.chargesTotal).sub(priced.byCategory.tax)),
   };
 }
 
+/** `rabTotalsWithCharges` straight from the RAB lines. */
+export function rabMoney(
+  lines: Array<{ totalQty: string; unitPrice?: string | null }>,
+  charges: PurchaseCharge[],
+): ReturnType<typeof rabTotalsWithCharges> {
+  return rabTotalsWithCharges(rabLinesSubtotal(lines), charges);
+}
+
 /**
- * Quotation cost multiplier that spreads the RAB charges over every cost:
- * (subtotal + charges) / subtotal; 1 when there is nothing to spread.
+ * Quotation cost multiplier that spreads the RAB's non-tax charges over every
+ * cost: cost / subtotal (see `rabTotalsWithCharges`); 1 when there is nothing
+ * to spread.
  */
-export function rabChargeFactor(
+export function rabCostFactor(
   subtotal: string | null,
   charges: PurchaseCharge[],
 ): string {
   if (subtotal === null || charges.length === 0) return "1";
   const base = parseQtyDecimal(subtotal);
   if (base.lte(0)) return "1";
-  const { chargesTotal } = priceStoredCharges(subtotal, charges);
-  return base.add(chargesTotal).div(base).toString();
+  const { cost } = rabTotalsWithCharges(subtotal, charges);
+  return new Decimal(cost!).div(base).toString();
 }
 
 export type RabPurchaseRow = {

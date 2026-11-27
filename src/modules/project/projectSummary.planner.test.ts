@@ -133,7 +133,7 @@ describe("project summary", () => {
     assert.equal(summary.productionPercent, 60);
   });
 
-  it("splits realization charges by line value per project", () => {
+  it("splits non-tax realization charges by line value per project", () => {
     const out = allocateRealizationCost({
       lines: [
         { projectId: "a", qty: "1", unitPrice: "300" },
@@ -141,7 +141,10 @@ describe("project summary", () => {
         { projectId: null, qty: "1", unitPrice: "100" },
       ],
       subtotal: "500",
-      total: "550",
+      charges: [
+        { category: "delivery", label: "Ongkir", amount: "50" },
+        { category: "tax", label: "PPN", amount: "55" },
+      ],
     });
     assert.deepEqual(out, [
       { projectId: "a", amount: "330" },
